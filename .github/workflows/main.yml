@@ -26,9 +26,8 @@ jobs:
       - name: Configure Android
         run: |
           flutter create --project-name cam_scanner --org com.mycompany.scanner .
-          sed -i 's/minSdkVersion.*/minSdkVersion 21/' android/app/build.gradle || true
-          sed -i 's/minSdk =.*/minSdk = 21/' android/app/build.gradle.kts || true
-          sed -i 's/gradle-.*-bin.zip/gradle-8.4-all.zip/' android/gradle/wrapper/gradle-wrapper.properties || true
+          sed -i 's/.*minSdk.*/        minSdk = 21/' android/app/build.gradle || true
+          sed -i 's/.*minSdk =.*/        minSdk = 21/' android/app/build.gradle.kts || true
           sed -i '/<\/application>/i <meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="ca-app-pub-3940256099942544~3347511713"/>' android/app/src/main/AndroidManifest.xml
 
       - name: Build APK
