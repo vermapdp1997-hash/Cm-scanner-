@@ -1,4 +1,4 @@
-name: Build APK
+ name: Build APK
 
 on:
   workflow_dispatch:
@@ -25,7 +25,7 @@ jobs:
 
       - name: Configure Android
         run: |
-          flutter create --org com.mycompany.scanner .
+          flutter create --project-name cam_scanner --org com.mycompany.scanner .
           sed -i 's/minSdkVersion.*/minSdkVersion 21/' android/app/build.gradle || true
           sed -i 's/minSdk =.*/minSdk = 21/' android/app/build.gradle.kts || true
           sed -i 's/gradle-.*-bin.zip/gradle-8.4-all.zip/' android/gradle/wrapper/gradle-wrapper.properties || true
