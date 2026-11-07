@@ -30,11 +30,9 @@ jobs:
           sed -i 's/.*minSdk =.*/        minSdk = 21/' android/app/build.gradle.kts || true
           sed -i '/<\/application>/i <meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="ca-app-pub-3940256099942544~3347511713"/>' android/app/src/main/AndroidManifest.xml
           
-          # R8 और Google AI की चेतावनियों को नजरअंदाज करने के नियम
-          echo "-dontwarn com.google.mlkit.**" > android/app/proguard-rules.pro
-          echo "-keep class com.google.mlkit.** { *; }" >> android/app/proguard-rules.pro
-          sed -i '/signingConfig/a \            minifyEnabled false' android/app/build.gradle || true
-          sed -i '/signingConfig/a \            isMinifyEnabled = false' android/app/build.gradle.kts || true
+          # दोनों को बंद करके R8 एरर पूरी तरह खत्म करना
+          sed -i '/signingConfig/a \            minifyEnabled false\n            shrinkResources false' android/app/build.gradle || true
+          sed -i '/signingConfig/a \            isMinifyEnabled = false\n            isShrinkResources = false' android/app/build.gradle.kts || true
 
       - name: Build APK
         run: flutter build apk --release --no-tree-shake-icons
