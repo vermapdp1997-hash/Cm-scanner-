@@ -46,7 +46,7 @@ class _ScannerHomePageState extends State<ScannerHomePage> {
       options: DocumentScannerOptions(
         documentFormat: DocumentFormat.jpeg,
         mode: ScannerMode.full,
-        isGalleryImportAllowed: true,
+        isGalleryImport: true, // <-- यहाँ ठीक कर दिया गया है
         pageLimit: 50,
       ),
     );
