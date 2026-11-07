@@ -1,5 +1,5 @@
 name: cam_scanner
-description: "CamScanner Clone"
+description: "Bharat Scanner AI"
 publish_to: 'none'
 version: 1.0.0+1
 
@@ -10,10 +10,13 @@ dependencies:
   flutter:
     sdk: flutter
   google_mlkit_document_scanner: ^0.2.0
+  google_mlkit_text_recognition: ^0.13.0
   google_mobile_ads: ^5.1.0
   pdf: ^3.10.8
   path_provider: ^2.1.2
   share_plus: ^9.0.0
+  shared_preferences: ^2.2.3
+  intl: ^0.19.0
   cupertino_icons: ^1.0.6
 
 flutter:
