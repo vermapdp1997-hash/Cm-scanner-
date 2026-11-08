@@ -28,17 +28,21 @@ jobs:
           # 1. Android प्रोजेक्ट बनाना
           flutter create --project-name cam_scanner --org com.mycompany.scanner .
           
-          # 2. सुपर-फास्ट और एक्टिव Gradle 8.5 (bin) सेट करना
-          sed -i 's|distributionUrl=.*|distributionUrl=https\\://services.gradle.org/distributions/gradle-8.5-bin.zip|' android/gradle/wrapper/gradle-wrapper.properties || true
+          # 2. सुपर-फास्ट मिरर से सीधे डाउनलोड करना (504 एरर से बचने के लिए)
+          curl -fL --retry 3 -o android/gradle/wrapper/gradle-8.5-bin.zip https://mirrors.cloud.tencent.com/gradle/gradle-8.5-bin.zip || \
+          curl -fL --retry 3 -o android/gradle/wrapper/gradle-8.5-bin.zip https://downloads.gradle-dn.com/distributions/gradle-8.5-bin.zip
+          
+          # 3. Gradle Wrapper को इंटरनेट के बजाय इसी लोकल फाइल से चलाना
+          sed -i 's|distributionUrl=.*|distributionUrl=gradle-8.5-bin.zip|' android/gradle/wrapper/gradle-wrapper.properties || true
 
-          # 3. MinSdk 21 सेट करना
+          # 4. MinSdk 21 सेट करना (AI व कैमरा के लिए)
           sed -i 's/.*minSdk.*/        minSdk = 21/' android/app/build.gradle || true
           sed -i 's/.*minSdk =.*/        minSdk = 21/' android/app/build.gradle.kts || true
           
-          # 4. AdMob ID
+          # 5. AdMob ID जोड़ना
           sed -i '/<\/application>/i <meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="ca-app-pub-3940256099942544~3347511713"/>' android/app/src/main/AndroidManifest.xml || true
           
-          # 5. R8 Minify एरर बंद करना
+          # 6. R8 Minify एरर बंद करना
           sed -i '/signingConfig/a \            minifyEnabled false\n            shrinkResources false' android/app/build.gradle || true
           sed -i '/signingConfig/a \            isMinifyEnabled = false\n            isShrinkResources = false' android/app/build.gradle.kts || true
 
