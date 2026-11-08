@@ -25,12 +25,20 @@ jobs:
 
       - name: Configure Android
         run: |
+          # 1. Android प्रोजेक्ट जनरेट करना
           flutter create --project-name cam_scanner --org com.mycompany.scanner .
+          
+          # 2. Gradle का सही और फास्ट डाउनलोड लिंक सेट करना (ताकि 504 एरर न आए)
+          sed -i 's|distributionUrl=.*|distributionUrl=https\\://services.gradle.org/distributions/gradle-8.3-all.zip|' android/gradle/wrapper/gradle-wrapper.properties || true
+
+          # 3. MinSdk 21 सेट करना (कैमरा और AI ML Kit के लिए जरूरी)
           sed -i 's/.*minSdk.*/        minSdk = 21/' android/app/build.gradle || true
           sed -i 's/.*minSdk =.*/        minSdk = 21/' android/app/build.gradle.kts || true
-          sed -i '/<\/application>/i <meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="ca-app-pub-3940256099942544~3347511713"/>' android/app/src/main/AndroidManifest.xml
           
-          # दोनों को बंद करके R8 एरर पूरी तरह खत्म करना
+          # 4. AdMob ID जोड़ना
+          sed -i '/<\/application>/i <meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="ca-app-pub-3940256099942544~3347511713"/>' android/app/src/main/AndroidManifest.xml || true
+          
+          # 5. R8 / Minify एरर बंद करना
           sed -i '/signingConfig/a \            minifyEnabled false\n            shrinkResources false' android/app/build.gradle || true
           sed -i '/signingConfig/a \            isMinifyEnabled = false\n            isShrinkResources = false' android/app/build.gradle.kts || true
 
