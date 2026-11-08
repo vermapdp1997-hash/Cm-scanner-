@@ -20,7 +20,7 @@ void main() async {
   try {
     await MobileAds.instance.initialize();
   } catch (e) {
-    debugPrint("Ads init info: $e");
+    debugPrint("Ads init: $e");
   }
   runApp(const BharatScannerApp());
 }
@@ -54,12 +54,9 @@ class BharatScannerApp extends StatelessWidget {
   }
 }
 
-// ============================================================================
 // 1. SPLASH SCREEN
-// ============================================================================
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
-
   @override
   State<SplashScreen> createState() => _SplashScreenState();
 }
@@ -115,11 +112,7 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
                     shape: BoxShape.circle,
                     color: Colors.white,
                     boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withAlpha(50),
-                        blurRadius: 25,
-                        offset: const Offset(0, 10),
-                      )
+                      BoxShadow(color: Colors.black.withAlpha(50), blurRadius: 25, offset: const Offset(0, 10))
                     ],
                   ),
                   child: const Icon(Icons.document_scanner_rounded, size: 68, color: Color(0xFF00796B)),
@@ -132,14 +125,8 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
                 const SizedBox(height: 8),
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withAlpha(45),
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: const Text(
-                    '⚡ Next-Gen AI Document Studio & Office Suite',
-                    style: TextStyle(color: Color(0xFFB2DFDB), fontSize: 12, fontWeight: FontWeight.w600),
-                  ),
+                  decoration: BoxDecoration(color: Colors.white.withAlpha(45), borderRadius: BorderRadius.circular(20)),
+                  child: const Text('⚡ Next-Gen AI Document Studio & Office Suite', style: TextStyle(color: Color(0xFFB2DFDB), fontSize: 12, fontWeight: FontWeight.w600)),
                 ),
               ],
             ),
@@ -150,12 +137,9 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
   }
 }
 
-// ============================================================================
-// 2. MAIN DASHBOARD (ALL TOOLS + SCANNER + ADS)
-// ============================================================================
+// 2. MAIN DASHBOARD
 class MainDashboardScreen extends StatefulWidget {
   const MainDashboardScreen({super.key});
-
   @override
   State<MainDashboardScreen> createState() => _MainDashboardScreenState();
 }
@@ -173,7 +157,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
   bool _isBannerLoaded = false;
   InterstitialAd? _interstitialAd;
 
-  // Real AdMob Unit IDs (यहाँ अपनी असली IDs लगा सकते हैं)
   final String _realBannerId = 'ca-app-pub-3940256099942544/6300978111';
   final String _realInterstitialId = 'ca-app-pub-3940256099942544/1033173712';
 
@@ -194,7 +177,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       listener: BannerAdListener(
         onAdLoaded: (_) => setState(() => _isBannerLoaded = true),
         onAdFailedToLoad: (ad, err) {
-          debugPrint("Banner Ad Failed: $err");
+          debugPrint("Banner err: $err");
           ad.dispose();
         },
       ),
@@ -208,7 +191,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       adLoadCallback: InterstitialAdLoadCallback(
         onAdLoaded: (ad) => _interstitialAd = ad,
         onAdFailedToLoad: (err) {
-          debugPrint("Interstitial Ad Failed: $err");
+          debugPrint("Interstitial err: $err");
           _interstitialAd = null;
         },
       ),
@@ -228,7 +211,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
           });
         }
       } catch (e) {
-        debugPrint("Doc read error: $e");
+        debugPrint("Doc read err: $e");
       }
     }
   }
@@ -359,7 +342,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
         }
       }
     } catch (e) {
-      debugPrint("Scan Error: $e");
+      debugPrint("Scan Err: $e");
     }
   }
 
@@ -407,7 +390,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       const cardW = 750.0;
       const cardH = 470.0;
       const left = (a4Width - cardW) / 2;
-
       final borderPaint = Paint()
         ..color = const Color(0xFFCFD8DC)
         ..style = PaintingStyle.stroke
@@ -461,7 +443,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       }
     } catch (e) {
       if (mounted) Navigator.pop(context);
-      debugPrint("ID Collage error: $e");
+      debugPrint("ID Collage err: $e");
       if (mounted) _promptDocName(frontAndBack, prefix, 'ID Cards');
     }
   }
@@ -485,13 +467,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
           children: [
             Text('✅ ${images.length} page(s) ready.', style: TextStyle(color: Colors.grey.shade700, fontSize: 13)),
             const SizedBox(height: 14),
-            TextField(
-              controller: nameCtrl,
-              decoration: InputDecoration(
-                labelText: 'Document Name',
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-              ),
-            ),
+            TextField(controller: nameCtrl, decoration: InputDecoration(labelText: 'Document Name', border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)))),
           ],
         ),
         actions: [
@@ -538,10 +514,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                     Text('Scale: ${(qualitySlider * 100).toInt()}%', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFE0F2F1),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
+                      decoration: BoxDecoration(color: const Color(0xFFE0F2F1), borderRadius: BorderRadius.circular(12)),
                       child: Text('~ $estimatedKb KB', style: const TextStyle(color: Color(0xFF00796B), fontWeight: FontWeight.bold)),
                     ),
                   ],
@@ -604,10 +577,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       if (await f.exists()) {
         if (scale < 1.0) {
           final bytes = await f.readAsBytes();
-          final codec = await ui.instantiateImageCodec(
-            bytes,
-            targetWidth: (1200 * scale).toInt().clamp(300, 2500),
-          );
+          final codec = await ui.instantiateImageCodec(bytes, targetWidth: (1200 * scale).toInt().clamp(300, 2500));
           final frame = await codec.getNextFrame();
           final resized = await frame.image.toByteData(format: ui.ImageByteFormat.png);
           if (resized != null) {
@@ -717,7 +687,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       await textRecognizer.close();
       extractedText = recognizedText.text;
     } catch (e) {
-      debugPrint("OCR Error: $e");
+      debugPrint("OCR Err: $e");
     }
 
     if (mounted) Navigator.pop(context);
@@ -748,12 +718,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       builder: (ctx) => StatefulBuilder(
         builder: (context, setSheetState) {
           return Padding(
-            padding: EdgeInsets.only(
-              left: 20,
-              right: 20,
-              top: 20,
-              bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
-            ),
+            padding: EdgeInsets.only(left: 20, right: 20, top: 20, bottom: MediaQuery.of(ctx).viewInsets.bottom + 20),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -783,30 +748,10 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                     spacing: 8,
                     runSpacing: 6,
                     children: [
-                      if (amounts.isNotEmpty)
-                        Chip(
-                          avatar: const Icon(Icons.currency_rupee, size: 14, color: Colors.green),
-                          label: Text(amounts.first, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
-                          backgroundColor: Colors.green.shade50,
-                        ),
-                      if (dates.isNotEmpty)
-                        Chip(
-                          avatar: const Icon(Icons.calendar_today, size: 14, color: Colors.blue),
-                          label: Text(dates.first, style: const TextStyle(fontSize: 11)),
-                          backgroundColor: Colors.blue.shade50,
-                        ),
-                      if (phones.isNotEmpty)
-                        Chip(
-                          avatar: const Icon(Icons.phone, size: 14, color: Colors.orange),
-                          label: Text(phones.first, style: const TextStyle(fontSize: 11)),
-                          backgroundColor: Colors.orange.shade50,
-                        ),
-                      if (emails.isNotEmpty)
-                        Chip(
-                          avatar: const Icon(Icons.email, size: 14, color: Colors.purple),
-                          label: Text(emails.first, style: const TextStyle(fontSize: 11)),
-                          backgroundColor: Colors.purple.shade50,
-                        ),
+                      if (amounts.isNotEmpty) Chip(avatar: const Icon(Icons.currency_rupee, size: 14, color: Colors.green), label: Text(amounts.first, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)), backgroundColor: Colors.green.shade50),
+                      if (dates.isNotEmpty) Chip(avatar: const Icon(Icons.calendar_today, size: 14, color: Colors.blue), label: Text(dates.first, style: const TextStyle(fontSize: 11)), backgroundColor: Colors.blue.shade50),
+                      if (phones.isNotEmpty) Chip(avatar: const Icon(Icons.phone, size: 14, color: Colors.orange), label: Text(phones.first, style: const TextStyle(fontSize: 11)), backgroundColor: Colors.orange.shade50),
+                      if (emails.isNotEmpty) Chip(avatar: const Icon(Icons.email, size: 14, color: Colors.purple), label: Text(emails.first, style: const TextStyle(fontSize: 11)), backgroundColor: Colors.purple.shade50),
                     ],
                   ),
                 const SizedBox(height: 8),
@@ -843,12 +788,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                   child: TextField(
                     controller: textCtrl,
                     maxLines: null,
-                    decoration: InputDecoration(
-                      filled: true,
-                      fillColor: Colors.grey.shade50,
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                      hintText: 'Recognized text...',
-                    ),
+                    decoration: InputDecoration(filled: true, fillColor: Colors.grey.shade50, border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)), hintText: 'Recognized text...'),
                   ),
                 ),
                 const SizedBox(height: 14),
@@ -891,21 +831,13 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                 DropdownButtonFormField<String>(
                   value: selectedDocId,
                   decoration: const InputDecoration(labelText: 'Select Document', border: OutlineInputBorder()),
-                  items: _savedDocs.map((doc) {
-                    return DropdownMenuItem<String>(
-                      value: doc['id'].toString(),
-                      child: Text(doc['title'], overflow: TextOverflow.ellipsis),
-                    );
-                  }).toList(),
+                  items: _savedDocs.map((doc) => DropdownMenuItem<String>(value: doc['id'].toString(), child: Text(doc['title'], overflow: TextOverflow.ellipsis))).toList(),
                   onChanged: (val) {
                     if (val != null) setModalState(() => selectedDocId = val);
                   },
                 ),
                 const SizedBox(height: 14),
-                TextField(
-                  controller: wmCtrl,
-                  decoration: const InputDecoration(labelText: 'Watermark Text', border: OutlineInputBorder()),
-                ),
+                TextField(controller: wmCtrl, decoration: const InputDecoration(labelText: 'Watermark Text', border: OutlineInputBorder())),
               ],
             ),
             actions: [
@@ -962,18 +894,10 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     return Scaffold(
       appBar: AppBar(
         title: _isSearching
-            ? TextField(
-                controller: _searchController,
-                autofocus: true,
-                decoration: const InputDecoration(hintText: 'Search documents...', border: InputBorder.none),
-              )
+            ? TextField(controller: _searchController, autofocus: true, decoration: const InputDecoration(hintText: 'Search documents...', border: InputBorder.none))
             : Row(
                 children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(color: const Color(0xFF00796B), borderRadius: BorderRadius.circular(6)),
-                    child: const Text('BHARAT', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 15)),
-                  ),
+                  Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), decoration: BoxDecoration(color: const Color(0xFF00796B), borderRadius: BorderRadius.circular(6)), child: const Text('BHARAT', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 15))),
                   const SizedBox(width: 6),
                   const Text('SCANNER PRO', style: TextStyle(color: Color(0xFF004D40), fontWeight: FontWeight.bold, fontSize: 16)),
                 ],
@@ -981,28 +905,20 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
         actions: [
           IconButton(
             icon: Icon(_isSearching ? Icons.close : Icons.search_rounded, size: 24),
-            onPressed: () {
-              setState(() {
-                _isSearching = !_isSearching;
-                if (!_isSearching) _searchController.clear();
-              });
-            },
+            onPressed: () => setState(() {
+              _isSearching = !_isSearching;
+              if (!_isSearching) _searchController.clear();
+            }),
           ),
           const SizedBox(width: 6),
         ],
       ),
       body: Column(
         children: [
-          Expanded(
-            child: _currentTabIndex == 0 ? _buildDocsTab() : _buildToolsTab(),
-          ),
+          Expanded(child: _currentTabIndex == 0 ? _buildDocsTab() : _buildToolsTab()),
           if (_isBannerLoaded && _bannerAd != null)
             SafeArea(
-              child: SizedBox(
-                width: _bannerAd!.size.width.toDouble(),
-                height: _bannerAd!.size.height.toDouble(),
-                child: AdWidget(ad: _bannerAd!),
-              ),
+              child: SizedBox(width: _bannerAd!.size.width.toDouble(), height: _bannerAd!.size.height.toDouble(), child: AdWidget(ad: _bannerAd!)),
             ),
         ],
       ),
@@ -1013,14 +929,8 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
         margin: const EdgeInsets.only(top: 18),
         decoration: BoxDecoration(
           shape: BoxShape.circle,
-          gradient: const LinearGradient(
-            colors: [Color(0xFF00897B), Color(0xFF004D40)],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-          ),
-          boxShadow: [
-            BoxShadow(color: const Color(0xFF00796B).withAlpha(100), blurRadius: 10, offset: const Offset(0, 4))
-          ],
+          gradient: const LinearGradient(colors: [Color(0xFF00897B), Color(0xFF004D40)], begin: Alignment.topLeft, end: Alignment.bottomRight),
+          boxShadow: [BoxShadow(color: const Color(0xFF00796B).withAlpha(100), blurRadius: 10, offset: const Offset(0, 4))],
         ),
         child: FloatingActionButton(
           shape: const CircleBorder(),
@@ -1079,14 +989,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       children: [
         Container(
           padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: Colors.grey.shade200),
-            boxShadow: [
-              BoxShadow(color: Colors.black.withAlpha(8), blurRadius: 6, offset: const Offset(0, 3)),
-            ],
-          ),
+          decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16), border: Border.all(color: Colors.grey.shade200), boxShadow: [BoxShadow(color: Colors.black.withAlpha(8), blurRadius: 6, offset: const Offset(0, 3))]),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceAround,
             children: [
@@ -1114,12 +1017,10 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                   labelStyle: TextStyle(color: isSel ? Colors.white : Colors.black87, fontWeight: isSel ? FontWeight.bold : FontWeight.normal, fontSize: 12),
                   backgroundColor: Colors.white,
                   side: BorderSide(color: isSel ? const Color(0xFF00796B) : Colors.grey.shade300),
-                  onSelected: (val) {
-                    setState(() {
-                      _selectedCategory = cat;
-                      _filterDocs();
-                    });
-                  },
+                  onSelected: (val) => setState(() {
+                    _selectedCategory = cat;
+                    _filterDocs();
+                  }),
                 ),
               );
             }).toList(),
@@ -1132,20 +1033,8 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
             Text('Saved Files (${_filteredDocs.length})', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.black87)),
             Row(
               children: [
-                IconButton(
-                  tooltip: 'Sort Documents',
-                  icon: const Icon(Icons.sort_rounded, size: 20, color: Colors.black87),
-                  onPressed: () {
-                    setState(() {
-                      _filteredDocs = _filteredDocs.reversed.toList();
-                    });
-                  },
-                ),
-                IconButton(
-                  tooltip: _isGridView ? 'List View' : 'Grid View',
-                  icon: Icon(_isGridView ? Icons.view_list_rounded : Icons.grid_view_rounded, size: 20, color: Colors.black87),
-                  onPressed: () => setState(() => _isGridView = !_isGridView),
-                ),
+                IconButton(tooltip: 'Sort Documents', icon: const Icon(Icons.sort_rounded, size: 20), onPressed: () => setState(() => _filteredDocs = _filteredDocs.reversed.toList())),
+                IconButton(tooltip: _isGridView ? 'List View' : 'Grid View', icon: Icon(_isGridView ? Icons.view_list_rounded : Icons.grid_view_rounded, size: 20), onPressed: () => setState(() => _isGridView = !_isGridView)),
               ],
             ),
           ],
@@ -1155,30 +1044,13 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
           Padding(
             padding: const EdgeInsets.only(top: 50),
             child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Container(
-                  width: 80,
-                  height: 90,
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFE0F2F1),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: const Color(0xFF80CBC4), width: 1.5),
-                  ),
-                  child: const Center(
-                    child: Icon(Icons.document_scanner_outlined, size: 40, color: Color(0xFF00796B)),
-                  ),
-                ),
+                Container(width: 80, height: 90, decoration: BoxDecoration(color: const Color(0xFFE0F2F1), borderRadius: BorderRadius.circular(12), border: Border.all(color: const Color(0xFF80CBC4), width: 1.5)), child: const Center(child: Icon(Icons.document_scanner_outlined, size: 40, color: Color(0xFF00796B)))),
                 const SizedBox(height: 14),
                 Text("No files saved yet", style: TextStyle(color: Colors.grey.shade600, fontSize: 15, fontWeight: FontWeight.w500)),
                 const SizedBox(height: 14),
                 ElevatedButton.icon(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF00796B),
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(25)),
-                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-                  ),
+                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00796B), foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(25)), padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10)),
                   icon: const Icon(Icons.camera_alt_rounded, size: 16),
                   label: const Text('Scan ID / Document Now', style: TextStyle(fontWeight: FontWeight.bold)),
                   onPressed: () => _startDocScan(),
@@ -1191,12 +1063,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
             itemCount: _filteredDocs.length,
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 2,
-              crossAxisSpacing: 12,
-              mainAxisSpacing: 12,
-              childAspectRatio: 0.72,
-            ),
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 2, crossAxisSpacing: 12, mainAxisSpacing: 12, childAspectRatio: 0.72),
             itemBuilder: (ctx, i) => _buildGridCard(_filteredDocs[i]),
           )
         else
@@ -1213,13 +1080,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
   Widget _buildStatItem(String title, String count, IconData icon, Color color) {
     return Column(
       children: [
-        Row(
-          children: [
-            Icon(icon, size: 15, color: color),
-            const SizedBox(width: 4),
-            Text(count, style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: color)),
-          ],
-        ),
+        Row(children: [Icon(icon, size: 15, color: color), const SizedBox(width: 4), Text(count, style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: color))]),
         const SizedBox(height: 2),
         Text(title, style: TextStyle(fontSize: 11, color: Colors.grey.shade600)),
       ],
@@ -1243,12 +1104,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
           padding: const EdgeInsets.all(12.0),
           child: Row(
             children: [
-              ClipRRect(
-                borderRadius: BorderRadius.circular(8),
-                child: hasImage
-                    ? Image.file(File(imgList.first), width: 65, height: 80, fit: BoxFit.cover)
-                    : Container(width: 65, height: 80, color: Colors.grey.shade200, child: const Icon(Icons.broken_image, color: Colors.grey)),
-              ),
+              ClipRRect(borderRadius: BorderRadius.circular(8), child: hasImage ? Image.file(File(imgList.first), width: 65, height: 80, fit: BoxFit.cover) : Container(width: 65, height: 80, color: Colors.grey.shade200, child: const Icon(Icons.broken_image, color: Colors.grey))),
               const SizedBox(width: 14),
               Expanded(
                 child: Column(
@@ -1256,15 +1112,8 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                   children: [
                     Row(
                       children: [
-                        Expanded(
-                          child: Text(doc['title'] ?? 'Untitled', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14), maxLines: 1, overflow: TextOverflow.ellipsis),
-                        ),
-                        IconButton(
-                          constraints: const BoxConstraints(),
-                          padding: EdgeInsets.zero,
-                          icon: Icon(isFav ? Icons.star_rounded : Icons.star_border_rounded, color: isFav ? Colors.amber : Colors.grey, size: 20),
-                          onPressed: () => _toggleFavorite(doc['id']),
-                        ),
+                        Expanded(child: Text(doc['title'] ?? 'Untitled', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14), maxLines: 1, overflow: TextOverflow.ellipsis)),
+                        IconButton(constraints: const BoxConstraints(), padding: EdgeInsets.zero, icon: Icon(isFav ? Icons.star_rounded : Icons.star_border_rounded, color: isFav ? Colors.amber : Colors.grey, size: 20), onPressed: () => _toggleFavorite(doc['id'])),
                       ],
                     ),
                     const SizedBox(height: 4),
@@ -1277,13 +1126,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                           child: Container(
                             padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
                             decoration: BoxDecoration(color: const Color(0xFFE8F5E9), borderRadius: BorderRadius.circular(6)),
-                            child: const Row(
-                              children: [
-                                Icon(Icons.picture_as_pdf_rounded, size: 13, color: Color(0xFF2E7D32)),
-                                SizedBox(width: 4),
-                                Text('PDF', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF2E7D32))),
-                              ],
-                            ),
+                            child: const Row(children: [Icon(Icons.picture_as_pdf_rounded, size: 13, color: Color(0xFF2E7D32)), SizedBox(width: 4), Text('PDF', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF2E7D32)))]),
                           ),
                         ),
                         const SizedBox(width: 6),
@@ -1292,13 +1135,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                           child: Container(
                             padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
                             decoration: BoxDecoration(color: const Color(0xFFFFF3E0), borderRadius: BorderRadius.circular(6)),
-                            child: const Row(
-                              children: [
-                                Icon(Icons.image_rounded, size: 13, color: Color(0xFFE65100)),
-                                SizedBox(width: 4),
-                                Text('Image', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFFE65100))),
-                              ],
-                            ),
+                            child: const Row(children: [Icon(Icons.image_rounded, size: 13, color: Color(0xFFE65100)), SizedBox(width: 4), Text('Image', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFFE65100)))]),
                           ),
                         ),
                         const SizedBox(width: 6),
@@ -1307,20 +1144,11 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                           child: Container(
                             padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
                             decoration: BoxDecoration(color: const Color(0xFFE0F2F1), borderRadius: BorderRadius.circular(6)),
-                            child: const Row(
-                              children: [
-                                Icon(Icons.tune_rounded, size: 13, color: Color(0xFF00796B)),
-                                SizedBox(width: 4),
-                                Text('Resize', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF00796B))),
-                              ],
-                            ),
+                            child: const Row(children: [Icon(Icons.tune_rounded, size: 13, color: Color(0xFF00796B)), SizedBox(width: 4), Text('Resize', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF00796B)))]),
                           ),
                         ),
                         const Spacer(),
-                        IconButton(
-                          icon: const Icon(Icons.delete_outline, color: Colors.redAccent, size: 20),
-                          onPressed: () => _deleteDoc(doc['id']),
-                        ),
+                        IconButton(icon: const Icon(Icons.delete_outline, color: Colors.redAccent, size: 20), onPressed: () => _deleteDoc(doc['id'])),
                       ],
                     ),
                   ],
@@ -1341,22 +1169,11 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       onTap: () => _openDocumentViewer(doc),
       borderRadius: BorderRadius.circular(14),
       child: Container(
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: Colors.grey.shade200),
-        ),
+        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14), border: Border.all(color: Colors.grey.shade200)),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Expanded(
-              child: ClipRRect(
-                borderRadius: const BorderRadius.vertical(top: Radius.circular(14)),
-                child: hasImage
-                    ? Image.file(File(imgList.first), width: double.infinity, fit: BoxFit.cover)
-                    : Container(color: Colors.grey.shade200, child: const Center(child: Icon(Icons.broken_image))),
-              ),
-            ),
+            Expanded(child: ClipRRect(borderRadius: const BorderRadius.vertical(top: Radius.circular(14)), child: hasImage ? Image.file(File(imgList.first), width: double.infinity, fit: BoxFit.cover) : Container(color: Colors.grey.shade200, child: const Center(child: Icon(Icons.broken_image))))),
             Padding(
               padding: const EdgeInsets.all(8.0),
               child: Column(
@@ -1367,30 +1184,10 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      IconButton(
-                        constraints: const BoxConstraints(),
-                        padding: EdgeInsets.zero,
-                        icon: const Icon(Icons.picture_as_pdf_rounded, size: 18, color: Color(0xFF2E7D32)),
-                        onPressed: () => _exportPdfWithScale(imgList, doc['title']),
-                      ),
-                      IconButton(
-                        constraints: const BoxConstraints(),
-                        padding: EdgeInsets.zero,
-                        icon: const Icon(Icons.image_rounded, size: 18, color: Color(0xFFE65100)),
-                        onPressed: () => _shareImages(imgList, doc['title']),
-                      ),
-                      IconButton(
-                        constraints: const BoxConstraints(),
-                        padding: EdgeInsets.zero,
-                        icon: const Icon(Icons.tune_rounded, size: 18, color: Color(0xFF00796B)),
-                        onPressed: () => _openCompressionDialog(imgList, doc['title']),
-                      ),
-                      IconButton(
-                        constraints: const BoxConstraints(),
-                        padding: EdgeInsets.zero,
-                        icon: const Icon(Icons.delete_outline, size: 18, color: Colors.redAccent),
-                        onPressed: () => _deleteDoc(doc['id']),
-                      ),
+                      IconButton(constraints: const BoxConstraints(), padding: EdgeInsets.zero, icon: const Icon(Icons.picture_as_pdf_rounded, size: 18, color: Color(0xFF2E7D32)), onPressed: () => _exportPdfWithScale(imgList, doc['title'])),
+                      IconButton(constraints: const BoxConstraints(), padding: EdgeInsets.zero, icon: const Icon(Icons.image_rounded, size: 18, color: Color(0xFFE65100)), onPressed: () => _shareImages(imgList, doc['title'])),
+                      IconButton(constraints: const BoxConstraints(), padding: EdgeInsets.zero, icon: const Icon(Icons.tune_rounded, size: 18, color: Color(0xFF00796B)), onPressed: () => _openCompressionDialog(imgList, doc['title'])),
+                      IconButton(constraints: const BoxConstraints(), padding: EdgeInsets.zero, icon: const Icon(Icons.delete_outline, size: 18, color: Colors.redAccent), onPressed: () => _deleteDoc(doc['id'])),
                     ],
                   ),
                 ],
@@ -1416,34 +1213,10 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
           mainAxisSpacing: 14,
           childAspectRatio: 0.85,
           children: [
-            _buildToolCard(
-              title: 'ID Card Mode',
-              subtitle: 'Front & Back A4',
-              icon: Icons.badge_outlined,
-              iconColor: const Color(0xFF1976D2),
-              onTap: () => _startDocScan(limit: 2, category: 'ID Cards', prefix: 'ID_Card'),
-            ),
-            _buildToolCard(
-              title: 'Single Card',
-              subtitle: 'Aadhaar / PAN',
-              icon: Icons.credit_card_rounded,
-              iconColor: const Color(0xFF00796B),
-              onTap: () => _startDocScan(limit: 1, category: 'ID Cards', prefix: 'Card'),
-            ),
-            _buildToolCard(
-              title: 'Passport',
-              subtitle: 'Full Layout',
-              icon: Icons.menu_book_rounded,
-              iconColor: const Color(0xFF388E3C),
-              onTap: () => _startDocScan(limit: 2, category: 'Passports', prefix: 'Passport'),
-            ),
-            _buildToolCard(
-              title: 'Smart Invoices',
-              subtitle: 'Bill Extract',
-              icon: Icons.receipt_long_rounded,
-              iconColor: const Color(0xFFE65100),
-              onTap: () => _startDocScan(limit: 5, category: 'Invoices', prefix: 'Bill'),
-            ),
+            _buildToolCard(title: 'ID Card Mode', subtitle: 'Front & Back A4', icon: Icons.badge_outlined, iconColor: const Color(0xFF1976D2), onTap: () => _startDocScan(limit: 2, category: 'ID Cards', prefix: 'ID_Card')),
+            _buildToolCard(title: 'Single Card', subtitle: 'Aadhaar / PAN', icon: Icons.credit_card_rounded, iconColor: const Color(0xFF00796B), onTap: () => _startDocScan(limit: 1, category: 'ID Cards', prefix: 'Card')),
+            _buildToolCard(title: 'Passport', subtitle: 'Full Layout', icon: Icons.menu_book_rounded, iconColor: const Color(0xFF388E3C), onTap: () => _startDocScan(limit: 2, category: 'Passports', prefix: 'Passport')),
+            _buildToolCard(title: 'Smart Invoices', subtitle: 'Bill Extract', icon: Icons.receipt_long_rounded, iconColor: const Color(0xFFE65100), onTap: () => _startDocScan(limit: 5, category: 'Invoices', prefix: 'Bill')),
             _buildToolCard(
               title: 'AI Insights',
               subtitle: 'Auto-Entity',
@@ -1457,17 +1230,10 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                 }
               },
             ),
-            _buildToolCard(
-              title: 'From Gallery',
-              subtitle: 'Batch Import',
-              icon: Icons.photo_library_outlined,
-              iconColor: const Color(0xFFD81B60),
-              onTap: () => _startDocScan(),
-            ),
+            _buildToolCard(title: 'From Gallery', subtitle: 'Batch Import', icon: Icons.photo_library_outlined, iconColor: const Color(0xFFD81B60), onTap: () => _startDocScan()),
           ],
         ),
         const SizedBox(height: 24),
-
         _buildSectionHeader('Office & Productivity Suite'),
         const SizedBox(height: 12),
         GridView.count(
@@ -1478,52 +1244,15 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
           mainAxisSpacing: 14,
           childAspectRatio: 0.85,
           children: [
-            _buildToolCard(
-              title: 'PowerPoint',
-              subtitle: 'Viewer & Editor',
-              icon: Icons.slideshow_rounded,
-              iconColor: const Color(0xFFD84315),
-              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PowerPointStudioScreen())),
-            ),
-            _buildToolCard(
-              title: 'Resume Maker',
-              subtitle: 'Pro CV Generator',
-              icon: Icons.assignment_ind_rounded,
-              iconColor: const Color(0xFF0277BD),
-              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ResumeBuilderScreen())),
-            ),
-            _buildToolCard(
-              title: 'Invoice Maker',
-              subtitle: 'GST Bill & Tax',
-              icon: Icons.receipt_rounded,
-              iconColor: const Color(0xFF2E7D32),
-              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const InvoiceMakerProScreen())),
-            ),
-            _buildToolCard(
-              title: 'Letters',
-              subtitle: 'Formal Templates',
-              icon: Icons.mail_outline_rounded,
-              iconColor: const Color(0xFF6A1B9A),
-              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const LetterTemplatesScreen())),
-            ),
-            _buildToolCard(
-              title: 'TXT Editor',
-              subtitle: 'Create & Edit',
-              icon: Icons.edit_note_rounded,
-              iconColor: const Color(0xFF00796B),
-              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const TxtEditorNotesScreen(isNotes: false))),
-            ),
-            _buildToolCard(
-              title: 'Notes Maker',
-              subtitle: 'Quick Notes',
-              icon: Icons.note_alt_outlined,
-              iconColor: const Color(0xFFF57C00),
-              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const TxtEditorNotesScreen(isNotes: true))),
-            ),
+            _buildToolCard(title: 'PowerPoint', subtitle: 'Viewer & Editor', icon: Icons.slideshow_rounded, iconColor: const Color(0xFFD84315), onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PowerPointStudioScreen()))),
+            _buildToolCard(title: 'Resume Maker', subtitle: 'Pro CV Generator', icon: Icons.assignment_ind_rounded, iconColor: const Color(0xFF0277BD), onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ResumeBuilderScreen()))),
+            _buildToolCard(title: 'Invoice Maker', subtitle: 'GST Bill & Tax', icon: Icons.receipt_rounded, iconColor: const Color(0xFF2E7D32), onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const InvoiceMakerProScreen()))),
+            _buildToolCard(title: 'Letters', subtitle: 'Formal Templates', icon: Icons.mail_outline_rounded, iconColor: const Color(0xFF6A1B9A), onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const LetterTemplatesScreen()))),
+            _buildToolCard(title: 'TXT Editor', subtitle: 'Create & Edit', icon: Icons.edit_note_rounded, iconColor: const Color(0xFF00796B), onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const TxtEditorNotesScreen(isNotes: false)))),
+            _buildToolCard(title: 'Notes Maker', subtitle: 'Quick Notes', icon: Icons.note_alt_outlined, iconColor: const Color(0xFFF57C00), onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const TxtEditorNotesScreen(isNotes: true)))),
           ],
         ),
         const SizedBox(height: 24),
-
         _buildSectionHeader('Image Power Tools & Studio (Fixed & Real)'),
         const SizedBox(height: 12),
         GridView.count(
@@ -1534,20 +1263,8 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
           mainAxisSpacing: 14,
           childAspectRatio: 0.85,
           children: [
-            _buildToolCard(
-              title: 'Passport Photo',
-              subtitle: '8 & 16 Print Sheet',
-              icon: Icons.portrait_rounded,
-              iconColor: const Color(0xFF1565C0),
-              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PassportPhotoStudioScreen())),
-            ),
-            _buildToolCard(
-              title: 'Digital Sign',
-              subtitle: 'E-Signature Pad',
-              icon: Icons.draw_rounded,
-              iconColor: const Color(0xFF7B1FA2),
-              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const DigitalSignatureScreen())),
-            ),
+            _buildToolCard(title: 'Passport Photo', subtitle: '8 & 16 Print Sheet', icon: Icons.portrait_rounded, iconColor: const Color(0xFF1565C0), onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PassportPhotoStudioScreen()))),
+            _buildToolCard(title: 'Digital Sign', subtitle: 'E-Signature Pad', icon: Icons.draw_rounded, iconColor: const Color(0xFF7B1FA2), onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const DigitalSignatureScreen()))),
             _buildToolCard(
               title: 'Compressor',
               subtitle: 'Slider Control',
@@ -1562,13 +1279,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                 }
               },
             ),
-            _buildToolCard(
-              title: 'Watermark',
-              subtitle: 'Custom Stamp',
-              icon: Icons.branding_watermark_outlined,
-              iconColor: const Color(0xFF0288D1),
-              onTap: () => _openWatermarkDialog(),
-            ),
+            _buildToolCard(title: 'Watermark', subtitle: 'Custom Stamp', icon: Icons.branding_watermark_outlined, iconColor: const Color(0xFF0288D1), onTap: () => _openWatermarkDialog()),
             _buildToolCard(
               title: 'Export Images',
               subtitle: 'Save as JPG/PNG',
@@ -1583,13 +1294,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                 }
               },
             ),
-            _buildToolCard(
-              title: 'Photo Studio',
-              subtitle: 'Crop & Rotate',
-              icon: Icons.crop_rotate_rounded,
-              iconColor: const Color(0xFF00897B),
-              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const UniversalImageToolScreen())),
-            ),
+            _buildToolCard(title: 'Photo Studio', subtitle: 'Crop & Rotate', icon: Icons.crop_rotate_rounded, iconColor: const Color(0xFF00897B), onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const UniversalImageToolScreen()))),
           ],
         ),
         const SizedBox(height: 20),
@@ -1607,31 +1312,17 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     );
   }
 
-  Widget _buildToolCard({
-    required String title,
-    required String subtitle,
-    required IconData icon,
-    required Color iconColor,
-    required VoidCallback onTap,
-  }) {
+  Widget _buildToolCard({required String title, required String subtitle, required IconData icon, required Color iconColor, required VoidCallback onTap}) {
     return InkWell(
       borderRadius: BorderRadius.circular(14),
       onTap: onTap,
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: Colors.grey.shade200, width: 1.2),
-        ),
+        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14), border: Border.all(color: Colors.grey.shade200, width: 1.2)),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Container(
-              padding: const EdgeInsets.all(9),
-              decoration: BoxDecoration(shape: BoxShape.circle, color: iconColor.withAlpha(20)),
-              child: Icon(icon, color: iconColor, size: 24),
-            ),
+            Container(padding: const EdgeInsets.all(9), decoration: BoxDecoration(shape: BoxShape.circle, color: iconColor.withAlpha(20)), child: Icon(icon, color: iconColor, size: 24)),
             const SizedBox(height: 6),
             Text(title, textAlign: TextAlign.center, maxLines: 1, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
             const SizedBox(height: 2),
@@ -1643,9 +1334,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
   }
 }
 
-// ============================================================================
-// 3. DOCUMENT DETAIL SCREEN (FILTERS + PAGE DELETION + STORAGE SYNC)
-// ============================================================================
+// 3. DOCUMENT DETAIL SCREEN
 class DocumentDetailScreen extends StatefulWidget {
   final Map<String, dynamic> doc;
   final VoidCallback onDelete;
@@ -1791,25 +1480,15 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Flexible(
-                child: Text(_title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis),
-              ),
+              Flexible(child: Text(_title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis)),
               const SizedBox(width: 6),
               const Icon(Icons.edit, size: 15, color: Colors.white70),
             ],
           ),
         ),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.tune_rounded, color: Color(0xFF80CBC4)),
-            tooltip: 'Compress',
-            onPressed: () => widget.onCompress(_images, _title),
-          ),
-          IconButton(
-            icon: const Icon(Icons.delete_sweep_rounded, color: Colors.redAccent),
-            tooltip: 'Delete Current Page',
-            onPressed: _deleteCurrentPage,
-          ),
+          IconButton(icon: const Icon(Icons.tune_rounded, color: Color(0xFF80CBC4)), tooltip: 'Compress', onPressed: () => widget.onCompress(_images, _title)),
+          IconButton(icon: const Icon(Icons.delete_sweep_rounded, color: Colors.redAccent), tooltip: 'Delete Current Page', onPressed: _deleteCurrentPage),
         ],
       ),
       body: _images.isEmpty
@@ -1822,27 +1501,14 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Text(
-                        'Page ${_currentPage + 1} of ${_images.length}',
-                        style: const TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.bold),
-                      ),
+                      Text('Page ${_currentPage + 1} of ${_images.length}', style: const TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.bold)),
                       const SizedBox(width: 12),
                       InkWell(
-                        onTap: () {
-                          setState(() {
-                            _currentFilterMode = (_currentFilterMode + 1) % 4;
-                          });
-                        },
+                        onTap: () => setState(() => _currentFilterMode = (_currentFilterMode + 1) % 4),
                         child: Container(
                           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF00796B),
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          child: Text(
-                            ['Original', 'Magic Color', 'B&W', 'Grayscale'][_currentFilterMode],
-                            style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
-                          ),
+                          decoration: BoxDecoration(color: const Color(0xFF00796B), borderRadius: BorderRadius.circular(10)),
+                          child: Text(['Original', 'Magic Color', 'B&W', 'Grayscale'][_currentFilterMode], style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
                         ),
                       ),
                     ],
@@ -1855,21 +1521,14 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
                     onPageChanged: (i) => setState(() => _currentPage = i),
                     itemBuilder: (ctx, i) {
                       final file = File(_images[i]);
-                      if (!file.existsSync()) {
-                        return const Center(child: Text('Image file not found', style: TextStyle(color: Colors.white)));
-                      }
+                      if (!file.existsSync()) return const Center(child: Text('Image file not found', style: TextStyle(color: Colors.white)));
                       final filter = _getFilter(_currentFilterMode);
                       return InteractiveViewer(
                         panEnabled: true,
                         minScale: 0.8,
                         maxScale: 4.0,
                         child: Center(
-                          child: filter != null
-                              ? ColorFiltered(
-                                  colorFilter: filter,
-                                  child: Image.file(file, fit: BoxFit.contain),
-                                )
-                              : Image.file(file, fit: BoxFit.contain),
+                          child: filter != null ? ColorFiltered(colorFilter: filter, child: Image.file(file, fit: BoxFit.contain)) : Image.file(file, fit: BoxFit.contain),
                         ),
                       );
                     },
@@ -1884,19 +1543,11 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceAround,
             children: [
-              _buildBottomAction(Icons.picture_as_pdf_rounded, 'Share PDF', () {
-                widget.onSharePdf(_images, _title);
-              }),
-              _buildBottomAction(Icons.image_rounded, 'Share JPG', () {
-                widget.onShareImages(_images, _title);
-              }),
-              _buildBottomAction(Icons.tune_rounded, 'Compress', () {
-                widget.onCompress(_images, _title);
-              }),
+              _buildBottomAction(Icons.picture_as_pdf_rounded, 'Share PDF', () => widget.onSharePdf(_images, _title)),
+              _buildBottomAction(Icons.image_rounded, 'Share JPG', () => widget.onShareImages(_images, _title)),
+              _buildBottomAction(Icons.tune_rounded, 'Compress', () => widget.onCompress(_images, _title)),
               _buildBottomAction(Icons.auto_awesome, 'AI Insights', () {
-                if (_images.isNotEmpty) {
-                  widget.onExtractText(_images[_currentPage]);
-                }
+                if (_images.isNotEmpty) widget.onExtractText(_images[_currentPage]);
               }),
             ],
           ),
@@ -1920,12 +1571,9 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
   }
 }
 
-// ============================================================================
-// 4. DIGITAL SIGNATURE STUDIO (E-SIGNATURE MAKER)
-// ============================================================================
+// 4. DIGITAL SIGNATURE STUDIO
 class DigitalSignatureScreen extends StatefulWidget {
   const DigitalSignatureScreen({super.key});
-
   @override
   State<DigitalSignatureScreen> createState() => _DigitalSignatureScreenState();
 }
@@ -1968,16 +1616,8 @@ class _DigitalSignatureScreenState extends State<DigitalSignatureScreen> {
       appBar: AppBar(
         title: const Text('Digital Signature Studio'),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.cleaning_services_rounded),
-            tooltip: 'Clear',
-            onPressed: () => setState(() => _points.clear()),
-          ),
-          IconButton(
-            icon: const Icon(Icons.check_rounded, color: Color(0xFF00796B), size: 28),
-            tooltip: 'Export Signature',
-            onPressed: _saveSignature,
-          ),
+          IconButton(icon: const Icon(Icons.cleaning_services_rounded), tooltip: 'Clear', onPressed: () => setState(() => _points.clear())),
+          IconButton(icon: const Icon(Icons.check_rounded, color: Color(0xFF00796B), size: 28), tooltip: 'Export Signature', onPressed: _saveSignature),
         ],
       ),
       body: Column(
@@ -2016,10 +1656,7 @@ class _DigitalSignatureScreenState extends State<DigitalSignatureScreen> {
                   });
                 },
                 onPanEnd: (DragEndDetails details) => _points.add(null),
-                child: CustomPaint(
-                  painter: _SignaturePainter(points: _points, color: _penColor),
-                  size: Size.infinite,
-                ),
+                child: CustomPaint(painter: _SignaturePainter(points: _points, color: _penColor), size: Size.infinite),
               ),
             ),
           ),
@@ -2052,12 +1689,9 @@ class _SignaturePainter extends CustomPainter {
   bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
 }
 
-// ============================================================================
-// 5. PASSPORT PHOTO STUDIO (8-PHOTO A4 PRINT SHEET)
-// ============================================================================
+// 5. PASSPORT PHOTO STUDIO
 class PassportPhotoStudioScreen extends StatefulWidget {
   const PassportPhotoStudioScreen({super.key});
-
   @override
   State<PassportPhotoStudioScreen> createState() => _PassportPhotoStudioScreenState();
 }
@@ -2068,12 +1702,7 @@ class _PassportPhotoStudioScreenState extends State<PassportPhotoStudioScreen> {
 
   Future<void> _pickPhoto() async {
     final scanner = DocumentScanner(
-      options: DocumentScannerOptions(
-        documentFormat: DocumentFormat.jpeg,
-        mode: ScannerMode.full,
-        isGalleryImport: true,
-        pageLimit: 1,
-      ),
+      options: DocumentScannerOptions(documentFormat: DocumentFormat.jpeg, mode: ScannerMode.full, isGalleryImport: true, pageLimit: 1),
     );
     try {
       final res = await scanner.scanDocument();
@@ -2108,9 +1737,7 @@ class _PassportPhotoStudioScreenState extends State<PassportPhotoStudioScreen> {
                   return pw.Container(
                     width: 110,
                     height: 145,
-                    decoration: pw.BoxDecoration(
-                      border: pw.Border.all(color: PdfColors.grey400, width: 1),
-                    ),
+                    decoration: pw.BoxDecoration(border: pw.Border.all(color: PdfColors.grey400, width: 1)),
                     child: pw.Image(passImage, fit: pw.BoxFit.cover),
                   );
                 }),
@@ -2139,23 +1766,10 @@ class _PassportPhotoStudioScreenState extends State<PassportPhotoStudioScreen> {
               child: Container(
                 width: 160,
                 height: 200,
-                decoration: BoxDecoration(
-                  color: _bgColor,
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.grey.shade400, width: 2),
-                ),
+                decoration: BoxDecoration(color: _bgColor, borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.grey.shade400, width: 2)),
                 child: _selectedImagePath != null
-                    ? ClipRRect(
-                        borderRadius: BorderRadius.circular(6),
-                        child: Image.file(File(_selectedImagePath!), fit: BoxFit.cover),
-                      )
-                    : const Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.portrait, size: 80, color: Colors.grey),
-                          Text('Select or Capture Face', style: TextStyle(fontSize: 11, color: Colors.grey)),
-                        ],
-                      ),
+                    ? ClipRRect(borderRadius: BorderRadius.circular(6), child: Image.file(File(_selectedImagePath!), fit: BoxFit.cover))
+                    : const Column(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.portrait, size: 80, color: Colors.grey), Text('Select or Capture Face', style: TextStyle(fontSize: 11, color: Colors.grey))]),
               ),
             ),
             const SizedBox(height: 20),
@@ -2180,12 +1794,9 @@ class _PassportPhotoStudioScreenState extends State<PassportPhotoStudioScreen> {
   }
 }
 
-// ============================================================================
-// 6. UNIVERSAL IMAGE TOOLS (PHOTO STUDIO - ROTATE, VIEW, SHARE)
-// ============================================================================
+// 6. UNIVERSAL IMAGE TOOLS
 class UniversalImageToolScreen extends StatefulWidget {
   const UniversalImageToolScreen({super.key});
-
   @override
   State<UniversalImageToolScreen> createState() => _UniversalImageToolScreenState();
 }
@@ -2196,12 +1807,7 @@ class _UniversalImageToolScreenState extends State<UniversalImageToolScreen> {
 
   Future<void> _selectImage() async {
     final scanner = DocumentScanner(
-      options: DocumentScannerOptions(
-        documentFormat: DocumentFormat.jpeg,
-        mode: ScannerMode.full,
-        isGalleryImport: true,
-        pageLimit: 1,
-      ),
+      options: DocumentScannerOptions(documentFormat: DocumentFormat.jpeg, mode: ScannerMode.full, isGalleryImport: true, pageLimit: 1),
     );
     try {
       final res = await scanner.scanDocument();
@@ -2220,16 +1826,8 @@ class _UniversalImageToolScreenState extends State<UniversalImageToolScreen> {
       appBar: AppBar(
         title: const Text('Photo Studio & Editor'),
         actions: [
-          if (_imagePath != null)
-            IconButton(
-              icon: const Icon(Icons.rotate_right_rounded),
-              onPressed: () => setState(() => _rotationQuarter = (_rotationQuarter + 1) % 4),
-            ),
-          if (_imagePath != null)
-            IconButton(
-              icon: const Icon(Icons.share_rounded, color: Color(0xFF00796B)),
-              onPressed: () => Share.shareXFiles([XFile(_imagePath!)]),
-            ),
+          if (_imagePath != null) IconButton(icon: const Icon(Icons.rotate_right_rounded), onPressed: () => setState(() => _rotationQuarter = (_rotationQuarter + 1) % 4)),
+          if (_imagePath != null) IconButton(icon: const Icon(Icons.share_rounded, color: Color(0xFF00796B)), onPressed: () => Share.shareXFiles([XFile(_imagePath!)])),
         ],
       ),
       body: Center(
@@ -2240,21 +1838,15 @@ class _UniversalImageToolScreenState extends State<UniversalImageToolScreen> {
                 style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00796B), foregroundColor: Colors.white),
                 onPressed: _selectImage,
               )
-            : RotatedBox(
-                quarterTurns: _rotationQuarter,
-                child: Image.file(File(_imagePath!)),
-              ),
+            : RotatedBox(quarterTurns: _rotationQuarter, child: Image.file(File(_imagePath!))),
       ),
     );
   }
 }
 
-// ============================================================================
-// 7. POWERPOINT STUDIO (VIEWER & EDITOR)
-// ============================================================================
+// 7. POWERPOINT STUDIO
 class PowerPointStudioScreen extends StatefulWidget {
   const PowerPointStudioScreen({super.key});
-
   @override
   State<PowerPointStudioScreen> createState() => _PowerPointStudioScreenState();
 }
@@ -2266,9 +1858,7 @@ class _PowerPointStudioScreenState extends State<PowerPointStudioScreen> {
   ];
 
   void _addNewSlide() {
-    setState(() {
-      _slides.add({'title': 'New Slide Title', 'content': 'Write key points here...'});
-    });
+    setState(() => _slides.add({'title': 'New Slide Title', 'content': 'Write key points here...'}));
   }
 
   Future<void> _exportSlidesAsPdf() async {
@@ -2290,10 +1880,7 @@ class _PowerPointStudioScreenState extends State<PowerPointStudioScreen> {
                   pw.SizedBox(height: 20),
                   pw.Text(s['content'] ?? '', style: const pw.TextStyle(fontSize: 18)),
                   pw.Spacer(),
-                  pw.Align(
-                    alignment: pw.Alignment.bottomRight,
-                    child: pw.Text('Slide ${i + 1} of ${_slides.length} • Bharat Scanner PPT Studio', style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey)),
-                  ),
+                  pw.Align(alignment: pw.Alignment.bottomRight, child: pw.Text('Slide ${i + 1} of ${_slides.length} • Bharat Scanner PPT Studio', style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey))),
                 ],
               ),
             );
@@ -2313,11 +1900,7 @@ class _PowerPointStudioScreenState extends State<PowerPointStudioScreen> {
       appBar: AppBar(
         title: const Text('PowerPoint Presentation Studio'),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.share_rounded, color: Color(0xFF00796B)),
-            tooltip: 'Export as PDF',
-            onPressed: _exportSlidesAsPdf,
-          ),
+          IconButton(icon: const Icon(Icons.share_rounded, color: Color(0xFF00796B)), tooltip: 'Export as PDF', onPressed: _exportSlidesAsPdf),
         ],
       ),
       body: ListView.builder(
@@ -2339,25 +1922,14 @@ class _PowerPointStudioScreenState extends State<PowerPointStudioScreen> {
                       IconButton(
                         icon: const Icon(Icons.delete_outline, color: Colors.redAccent, size: 20),
                         onPressed: () {
-                          if (_slides.length > 1) {
-                            setState(() => _slides.removeAt(i));
-                          }
+                          if (_slides.length > 1) setState(() => _slides.removeAt(i));
                         },
                       ),
                     ],
                   ),
-                  TextFormField(
-                    initialValue: _slides[i]['title'],
-                    decoration: const InputDecoration(labelText: 'Slide Title', border: OutlineInputBorder()),
-                    onChanged: (val) => _slides[i]['title'] = val,
-                  ),
+                  TextFormField(initialValue: _slides[i]['title'], decoration: const InputDecoration(labelText: 'Slide Title', border: OutlineInputBorder()), onChanged: (val) => _slides[i]['title'] = val),
                   const SizedBox(height: 10),
-                  TextFormField(
-                    initialValue: _slides[i]['content'],
-                    maxLines: 4,
-                    decoration: const InputDecoration(labelText: 'Content Bullets', border: OutlineInputBorder()),
-                    onChanged: (val) => _slides[i]['content'] = val,
-                  ),
+                  TextFormField(initialValue: _slides[i]['content'], maxLines: 4, decoration: const InputDecoration(labelText: 'Content Bullets', border: OutlineInputBorder()), onChanged: (val) => _slides[i]['content'] = val),
                 ],
               ),
             ),
@@ -2375,13 +1947,10 @@ class _PowerPointStudioScreenState extends State<PowerPointStudioScreen> {
   }
 }
 
-// ============================================================================
 // 8. TXT EDITOR & NOTES MAKER
-// ============================================================================
 class TxtEditorNotesScreen extends StatefulWidget {
   final bool isNotes;
   const TxtEditorNotesScreen({super.key, required this.isNotes});
-
   @override
   State<TxtEditorNotesScreen> createState() => _TxtEditorNotesScreenState();
 }
@@ -2404,38 +1973,15 @@ class _TxtEditorNotesScreenState extends State<TxtEditorNotesScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.isNotes ? 'Smart Notes' : 'TXT File Editor'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.save_rounded, color: Color(0xFF00796B)),
-            onPressed: _exportFile,
-          ),
-        ],
+        actions: [IconButton(icon: const Icon(Icons.save_rounded, color: Color(0xFF00796B)), onPressed: _exportFile)],
       ),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           children: [
-            TextField(
-              controller: _titleCtrl,
-              decoration: InputDecoration(
-                hintText: widget.isNotes ? 'Note Title...' : 'File Name...',
-                border: InputBorder.none,
-                hintStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
-              ),
-              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
-            ),
+            TextField(controller: _titleCtrl, decoration: InputDecoration(hintText: widget.isNotes ? 'Note Title...' : 'File Name...', border: InputBorder.none, hintStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
             const Divider(),
-            Expanded(
-              child: TextField(
-                controller: _bodyCtrl,
-                maxLines: null,
-                expands: true,
-                decoration: const InputDecoration(
-                  hintText: 'Start typing here...',
-                  border: InputBorder.none,
-                ),
-              ),
-            ),
+            Expanded(child: TextField(controller: _bodyCtrl, maxLines: null, expands: true, decoration: const InputDecoration(hintText: 'Start typing here...', border: InputBorder.none))),
           ],
         ),
       ),
@@ -2443,12 +1989,9 @@ class _TxtEditorNotesScreenState extends State<TxtEditorNotesScreen> {
   }
 }
 
-// ============================================================================
-// 9. PRO RESUME BUILDER (CV)
-// ============================================================================
+// 9. PRO RESUME BUILDER
 class ResumeBuilderScreen extends StatefulWidget {
   const ResumeBuilderScreen({super.key});
-
   @override
   State<ResumeBuilderScreen> createState() => _ResumeBuilderScreenState();
 }
@@ -2470,3 +2013,252 @@ class _ResumeBuilderScreenState extends State<ResumeBuilderScreen> {
         build: (pw.Context ctx) {
           return pw.Padding(
             padding: const pw.EdgeInsets.all(24),
+            child: pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                pw.Text(_name.text, style: pw.TextStyle(fontSize: 24, fontWeight: pw.FontWeight.bold, color: PdfColors.teal)),
+                pw.Text('${_phone.text} | ${_email.text}', style: const pw.TextStyle(fontSize: 11, color: PdfColors.grey700)),
+                pw.Divider(thickness: 1.5, color: PdfColors.teal),
+                pw.SizedBox(height: 10),
+                _buildPdfSection('Profile Summary', _summary.text),
+                _buildPdfSection('Work Experience', _experience.text),
+                _buildPdfSection('Education', _education.text),
+                _buildPdfSection('Skills & Competencies', _skills.text),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+
+    final dir = await getTemporaryDirectory();
+    final file = File("${dir.path}/Resume_${DateTime.now().millisecondsSinceEpoch}.pdf");
+    await file.writeAsBytes(await pdf.save());
+    await Share.shareXFiles([XFile(file.path)], text: 'Professional Resume');
+  }
+
+  pw.Widget _buildPdfSection(String title, String body) {
+    return pw.Container(
+      margin: const pw.EdgeInsets.only(bottom: 12),
+      child: pw.Column(
+        crossAxisAlignment: pw.CrossAxisAlignment.start,
+        children: [
+          pw.Text(title, style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold, color: PdfColors.teal)),
+          pw.SizedBox(height: 4),
+          pw.Text(body, style: const pw.TextStyle(fontSize: 11, lineSpacing: 2)),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Pro Resume Builder (CV)')),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            TextField(controller: _name, decoration: const InputDecoration(labelText: 'Full Name', border: OutlineInputBorder())),
+            const SizedBox(height: 10),
+            TextField(controller: _phone, decoration: const InputDecoration(labelText: 'Mobile Number', border: OutlineInputBorder())),
+            const SizedBox(height: 10),
+            TextField(controller: _email, decoration: const InputDecoration(labelText: 'Email Address', border: OutlineInputBorder())),
+            const SizedBox(height: 10),
+            TextField(controller: _summary, maxLines: 2, decoration: const InputDecoration(labelText: 'Profile Summary', border: OutlineInputBorder())),
+            const SizedBox(height: 10),
+            TextField(controller: _experience, maxLines: 3, decoration: const InputDecoration(labelText: 'Work Experience', border: OutlineInputBorder())),
+            const SizedBox(height: 10),
+            TextField(controller: _education, maxLines: 2, decoration: const InputDecoration(labelText: 'Education', border: OutlineInputBorder())),
+            const SizedBox(height: 10),
+            TextField(controller: _skills, decoration: const InputDecoration(labelText: 'Skills', border: OutlineInputBorder())),
+            const SizedBox(height: 20),
+            ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00796B), foregroundColor: Colors.white, minimumSize: const Size(double.infinity, 50)),
+              icon: const Icon(Icons.picture_as_pdf),
+              label: const Text('Generate Resume PDF'),
+              onPressed: _generateResumePdf,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// 10. INVOICE MAKER
+class InvoiceMakerProScreen extends StatefulWidget {
+  const InvoiceMakerProScreen({super.key});
+  @override
+  State<InvoiceMakerProScreen> createState() => _InvoiceMakerProScreenState();
+}
+
+class _InvoiceMakerProScreenState extends State<InvoiceMakerProScreen> {
+  final _clientName = TextEditingController(text: 'Client / Company Name');
+  final _invoiceNum = TextEditingController(text: 'INV-2026-001');
+  final _itemName = TextEditingController();
+  final _itemPrice = TextEditingController();
+  List<Map<String, dynamic>> items = [
+    {'name': 'Consulting Service', 'price': 1500.0},
+    {'name': 'Document Processing', 'price': 800.0},
+  ];
+
+  Future<void> _exportInvoicePdf() async {
+    final pdf = pw.Document();
+    double total = items.fold(0.0, (s, i) => s + (i['price'] as double));
+
+    pdf.addPage(
+      pw.Page(
+        pageFormat: PdfPageFormat.a4,
+        build: (pw.Context ctx) {
+          return pw.Padding(
+            padding: const pw.EdgeInsets.all(24),
+            child: pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                pw.Text('TAX INVOICE', style: pw.TextStyle(fontSize: 26, fontWeight: pw.FontWeight.bold, color: PdfColors.teal)),
+                pw.SizedBox(height: 8),
+                pw.Text('Invoice No: ${_invoiceNum.text}'),
+                pw.Text('Client: ${_clientName.text}'),
+                pw.Text('Date: ${DateFormat('dd MMM yyyy').format(DateTime.now())}'),
+                pw.Divider(thickness: 1.5, color: PdfColors.teal),
+                pw.SizedBox(height: 12),
+                pw.TableHelper.fromTextArray(
+                  headers: ['Item / Service Description', 'Amount (INR)'],
+                  data: items.map((e) => [e['name'], 'INR ${e['price']}']).toList(),
+                  headerStyle: pw.TextStyle(color: PdfColors.white, fontWeight: pw.FontWeight.bold),
+                  headerDecoration: const pw.BoxDecoration(color: PdfColors.teal),
+                ),
+                pw.SizedBox(height: 16),
+                pw.Align(
+                  alignment: pw.Alignment.centerRight,
+                  child: pw.Text('Total Amount: INR $total', style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold)),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+
+    final dir = await getTemporaryDirectory();
+    final file = File("${dir.path}/Invoice_${DateTime.now().millisecondsSinceEpoch}.pdf");
+    await file.writeAsBytes(await pdf.save());
+    await Share.shareXFiles([XFile(file.path)], text: 'Tax Invoice PDF');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Invoice & Bill Maker')),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            TextField(controller: _clientName, decoration: const InputDecoration(labelText: 'Client Name', border: OutlineInputBorder())),
+            const SizedBox(height: 10),
+            TextField(controller: _invoiceNum, decoration: const InputDecoration(labelText: 'Invoice Number', border: OutlineInputBorder())),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(child: TextField(controller: _itemName, decoration: const InputDecoration(labelText: 'Item Name', border: OutlineInputBorder()))),
+                const SizedBox(width: 8),
+                Expanded(child: TextField(controller: _itemPrice, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Price (INR)', border: OutlineInputBorder()))),
+                IconButton(
+                  icon: const Icon(Icons.add_circle, color: Color(0xFF00796B), size: 36),
+                  onPressed: () {
+                    if (_itemName.text.isNotEmpty && _itemPrice.text.isNotEmpty) {
+                      setState(() {
+                        items.add({'name': _itemName.text.trim(), 'price': double.tryParse(_itemPrice.text.trim()) ?? 0.0});
+                        _itemName.clear();
+                        _itemPrice.clear();
+                      });
+                    }
+                  },
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            ...items.map((i) => ListTile(
+                  title: Text(i['name']),
+                  trailing: Text('INR ${i['price']}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                )),
+            const SizedBox(height: 20),
+            ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00796B), foregroundColor: Colors.white, minimumSize: const Size(double.infinity, 50)),
+              icon: const Icon(Icons.picture_as_pdf),
+              label: const Text('Generate Invoice PDF'),
+              onPressed: items.isEmpty ? null : _exportInvoicePdf,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// 11. LETTER TEMPLATES
+class LetterTemplatesScreen extends StatefulWidget {
+  const LetterTemplatesScreen({super.key});
+  @override
+  State<LetterTemplatesScreen> createState() => _LetterTemplatesScreenState();
+}
+
+class _LetterTemplatesScreenState extends State<LetterTemplatesScreen> {
+  final _letterCtrl = TextEditingController(
+    text: "To,\nThe Manager,\nSubject: Leave Application\n\nDear Sir/Madam,\nI am writing to formally request 2 days of leave due to urgent personal work.\n\nThank you.\nSincerely,\n[Your Name]",
+  );
+
+  Future<void> _exportLetterPdf() async {
+    final pdf = pw.Document();
+    pdf.addPage(
+      pw.Page(
+        pageFormat: PdfPageFormat.a4,
+        build: (pw.Context ctx) => pw.Padding(
+          padding: const pw.EdgeInsets.all(32),
+          child: pw.Text(_letterCtrl.text, style: const pw.TextStyle(fontSize: 14, lineSpacing: 3)),
+        ),
+      ),
+    );
+    final dir = await getTemporaryDirectory();
+    final file = File("${dir.path}/Letter_${DateTime.now().millisecondsSinceEpoch}.pdf");
+    await file.writeAsBytes(await pdf.save());
+    await Share.shareXFiles([XFile(file.path)], text: 'Formal Letter PDF');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Letter Maker Templates'),
+        actions: [
+          IconButton(icon: const Icon(Icons.share, color: Color(0xFF00796B)), onPressed: _exportLetterPdf),
+        ],
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            Wrap(
+              spacing: 8,
+              children: [
+                ActionChip(
+                  label: const Text('Leave Application'),
+                  onPressed: () => setState(() => _letterCtrl.text = "To,\nThe HR Manager,\nSubject: Request for Leave\n\nRespected Sir/Madam,\nPlease grant me leave for 2 days due to an urgent family matter.\n\nRegards,\n[Your Name]"),
+                ),
+                ActionChip(
+                  label: const Text('Resignation Letter'),
+                  onPressed: () => setState(() => _letterCtrl.text = "To,\nThe HR Manager,\nSubject: Formal Resignation\n\nDear Sir/Madam,\nPlease accept this letter as formal notification that I am resigning from my position."),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Expanded(
+              child: TextField(controller: _letterCtrl, maxLines: null, expands: true, decoration: const InputDecoration(border: OutlineInputBorder())),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
