@@ -321,7 +321,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       }
     } catch (e) {
       debugPrint("Scan Error: $e");
-      _showToast('Scanner cancelled or not supported');
+      _showToast('Scanner cancelled');
     }
   }
 
@@ -368,7 +368,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     );
   }
 
-  // ---------------- AI OCR + DEVANAGARI (HINDI) + SMART SUMMARY ----------------
+  // ---------------- AI OCR + SMART SUMMARY (ERROR-FREE VERSION) ----------------
   Future<void> _extractTextWithAI(String imagePath) async {
     showDialog(
       context: context,
@@ -382,7 +382,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
               children: [
                 CircularProgressIndicator(color: Color(0xFF00796B)),
                 SizedBox(height: 16),
-                Text('AI scanning text (Hindi & English)...', style: TextStyle(fontWeight: FontWeight.bold)),
+                Text('AI scanning text from image...', style: TextStyle(fontWeight: FontWeight.bold)),
               ],
             ),
           ),
@@ -393,8 +393,8 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     String extractedText = '';
     try {
       final inputImage = InputImage.fromFilePath(imagePath);
-      // Devanagari Script for Hindi/Sanskrit/Marathi support + Latin fallback
-      final textRecognizer = TextRecognizer(script: TextRecognitionScript.devanagari);
+      // यूनिवर्सल टेक्स्ट रिकॉग्नाइज़र
+      final textRecognizer = TextRecognizer();
       final RecognizedText recognizedText = await textRecognizer.processImage(inputImage);
       await textRecognizer.close();
       extractedText = recognizedText.text;
@@ -451,7 +451,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                   ],
                 ),
                 const Divider(),
-                // Smart AI Action Buttons
                 Row(
                   children: [
                     Expanded(
@@ -488,7 +487,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                       filled: true,
                       fillColor: Colors.grey.shade50,
                       border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                      hintText: 'Recognized text will appear here...',
+                      hintText: 'Recognized text...',
                     ),
                   ),
                 ),
@@ -511,7 +510,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     );
   }
 
-  // स्मार्ट AI समराइज़र लॉजिक
   String _generateSmartSummary(String original) {
     if (original.length < 50) return original;
     final sentences = original.split(RegExp(r'(?<=[.!?\n])'));
@@ -526,7 +524,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     return "⚡ Key Takeaways:\n$bulletPoints";
   }
 
-  // ---------------- PLAY STORE COMPLIANT PDF EXPORT & SAVE ----------------
+  // ---------------- PLAY STORE COMPLIANT PDF ----------------
   Future<String?> _savePdfToDeviceStorage(List images, String title) async {
     try {
       final pdf = pw.Document();
@@ -549,7 +547,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       final savedFile = File('${appDir.path}/$safeName.pdf');
       await savedFile.writeAsBytes(bytes);
 
-      // Play Store Compliant Share/Save
       await Share.shareXFiles(
         [XFile(savedFile.path)],
         subject: '$title - Bharat Scanner AI',
@@ -739,7 +736,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     );
   }
 
-  // ---------------- वास्तविक काम करने वाला डिजिटल सिग्नेचर ----------------
+  // ---------------- काम करने वाला डिजिटल सिग्नेचर ----------------
   void _openSignaturePad() {
     List<Offset?> points = [];
 
@@ -1381,7 +1378,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
               onTap: () => _startDocScan(),
             ),
             _buildToolCard(
-              title: 'Hindi/Eng OCR',
+              title: 'AI OCR',
               subtitle: 'Extract Words',
               icon: Icons.auto_awesome,
               iconColor: const Color(0xFF6A1B9A),
@@ -1473,262 +1470,4 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
         decoration: BoxDecoration(
           color: Colors.white,
           borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: Colors.grey.shade200, width: 1.2),
-        ),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Container(
-              padding: const EdgeInsets.all(9),
-              decoration: BoxDecoration(shape: BoxShape.circle, color: iconColor.withOpacity(0.08)),
-              child: Icon(icon, color: iconColor, size: 24),
-            ),
-            const SizedBox(height: 6),
-            Text(title, textAlign: TextAlign.center, maxLines: 1, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 2),
-            Text(subtitle, textAlign: TextAlign.center, maxLines: 1, style: TextStyle(fontSize: 10, color: Colors.grey.shade500)),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-// ---------------- 3. डॉक्यूमेंट व्यूअर (FULL SCREEN DOCUMENT VIEWER) ----------------
-class DocumentDetailScreen extends StatefulWidget {
-  final Map<String, dynamic> doc;
-  final VoidCallback onDelete;
-  final Function(Map<String, dynamic>) onDocUpdated;
-  final Function(String) onExtractText;
-  final Function(List, String) onSharePdf;
-  final Function(List, String) onSaveToStorage;
-
-  const DocumentDetailScreen({
-    super.key,
-    required this.doc,
-    required this.onDelete,
-    required this.onDocUpdated,
-    required this.onExtractText,
-    required this.onSharePdf,
-    required this.onSaveToStorage,
-  });
-
-  @override
-  State<DocumentDetailScreen> createState() => _DocumentDetailScreenState();
-}
-
-class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
-  late PageController _pageController;
-  int _currentPage = 0;
-  late List<String> _images;
-  late String _title;
-
-  @override
-  void initState() {
-    super.initState();
-    _images = List<String>.from(widget.doc['images'] ?? []);
-    _title = widget.doc['title'] ?? 'Document';
-    _pageController = PageController();
-  }
-
-  Future<void> _addMorePages() async {
-    final scanner = DocumentScanner(
-      options: DocumentScannerOptions(
-        documentFormat: DocumentFormat.jpeg,
-        mode: ScannerMode.full,
-        isGalleryImport: true,
-        pageLimit: 20,
-      ),
-    );
-
-    try {
-      final result = await scanner.scanDocument();
-      if (result?.images != null && result!.images.isNotEmpty) {
-        final appDir = await getApplicationDocumentsDirectory();
-        final scansDir = Directory('${appDir.path}/scans');
-
-        List<String> newAdded = [];
-        for (int i = 0; i < result!.images.length; i++) {
-          final tempFile = File(result.images[i]);
-          if (await tempFile.exists()) {
-            final fileName = 'doc_${DateTime.now().millisecondsSinceEpoch}_p$i.jpg';
-            final saved = await tempFile.copy('${scansDir.path}/$fileName');
-            newAdded.add(saved.path);
-          }
-        }
-
-        setState(() {
-          _images.addAll(newAdded);
-          widget.doc['images'] = _images;
-          widget.doc['pages'] = _images.length;
-        });
-
-        widget.onDocUpdated(widget.doc);
-      }
-    } catch (e) {
-      debugPrint("Add pages error: $e");
-    }
-  }
-
-  void _renameDoc() {
-    final ctrl = TextEditingController(text: _title);
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Rename Document'),
-        content: TextField(controller: ctrl, decoration: const InputDecoration(border: OutlineInputBorder())),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          ElevatedButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-              setState(() {
-                _title = ctrl.text.trim();
-                widget.doc['title'] = _title;
-              });
-              widget.onDocUpdated(widget.doc);
-            },
-            child: const Text('Save'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  @override
-  void dispose() {
-    _pageController.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFF141414),
-      appBar: AppBar(
-        backgroundColor: Colors.black,
-        foregroundColor: Colors.white,
-        title: InkWell(
-          onTap: _renameDoc,
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Flexible(
-                child: Text(_title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis),
-              ),
-              const SizedBox(width: 6),
-              const Icon(Icons.edit, size: 15, color: Colors.white70),
-            ],
-          ),
-        ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.add_photo_alternate_outlined),
-            tooltip: 'Add Pages',
-            onPressed: _addMorePages,
-          ),
-          IconButton(
-            icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
-            tooltip: 'Delete',
-            onPressed: () {
-              Navigator.pop(context);
-              widget.onDelete();
-            },
-          ),
-        ],
-      ),
-      body: _images.isEmpty
-          ? const Center(child: Text('No images available', style: TextStyle(color: Colors.white)))
-          : Column(
-              children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(vertical: 6),
-                  color: Colors.black38,
-                  child: Center(
-                    child: Text(
-                      'Page ${_currentPage + 1} of ${_images.length}',
-                      style: const TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.bold),
-                    ),
-                  ),
-                ),
-                Expanded(
-                  child: PageView.builder(
-                    controller: _pageController,
-                    itemCount: _images.length,
-                    onPageChanged: (i) => setState(() => _currentPage = i),
-                    itemBuilder: (ctx, i) {
-                      final file = File(_images[i]);
-                      if (!file.existsSync()) {
-                        return const Center(child: Text('Image file not found', style: TextStyle(color: Colors.white)));
-                      }
-                      return InteractiveViewer(
-                        panEnabled: true,
-                        minScale: 0.8,
-                        maxScale: 4.0,
-                        child: Center(child: Image.file(file, fit: BoxFit.contain)),
-                      );
-                    },
-                  ),
-                ),
-              ],
-            ),
-      bottomNavigationBar: Container(
-        color: Colors.black,
-        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
-        child: SafeArea(
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
-            children: [
-              _buildBottomAction(Icons.share_rounded, 'Share PDF', () {
-                widget.onSaveToStorage(_images, _title);
-              }),
-              _buildBottomAction(Icons.auto_awesome, 'AI OCR', () {
-                if (_images.isNotEmpty) {
-                  widget.onExtractText(_images[_currentPage]);
-                }
-              }),
-              _buildBottomAction(Icons.add_a_photo_rounded, 'Add Page', _addMorePages),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildBottomAction(IconData icon, String label, VoidCallback onTap) {
-    return InkWell(
-      onTap: onTap,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, color: const Color(0xFF80CBC4), size: 22),
-          const SizedBox(height: 4),
-          Text(label, style: const TextStyle(color: Colors.white, fontSize: 11)),
-        ],
-      ),
-    );
-  }
-}
-
-// ---------------- 4. डिजिटल सिग्नेचर पेंटर ----------------
-class SignaturePainter extends CustomPainter {
-  final List<Offset?> points;
-  SignaturePainter(this.points);
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    Paint paint = Paint()
-      ..color = const Color(0xFF004D40)
-      ..strokeCap = StrokeCap.round
-      ..strokeWidth = 3.5;
-
-    for (int i = 0; i < points.length - 1; i++) {
-      if (points[i] != null && points[i + 1] != null) {
-        canvas.drawLine(points[i]!, points[i + 1]!, paint);
-      }
-    }
-  }
-
-  @override
-  bool shouldRepaint(SignaturePainter oldDelegate) => true;
-}
+          border: Border.all(color: Colors.grey.shade200
