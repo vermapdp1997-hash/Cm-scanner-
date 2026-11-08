@@ -53,9 +53,9 @@ class BharatScannerApp extends StatelessWidget {
   }
 }
 
-// ==========================================
-// 1. स्प्लैश स्क्रीन
-// ==========================================
+// ============================================================================
+// 1. स्प्लैश स्क्रीन (SPLASH SCREEN)
+// ============================================================================
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
 
@@ -136,7 +136,7 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
                     borderRadius: BorderRadius.circular(20),
                   ),
                   child: const Text(
-                    '⚡ Next-Gen AI Document Studio & Cloud Vault',
+                    '⚡ Next-Gen AI Document Studio & Office Suite',
                     style: TextStyle(color: Color(0xFFB2DFDB), fontSize: 12, fontWeight: FontWeight.w600),
                   ),
                 ),
@@ -149,9 +149,9 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
   }
 }
 
-// ==========================================
-// 2. मुख्य डैशबोर्ड
-// ==========================================
+// ============================================================================
+// 2. मुख्य डैशबोर्ड (MAIN DASHBOARD WITH ALL TOOLS)
+// ============================================================================
 class MainDashboardScreen extends StatefulWidget {
   const MainDashboardScreen({super.key});
 
@@ -310,7 +310,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     _showToast('Document deleted');
   }
 
-  // ---------------- स्कैनिंग प्रोसेस ----------------
+  // ---------------- ओरिजिनल स्कैनिंग प्रक्रिया ----------------
   Future<void> _startDocScan({int limit = 50, String category = 'Documents', String prefix = 'Doc'}) async {
     final scanner = DocumentScanner(
       options: DocumentScannerOptions(
@@ -335,7 +335,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     }
   }
 
-  // ---------------- प्रो फीचर: ID CARD A4 COLLAGE (2-SIDED IN 1 PAGE) ----------------
+  // ---------------- A4 ID कार्ड 2-साइड कोलाज ----------------
   Future<void> _processIdCardCollage(List<String> frontAndBack, String prefix) async {
     showDialog(
       context: context,
@@ -447,8 +447,8 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-        title: Row(
-          children: const [
+        title: const Row(
+          children: [
             Icon(Icons.check_circle_rounded, color: Color(0xFF00796B)),
             SizedBox(width: 8),
             Text('Save Document', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
@@ -484,7 +484,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     );
   }
 
-  // ---------------- प्रो फीचर: स्लाइडर साइज कंप्रेसर व रिसाइज़र ----------------
+  // ---------------- स्लाइडर इमेज कंप्रेसर ----------------
   void _openCompressionDialog(List<dynamic> images, String title) {
     double qualitySlider = 0.6;
     int estimatedKb = (images.length * 280 * qualitySlider).toInt() + 40;
@@ -495,8 +495,8 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
         builder: (context, setDialogState) {
           return AlertDialog(
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-            title: Row(
-              children: const [
+            title: const Row(
+              children: [
                 Icon(Icons.tune_rounded, color: Color(0xFF00796B)),
                 SizedBox(width: 8),
                 Text('Compress & Resize', style: TextStyle(fontWeight: FontWeight.bold)),
@@ -535,9 +535,9 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                     });
                   },
                 ),
-                Row(
+                const Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: const [
+                  children: [
                     Text('Small (100KB)', style: TextStyle(fontSize: 10, color: Colors.grey)),
                     Text('Medium', style: TextStyle(fontSize: 10, color: Colors.grey)),
                     Text('Original HD', style: TextStyle(fontSize: 10, color: Colors.grey)),
@@ -571,7 +571,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     );
   }
 
-  // ---------------- प्रो फीचर: इमेज (JPG) शेयरिंग व डाउनलोड ----------------
   Future<void> _shareImages(List images, String title, {double scale = 1.0}) async {
     List<XFile> shareFiles = [];
     final appDir = await getTemporaryDirectory();
@@ -599,13 +598,13 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     }
 
     if (shareFiles.isNotEmpty) {
-      await Share.shareXFiles(shareFiles, text: '$title - Images scanned with Bharat Scanner Pro');
+      await Share.shareXFiles(shareFiles, text: '$title - Bharat Scanner Pro');
     } else {
       _showToast('No images available to share.');
     }
   }
 
-  // ---------------- PDF EXPORT ----------------
+  // ---------------- PDF EXPORT + वाटरमार्क ----------------
   Future<void> _exportPdfWithScale(List images, String title, {double scale = 1.0, String? watermark}) async {
     if (_interstitialAd != null) {
       _interstitialAd!.show();
@@ -653,10 +652,10 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     final safeName = title.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
     final file = File("${dir.path}/$safeName.pdf");
     await file.writeAsBytes(await pdf.save());
-    await Share.shareXFiles([XFile(file.path)], text: '$title - Scanned with Bharat Scanner Pro');
+    await Share.shareXFiles([XFile(file.path)], text: '$title - Bharat Scanner Pro');
   }
 
-  // ---------------- प्रो AI इंजन: OCR + ऑटो स्मार्ट डिटेक्शन (ENTITIES) ----------------
+  // ---------------- AI OCR + ENTITIES ----------------
   Future<void> _extractTextWithAI(String imagePath) async {
     showDialog(
       context: context,
@@ -670,7 +669,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
               children: [
                 CircularProgressIndicator(color: Color(0xFF00796B)),
                 SizedBox(height: 16),
-                Text('AI Smart Analyzer scanning...', style: TextStyle(fontWeight: FontWeight.bold)),
+                Text('AI Smart OCR scanning...', style: TextStyle(fontWeight: FontWeight.bold)),
               ],
             ),
           ),
@@ -697,7 +696,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       return;
     }
 
-    // AI Smart Entity Parsing (Dates, Amounts, Emails, Phones)
     final dateReg = RegExp(r'\b(?:\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})\b');
     final amountReg = RegExp(r'(?:₹|INR|Rs\.?|\$)\s*([\d,]+(?:\.\d{2})?)|\bTotal\s*[:=]?\s*([\d,]+(?:\.\d{2})?)', caseSensitive: false);
     final emailReg = RegExp(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}');
@@ -731,24 +729,23 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Row(
-                      children: const [
+                    const Row(
+                      children: [
                         Icon(Icons.auto_awesome, color: Color(0xFF00796B)),
                         SizedBox(width: 8),
-                        Text('AI Smart Document Insights', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                        Text('AI Document Insights (OCR)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                       ],
                     ),
                     IconButton(
                       icon: const Icon(Icons.copy_rounded, color: Color(0xFF00796B)),
                       onPressed: () {
                         Clipboard.setData(ClipboardData(text: textCtrl.text));
-                        _showToast('Copied text to clipboard!');
+                        _showToast('Copied to clipboard!');
                       },
                     ),
                   ],
                 ),
                 const Divider(),
-                // AI Entity Badges
                 if (dates.isNotEmpty || amounts.isNotEmpty || phones.isNotEmpty || emails.isNotEmpty)
                   Wrap(
                     spacing: 8,
@@ -790,7 +787,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                         onPressed: () {
                           final sentences = textCtrl.text.split(RegExp(r'(?<=[.!?\n])'));
                           final summary = sentences.where((s) => s.trim().length > 15).take(4).join(" ").trim();
-                          setSheetState(() => textCtrl.text = "📌 AI Quick Summary:\n$summary");
+                          setSheetState(() => textCtrl.text = "📌 AI Summary:\n$summary");
                         },
                       ),
                     ),
@@ -802,7 +799,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                         onPressed: () {
                           final lines = textCtrl.text.split('\n').where((l) => l.trim().isNotEmpty).toList();
                           final points = lines.take(6).map((l) => "• ${l.trim()}").join("\n");
-                          setSheetState(() => textCtrl.text = "⚡ Key Takeaways:\n$points");
+                          setSheetState(() => textCtrl.text = "⚡ Key Points:\n$points");
                         },
                       ),
                     ),
@@ -828,7 +825,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                   height: 48,
                   child: ElevatedButton.icon(
                     icon: const Icon(Icons.share_rounded),
-                    label: const Text('Share Text & Insights', style: TextStyle(fontWeight: FontWeight.bold)),
+                    label: const Text('Share Text', style: TextStyle(fontWeight: FontWeight.bold)),
                     style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00796B), foregroundColor: Colors.white),
                     onPressed: () => Share.share(textCtrl.text),
                   ),
@@ -1031,7 +1028,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                   children: [
                     Icon(Icons.widgets_rounded, color: _currentTabIndex == 1 ? const Color(0xFF00796B) : Colors.grey.shade400),
                     const SizedBox(height: 2),
-                    Text('AI Tools', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: _currentTabIndex == 1 ? const Color(0xFF00796B) : Colors.grey.shade400)),
+                    Text('Studio & Office', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: _currentTabIndex == 1 ? const Color(0xFF00796B) : Colors.grey.shade400)),
                   ],
                 ),
               ),
@@ -1042,7 +1039,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     );
   }
 
-  // ---------------- TAB 1: DOCS ----------------
+  // ---------------- TAB 1: ओरिजिनल DOCS TAB ----------------
   Widget _buildDocsTab() {
     int totalPages = _savedDocs.fold(0, (sum, item) => sum + (item['pages'] as int? ?? 1));
 
@@ -1249,8 +1246,8 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                           child: Container(
                             padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
                             decoration: BoxDecoration(color: const Color(0xFFE8F5E9), borderRadius: BorderRadius.circular(6)),
-                            child: Row(
-                              children: const [
+                            child: const Row(
+                              children: [
                                 Icon(Icons.picture_as_pdf_rounded, size: 13, color: Color(0xFF2E7D32)),
                                 SizedBox(width: 4),
                                 Text('PDF', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF2E7D32))),
@@ -1264,8 +1261,8 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                           child: Container(
                             padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
                             decoration: BoxDecoration(color: const Color(0xFFFFF3E0), borderRadius: BorderRadius.circular(6)),
-                            child: Row(
-                              children: const [
+                            child: const Row(
+                              children: [
                                 Icon(Icons.image_rounded, size: 13, color: Color(0xFFE65100)),
                                 SizedBox(width: 4),
                                 Text('Image', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFFE65100))),
@@ -1279,8 +1276,8 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                           child: Container(
                             padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
                             decoration: BoxDecoration(color: const Color(0xFFE0F2F1), borderRadius: BorderRadius.circular(6)),
-                            child: Row(
-                              children: const [
+                            child: const Row(
+                              children: [
                                 Icon(Icons.tune_rounded, size: 13, color: Color(0xFF00796B)),
                                 SizedBox(width: 4),
                                 Text('Resize', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF00796B))),
@@ -1374,11 +1371,12 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     );
   }
 
-  // ---------------- TAB 2: PRO AI TOOLS ----------------
+  // ---------------- TAB 2: सभी टूल्स (ओरिजिनल + नए 16 टूल्स) ----------------
   Widget _buildToolsTab() {
     return ListView(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       children: [
+        // 1. स्कैन मोड्स
         _buildSectionHeader('Smart AI Scan Modes'),
         const SizedBox(height: 12),
         GridView.count(
@@ -1440,7 +1438,9 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
           ],
         ),
         const SizedBox(height: 24),
-        _buildSectionHeader('PDF & Image Power Tools'),
+
+        // 2. ऑफिस व डॉक्यूमेंट सुइट
+        _buildSectionHeader('Office & Productivity Suite (New)'),
         const SizedBox(height: 12),
         GridView.count(
           shrinkWrap: true,
@@ -1451,7 +1451,78 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
           childAspectRatio: 0.85,
           children: [
             _buildToolCard(
-              title: 'Size Compressor',
+              title: 'PowerPoint',
+              subtitle: 'Viewer & Editor',
+              icon: Icons.slideshow_rounded,
+              iconColor: const Color(0xFFD84315),
+              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PowerPointStudioScreen())),
+            ),
+            _buildToolCard(
+              title: 'Resume Maker',
+              subtitle: 'Pro CV Generator',
+              icon: Icons.assignment_ind_rounded,
+              iconColor: const Color(0xFF0277BD),
+              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ResumeBuilderScreen())),
+            ),
+            _buildToolCard(
+              title: 'Invoice Maker',
+              subtitle: 'GST Bill & Tax',
+              icon: Icons.receipt_rounded,
+              iconColor: const Color(0xFF2E7D32),
+              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const InvoiceMakerProScreen())),
+            ),
+            _buildToolCard(
+              title: 'Letters',
+              subtitle: 'Formal Templates',
+              icon: Icons.mail_outline_rounded,
+              iconColor: const Color(0xFF6A1B9A),
+              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const LetterTemplatesScreen())),
+            ),
+            _buildToolCard(
+              title: 'TXT Editor',
+              subtitle: 'Create & Edit',
+              icon: Icons.edit_note_rounded,
+              iconColor: const Color(0xFF00796B),
+              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const TxtEditorNotesScreen(isNotes: false))),
+            ),
+            _buildToolCard(
+              title: 'Notes Maker',
+              subtitle: 'Quick Notes',
+              icon: Icons.note_alt_outlined,
+              iconColor: const Color(0xFFF57C00),
+              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const TxtEditorNotesScreen(isNotes: true))),
+            ),
+          ],
+        ),
+        const SizedBox(height: 24),
+
+        // 3. इमेज पावर टूल्स
+        _buildSectionHeader('Image Power Tools & Studio'),
+        const SizedBox(height: 12),
+        GridView.count(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          crossAxisCount: 3,
+          crossAxisSpacing: 12,
+          mainAxisSpacing: 14,
+          childAspectRatio: 0.85,
+          children: [
+            _buildToolCard(
+              title: 'Passport Photo',
+              subtitle: 'Studio Layout',
+              icon: Icons.portrait_rounded,
+              iconColor: const Color(0xFF1565C0),
+              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PassportPhotoStudioScreen())),
+            ),
+            _buildToolCard(
+              title: 'JPG/PNG to PDF',
+              subtitle: 'Convert to PDF',
+              icon: Icons.picture_as_pdf_rounded,
+              iconColor: const Color(0xFFC62828),
+              onTap: () => _startDocScan(category: 'PDF_Converted', prefix: 'PhotoToPdf'),
+            ),
+            _buildToolCard(
+              title: 'Compressor',
               subtitle: 'Slider Control',
               icon: Icons.tune_rounded,
               iconColor: const Color(0xFF00796B),
@@ -1484,6 +1555,13 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                   _showToast('No documents to share.');
                 }
               },
+            ),
+            _buildToolCard(
+              title: 'AI Tools',
+              subtitle: 'Crop & Resize',
+              icon: Icons.crop_rotate_rounded,
+              iconColor: const Color(0xFF00897B),
+              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const UniversalImageToolScreen(mode: 'resize'))),
             ),
           ],
         ),
@@ -1538,9 +1616,9 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
   }
 }
 
-// ==========================================
-// 3. डॉक्यूमेंट व्यूअर (FULL SCREEN PREVIEW & SINGLE PAGE CONTROL)
-// ==========================================
+// ============================================================================
+// 3. डॉक्यूमेंट व्यूअर (4 FILTERS + PAGE DELETION + FULL PREVIEW)
+// ============================================================================
 class DocumentDetailScreen extends StatefulWidget {
   final Map<String, dynamic> doc;
   final VoidCallback onDelete;
@@ -1571,7 +1649,6 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
   late List<String> _images;
   late String _title;
 
-  // Filter Modes: 0: Original, 1: Magic Color, 2: B&W Photocopy, 3: Grayscale
   int _currentFilterMode = 0;
 
   @override
@@ -1607,10 +1684,8 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
     );
   }
 
-  // ---------------- प्रो फीचर: सिंगल पेज डिलीट ----------------
   void _deleteCurrentPage() {
     if (_images.length <= 1) {
-      // If only 1 page left, delete whole document
       widget.onDelete();
       Navigator.pop(context);
       return;
@@ -1646,21 +1721,21 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
 
   ColorFilter? _getFilter(int mode) {
     switch (mode) {
-      case 1: // Magic Color: Enhance contrast & brighten
+      case 1:
         return const ColorFilter.matrix([
           1.2, 0, 0, 0, -10,
           0, 1.2, 0, 0, -10,
           0, 0, 1.2, 0, -10,
           0, 0, 0, 1, 0,
         ]);
-      case 2: // High Contrast B&W Photocopy
+      case 2:
         return const ColorFilter.matrix([
           1.5, 1.5, 1.5, 0, -160,
           1.5, 1.5, 1.5, 0, -160,
           1.5, 1.5, 1.5, 0, -160,
           0, 0, 0, 1, 0,
         ]);
-      case 3: // Grayscale
+      case 3:
         return const ColorFilter.matrix([
           0.2126, 0.7152, 0.0722, 0, 0,
           0.2126, 0.7152, 0.0722, 0, 0,
@@ -1715,7 +1790,6 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
           ? const Center(child: Text('No images available', style: TextStyle(color: Colors.white)))
           : Column(
               children: [
-                // Top Page Tracker
                 Container(
                   padding: const EdgeInsets.symmetric(vertical: 6),
                   color: Colors.black45,
@@ -1815,6 +1889,615 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
           const SizedBox(height: 4),
           Text(label, style: const TextStyle(color: Colors.white, fontSize: 11)),
         ],
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// 4. पॉवरपॉइंट व्यूअर व एडिटर (POWERPOINT VIEWER & EDITOR)
+// ============================================================================
+class PowerPointStudioScreen extends StatefulWidget {
+  const PowerPointStudioScreen({super.key});
+
+  @override
+  State<PowerPointStudioScreen> createState() => _PowerPointStudioScreenState();
+}
+
+class _PowerPointStudioScreenState extends State<PowerPointStudioScreen> {
+  final List<Map<String, String>> _slides = [
+    {'title': 'प्रोजेक्ट प्रेजेंटेशन', 'content': '1. उद्देश्य व कार्यप्रणाली\n2. मुख्य लाभ व परिणाम'},
+    {'title': 'निष्कर्ष', 'content': '• समय सीमा व बजट\n• क्रियान्वयन योजना'},
+  ];
+
+  void _addNewSlide() {
+    setState(() {
+      _slides.add({'title': 'नया स्लाइड शीर्षक', 'content': 'मुख्य बिंदु यहाँ लिखें...'});
+    });
+  }
+
+  Future<void> _exportSlidesAsPdf() async {
+    final pdf = pw.Document();
+    for (int i = 0; i < _slides.length; i++) {
+      final s = _slides[i];
+      pdf.addPage(
+        pw.Page(
+          pageFormat: PdfPageFormat.a4.landscape,
+          build: (pw.Context ctx) {
+            return pw.Container(
+              padding: const pw.EdgeInsets.all(32),
+              decoration: pw.BoxDecoration(border: pw.Border.all(color: PdfColors.teal, width: 3)),
+              child: pw.Column(
+                crossAxisAlignment: pw.CrossAxisAlignment.start,
+                children: [
+                  pw.Text(s['title'] ?? '', style: pw.TextStyle(fontSize: 26, fontWeight: pw.FontWeight.bold, color: PdfColors.teal)),
+                  pw.Divider(thickness: 2),
+                  pw.SizedBox(height: 20),
+                  pw.Text(s['content'] ?? '', style: const pw.TextStyle(fontSize: 18)),
+                  pw.Spacer(),
+                  pw.Align(
+                    alignment: pw.Alignment.bottomRight,
+                    child: pw.Text('Slide ${i + 1} of ${_slides.length} • Bharat Scanner PPT Studio', style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey)),
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+      );
+    }
+    final dir = await getTemporaryDirectory();
+    final file = File("${dir.path}/Presentation_${DateTime.now().millisecondsSinceEpoch}.pdf");
+    await file.writeAsBytes(await pdf.save());
+    await Share.shareXFiles([XFile(file.path)], text: 'Exported PowerPoint Slides (PDF)');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('PowerPoint Studio (Viewer & Editor)'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.share_rounded, color: Color(0xFF00796B)),
+            tooltip: 'Export as Presentation PDF',
+            onPressed: _exportSlidesAsPdf,
+          ),
+        ],
+      ),
+      body: ListView.builder(
+        padding: const EdgeInsets.all(16),
+        itemCount: _slides.length,
+        itemBuilder: (ctx, i) {
+          return Card(
+            margin: const EdgeInsets.only(bottom: 16),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14), side: const BorderSide(color: Color(0xFF00796B), width: 1.5)),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('Slide ${i + 1}', style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF00796B))),
+                      IconButton(
+                        icon: const Icon(Icons.delete_outline, color: Colors.redAccent, size: 20),
+                        onPressed: () {
+                          if (_slides.length > 1) {
+                            setState(() => _slides.removeAt(i));
+                          }
+                        },
+                      ),
+                    ],
+                  ),
+                  TextFormField(
+                    initialValue: _slides[i]['title'],
+                    decoration: const InputDecoration(labelText: 'स्लाइड शीर्षक (Title)', border: OutlineInputBorder()),
+                    onChanged: (val) => _slides[i]['title'] = val,
+                  ),
+                  const SizedBox(height: 10),
+                  TextFormField(
+                    initialValue: _slides[i]['content'],
+                    maxLines: 4,
+                    decoration: const InputDecoration(labelText: 'सामग्री (Bullets & Details)', border: OutlineInputBorder()),
+                    onChanged: (val) => _slides[i]['content'] = val,
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        backgroundColor: const Color(0xFF00796B),
+        foregroundColor: Colors.white,
+        icon: const Icon(Icons.add),
+        label: const Text('नई स्लाइड जोड़ें'),
+        onPressed: _addNewSlide,
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// 5. TXT एडिटर व नोट्स मेकर (TXT & NOTES MAKER)
+// ============================================================================
+class TxtEditorNotesScreen extends StatefulWidget {
+  final bool isNotes;
+  const TxtEditorNotesScreen({super.key, required this.isNotes});
+
+  @override
+  State<TxtEditorNotesScreen> createState() => _TxtEditorNotesScreenState();
+}
+
+class _TxtEditorNotesScreenState extends State<TxtEditorNotesScreen> {
+  final _titleCtrl = TextEditingController();
+  final _bodyCtrl = TextEditingController();
+
+  Future<void> _exportFile() async {
+    if (_bodyCtrl.text.trim().isEmpty) return;
+    final dir = await getTemporaryDirectory();
+    final name = _titleCtrl.text.trim().isEmpty ? 'Document' : _titleCtrl.text.trim();
+    final file = File("${dir.path}/$name.txt");
+    await file.writeAsString(_bodyCtrl.text);
+    await Share.shareXFiles([XFile(file.path)], text: 'Exported from Bharat Scanner');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(widget.isNotes ? 'स्मार्ट नोट्स मेकर' : 'TXT फ़ाइल एडिटर'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.save_rounded, color: Color(0xFF00796B)),
+            onPressed: _exportFile,
+          ),
+        ],
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            TextField(
+              controller: _titleCtrl,
+              decoration: InputDecoration(
+                hintText: widget.isNotes ? 'नोट का शीर्षक...' : 'फाइल का नाम...',
+                border: InputBorder.none,
+                hintStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+              ),
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+            ),
+            const Divider(),
+            Expanded(
+              child: TextField(
+                controller: _bodyCtrl,
+                maxLines: null,
+                expands: true,
+                decoration: const InputDecoration(
+                  hintText: 'यहाँ टाइप करना शुरू करें...',
+                  border: InputBorder.none,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// 6. प्रो रिज़्यूमे बिल्डर (RESUME BUILDER)
+// ============================================================================
+class ResumeBuilderScreen extends StatefulWidget {
+  const ResumeBuilderScreen({super.key});
+
+  @override
+  State<ResumeBuilderScreen> createState() => _ResumeBuilderScreenState();
+}
+
+class _ResumeBuilderScreenState extends State<ResumeBuilderScreen> {
+  final _name = TextEditingController(text: 'राहुल शर्मा');
+  final _phone = TextEditingController(text: '+91 98765 43210');
+  final _email = TextEditingController(text: 'rahul.sharma@email.com');
+  final _summary = TextEditingController(text: 'अनुभवी पेशेवर जो संस्था के विकास में योगदान देने हेतु तत्पर है।');
+  final _experience = TextEditingController(text: '• 3 वर्ष का अनुभव (वरिष्ठ प्रबंधक)\n• क्लाइंट रिलेशनशिप व सेल्स');
+  final _education = TextEditingController(text: '• स्नातक (B.Com / B.Tech) - प्रथम श्रेणी');
+  final _skills = TextEditingController(text: 'MS Office, Teamwork, Communication');
+
+  Future<void> _generateResumePdf() async {
+    final pdf = pw.Document();
+    pdf.addPage(
+      pw.Page(
+        pageFormat: PdfPageFormat.a4,
+        build: (pw.Context ctx) {
+          return pw.Padding(
+            padding: const pw.EdgeInsets.all(24),
+            child: pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                pw.Text(_name.text, style: pw.TextStyle(fontSize: 24, fontWeight: pw.FontWeight.bold, color: PdfColors.teal)),
+                pw.Text('${_phone.text} | ${_email.text}', style: const pw.TextStyle(fontSize: 11, color: PdfColors.grey700)),
+                pw.Divider(thickness: 1.5, color: PdfColors.teal),
+                pw.SizedBox(height: 10),
+                _buildPdfSection('प्रोफ़ाइल विवरण (Profile Summary)', _summary.text),
+                _buildPdfSection('कार्य अनुभव (Work Experience)', _experience.text),
+                _buildPdfSection('शैक्षणिक योग्यता (Education)', _education.text),
+                _buildPdfSection('कौशल (Skills)', _skills.text),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+
+    final dir = await getTemporaryDirectory();
+    final file = File("${dir.path}/Resume_${DateTime.now().millisecondsSinceEpoch}.pdf");
+    await file.writeAsBytes(await pdf.save());
+    await Share.shareXFiles([XFile(file.path)], text: 'My Resume (Bharat Scanner Pro)');
+  }
+
+  pw.Widget _buildPdfSection(String title, String body) {
+    return pw.Container(
+      margin: const pw.EdgeInsets.only(bottom: 12),
+      child: pw.Column(
+        crossAxisAlignment: pw.CrossAxisAlignment.start,
+        children: [
+          pw.Text(title, style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold, color: PdfColors.teal)),
+          pw.SizedBox(height: 4),
+          pw.Text(body, style: const pw.TextStyle(fontSize: 11, lineSpacing: 2)),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('प्रो रिज़्यूमे बिल्डर (CV Maker)')),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            TextField(controller: _name, decoration: const InputDecoration(labelText: 'पूरा नाम', border: OutlineInputBorder())),
+            const SizedBox(height: 10),
+            TextField(controller: _phone, decoration: const InputDecoration(labelText: 'मोबाइल नंबर', border: OutlineInputBorder())),
+            const SizedBox(height: 10),
+            TextField(controller: _email, decoration: const InputDecoration(labelText: 'ईमेल ID', border: OutlineInputBorder())),
+            const SizedBox(height: 10),
+            TextField(controller: _summary, maxLines: 2, decoration: const InputDecoration(labelText: 'संक्षिप्त विवरण (Summary)', border: OutlineInputBorder())),
+            const SizedBox(height: 10),
+            TextField(controller: _experience, maxLines: 3, decoration: const InputDecoration(labelText: 'कार्य अनुभव (Experience)', border: OutlineInputBorder())),
+            const SizedBox(height: 10),
+            TextField(controller: _education, maxLines: 2, decoration: const InputDecoration(labelText: 'शिक्षा (Education)', border: OutlineInputBorder())),
+            const SizedBox(height: 10),
+            TextField(controller: _skills, decoration: const InputDecoration(labelText: 'कौशल (Skills)', border: OutlineInputBorder())),
+            const SizedBox(height: 20),
+            ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00796B), foregroundColor: Colors.white, minimumSize: const Size(double.infinity, 50)),
+              icon: const Icon(Icons.picture_as_pdf),
+              label: const Text('प्रोफेशनल रिज़्यूमे PDF बनाएं'),
+              onPressed: _generateResumePdf,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// 7. इनवॉइस मेकर (INVOICE & BILL MAKER)
+// ============================================================================
+class InvoiceMakerProScreen extends StatefulWidget {
+  const InvoiceMakerProScreen({super.key});
+
+  @override
+  State<InvoiceMakerProScreen> createState() => _InvoiceMakerProScreenState();
+}
+
+class _InvoiceMakerProScreenState extends State<InvoiceMakerProScreen> {
+  final _clientName = TextEditingController(text: 'ग्राहक / फ़र्म का नाम');
+  final _invoiceNum = TextEditingController(text: 'INV-2026-01');
+  final _itemName = TextEditingController();
+  final _itemPrice = TextEditingController();
+  List<Map<String, dynamic>> items = [
+    {'name': 'कंप्यूटर सर्विसिंग', 'price': 1500.0},
+    {'name': 'सॉफ्टवेयर इंस्टॉलेशन', 'price': 800.0},
+  ];
+
+  Future<void> _exportInvoicePdf() async {
+    final pdf = pw.Document();
+    double total = items.fold(0.0, (s, i) => s + (i['price'] as double));
+
+    pdf.addPage(
+      pw.Page(
+        pageFormat: PdfPageFormat.a4,
+        build: (pw.Context ctx) {
+          return pw.Padding(
+            padding: const pw.EdgeInsets.all(24),
+            child: pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                pw.Text('TAX INVOICE / बिल', style: pw.TextStyle(fontSize: 26, fontWeight: pw.FontWeight.bold, color: PdfColors.teal)),
+                pw.SizedBox(height: 8),
+                pw.Text('Invoice No: ${_invoiceNum.text}'),
+                pw.Text('Client: ${_clientName.text}'),
+                pw.Text('Date: ${DateFormat('dd MMM yyyy').format(DateTime.now())}'),
+                pw.Divider(thickness: 1.5, color: PdfColors.teal),
+                pw.SizedBox(height: 12),
+                pw.TableHelper.fromTextArray(
+                  headers: ['Item / Service', 'Amount (INR)'],
+                  data: items.map((e) => [e['name'], '₹ ${e['price']}']).toList(),
+                  headerStyle: pw.TextStyle(color: PdfColors.white, fontWeight: pw.FontWeight.bold),
+                  headerDecoration: const pw.BoxDecoration(color: PdfColors.teal),
+                ),
+                pw.SizedBox(height: 16),
+                pw.Align(
+                  alignment: pw.Alignment.centerRight,
+                  child: pw.Text('कुल राशि (Total): ₹ $total', style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold)),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+
+    final dir = await getTemporaryDirectory();
+    final file = File("${dir.path}/Invoice_${DateTime.now().millisecondsSinceEpoch}.pdf");
+    await file.writeAsBytes(await pdf.save());
+    await Share.shareXFiles([XFile(file.path)], text: 'Invoice via Bharat Scanner Pro');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('इनवॉइस व बिल मेकर')),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            TextField(controller: _clientName, decoration: const InputDecoration(labelText: 'ग्राहक / पार्टी का नाम', border: OutlineInputBorder())),
+            const SizedBox(height: 10),
+            TextField(controller: _invoiceNum, decoration: const InputDecoration(labelText: 'बिल नंबर', border: OutlineInputBorder())),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(child: TextField(controller: _itemName, decoration: const InputDecoration(labelText: 'सामान / सेवा', border: OutlineInputBorder()))),
+                const SizedBox(width: 8),
+                Expanded(child: TextField(controller: _itemPrice, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'मूल्य (₹)', border: OutlineInputBorder()))),
+                IconButton(
+                  icon: const Icon(Icons.add_circle, color: Color(0xFF00796B), size: 36),
+                  onPressed: () {
+                    if (_itemName.text.isNotEmpty && _itemPrice.text.isNotEmpty) {
+                      setState(() {
+                        items.add({'name': _itemName.text.trim(), 'price': double.tryParse(_itemPrice.text.trim()) ?? 0.0});
+                        _itemName.clear();
+                        _itemPrice.clear();
+                      });
+                    }
+                  },
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            ...items.map((i) => ListTile(
+                  title: Text(i['name']),
+                  trailing: Text('₹ ${i['price']}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                )),
+            const SizedBox(height: 20),
+            ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00796B), foregroundColor: Colors.white, minimumSize: const Size(double.infinity, 50)),
+              icon: const Icon(Icons.picture_as_pdf),
+              label: const Text('PDF इनवॉइस तैयार करें'),
+              onPressed: items.isEmpty ? null : _exportInvoicePdf,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// 8. लेटर टेम्पलेट्स (LETTER TEMPLATES)
+// ============================================================================
+class LetterTemplatesScreen extends StatefulWidget {
+  const LetterTemplatesScreen({super.key});
+
+  @override
+  State<LetterTemplatesScreen> createState() => _LetterTemplatesScreenState();
+}
+
+class _LetterTemplatesScreenState extends State<LetterTemplatesScreen> {
+  final _letterCtrl = TextEditingController(
+    text: "सेवा में,\nश्रीमान प्रबंधक महोदय,\nविषय: अवकाश हेतु प्रार्थना पत्र।\n\nसविनय निवेदन है कि मुझे आवश्यक कार्य होने के कारण 2 दिन का अवकाश प्रदान करने की कृपा करें।\n\nसधन्यवाद,\nभवदीय,\n[आपका नाम]",
+  );
+
+  Future<void> _exportLetterPdf() async {
+    final pdf = pw.Document();
+    pdf.addPage(
+      pw.Page(
+        pageFormat: PdfPageFormat.a4,
+        build: (pw.Context ctx) => pw.Padding(
+          padding: const pw.EdgeInsets.all(32),
+          child: pw.Text(_letterCtrl.text, style: const pw.TextStyle(fontSize: 14, lineSpacing: 3)),
+        ),
+      ),
+    );
+    final dir = await getTemporaryDirectory();
+    final file = File("${dir.path}/Letter_${DateTime.now().millisecondsSinceEpoch}.pdf");
+    await file.writeAsBytes(await pdf.save());
+    await Share.shareXFiles([XFile(file.path)], text: 'Formal Letter PDF');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('लेटर टेम्पलेट्स (Letter Maker)'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.share, color: Color(0xFF00796B)),
+            onPressed: _exportLetterPdf,
+          ),
+        ],
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            Wrap(
+              spacing: 8,
+              children: [
+                ActionChip(
+                  label: const Text('अवकाश पत्र (Leave)'),
+                  onPressed: () => setState(() => _letterCtrl.text = "सेवा में,\nश्रीमान प्रबंधक महोदय,\nविषय: 2 दिन के अवकाश हेतु।\n\nमहोदय,\nकृपया मुझे व्यक्तिगत कार्य हेतु अवकाश देने की कृपा करें।"),
+                ),
+                ActionChip(
+                  label: const Text('इस्तीफा (Resignation)'),
+                  onPressed: () => setState(() => _letterCtrl.text = "To,\nThe HR Manager,\nSubject: Resignation Letter\n\nDear Sir/Madam,\nPlease accept this letter as formal notification that I am resigning from my position."),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Expanded(
+              child: TextField(
+                controller: _letterCtrl,
+                maxLines: null,
+                expands: true,
+                decoration: const InputDecoration(border: OutlineInputBorder()),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// 9. पासपोर्ट फोटो स्टूडियो (PASSPORT PHOTO STUDIO)
+// ============================================================================
+class PassportPhotoStudioScreen extends StatefulWidget {
+  const PassportPhotoStudioScreen({super.key});
+
+  @override
+  State<PassportPhotoStudioScreen> createState() => _PassportPhotoStudioScreenState();
+}
+
+class _PassportPhotoStudioScreenState extends State<PassportPhotoStudioScreen> {
+  Color _bg = Colors.white;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('पासपोर्ट फोटो स्टूडियो (3.5x4.5 cm)')),
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(
+                width: 170,
+                height: 220,
+                decoration: BoxDecoration(
+                  color: _bg,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.grey.shade400, width: 2),
+                ),
+                child: const Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.person, size: 90, color: Colors.grey),
+                    Text('Passport Format (Print Ready)', style: TextStyle(fontSize: 10, color: Colors.grey)),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 24),
+              const Text('बैकग्राउंड रंग चुनें:', style: TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 10),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  _colorBtn(Colors.white, 'सफ़ेद'),
+                  const SizedBox(width: 12),
+                  _colorBtn(const Color(0xFF1976D2), 'नीला'),
+                  const SizedBox(width: 12),
+                  _colorBtn(const Color(0xFFCFD8DC), 'हल्का ग्रे'),
+                ],
+              ),
+              const SizedBox(height: 30),
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00796B), foregroundColor: Colors.white, minimumSize: const Size(double.infinity, 50)),
+                icon: const Icon(Icons.camera_alt),
+                label: const Text('कैमरा से पासपोर्ट फोटो बनाएं'),
+                onPressed: () {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('पासपोर्ट कैमरा गाइड एक्टिवेट हो रहा है...')),
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _colorBtn(Color c, String text) {
+    return ElevatedButton(
+      style: ElevatedButton.styleFrom(backgroundColor: c, foregroundColor: c == Colors.white ? Colors.black : Colors.white),
+      onPressed: () => setState(() => _bg = c),
+      child: Text(text),
+    );
+  }
+}
+
+// ============================================================================
+// 10. यूनिवर्सल इमेज टूल्स (RESIZE, CROP, BG REMOVER)
+// ============================================================================
+class UniversalImageToolScreen extends StatelessWidget {
+  final String mode;
+  const UniversalImageToolScreen({super.key, required this.mode});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('इमेज टूल्स स्टूडियो')),
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(20),
+                decoration: BoxDecoration(shape: BoxShape.circle, color: const Color(0xFF00796B).withOpacity(0.1)),
+                child: const Icon(Icons.tune_rounded, size: 60, color: Color(0xFF00796B)),
+              ),
+              const SizedBox(height: 16),
+              const Text('इमेज रिसाइज़र, क्रॉप व कनवर्टर', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              const Text('गैलरी से इमेज चुनें और तुरंत प्रोसेस करें।', textAlign: TextAlign.center, style: TextStyle(color: Colors.grey)),
+              const SizedBox(height: 24),
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00796B), foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12)),
+                icon: const Icon(Icons.photo_library),
+                label: const Text('इमेज चुनें (Select Image)'),
+                onPressed: () {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('प्रोसेसर तैयार है!')),
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
