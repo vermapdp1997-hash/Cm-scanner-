@@ -36,7 +36,6 @@ class BharatScannerApp extends StatelessWidget {
           secondary: const Color(0xFF004D40),
           surface: Colors.white,
         ),
-        fontFamily: 'Roboto',
       ),
       home: const SplashScreen(),
     );
@@ -214,7 +213,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     });
   }
 
-  // --- स्थायी रूप से स्टोर करने का लॉजिक (Permanent Copy) ---
+  // स्थायी रूप से तस्वीरें स्टोर करना ताकि वे कभी डिलीट न हों
   Future<List<String>> _copyImagesToPermanentStorage(List<String> tempPaths) async {
     final appDir = await getApplicationDocumentsDirectory();
     final scansDir = Directory('${appDir.path}/scans');
@@ -235,7 +234,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
   }
 
   Future<void> _saveDocToStorage(String title, List<String> rawPaths, {String category = 'Documents'}) async {
-    // 1. तस्वीरों को परमानेंट फ़ोल्डर में कॉपी करें ताकि वे कभी गायब न हों
     final persistentPaths = await _copyImagesToPermanentStorage(rawPaths);
 
     if (persistentPaths.isEmpty) {
@@ -288,7 +286,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     _showToast('Document deleted successfully');
   }
 
-  // --- डॉक्यूमेंट स्कैनिंग शुरू करना ---
+  // स्कैनर चालू करना
   Future<void> _startDocScan({int limit = 50, String category = 'Documents', String prefix = 'Doc'}) async {
     final scanner = DocumentScanner(
       options: DocumentScannerOptions(
@@ -352,7 +350,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     );
   }
 
-  // --- AI OCR (टेक्स्ट निकालना) ---
+  // AI OCR
   Future<void> _extractTextWithAI(String imagePath) async {
     showDialog(
       context: context,
@@ -436,7 +434,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     );
   }
 
-  // --- PDF बनाना और सीधे फोन स्टोरेज (Downloads) में सेव करना ---
+  // फोन के Downloads में सीधे PDF सेव करना
   Future<String?> _savePdfToDeviceStorage(List images, String title) async {
     try {
       final pdf = pw.Document();
@@ -473,16 +471,16 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       final savedFile = File('${targetDir.path}/$safeName.pdf');
       await savedFile.writeAsBytes(bytes);
 
-      _showToast('✅ Saved to Storage: Download/${savedFile.path.split('/').last}');
+      _showToast('✅ Saved: Download/${savedFile.path.split('/').last}');
       return savedFile.path;
     } catch (e) {
-      _showToast('Storage error. Sharing file instead.');
+      _showToast('Saving to storage...');
       _exportPdf(images, title);
       return null;
     }
   }
 
-  // --- PDF शेयर करना ---
+  // PDF शेयर करना
   Future<void> _exportPdf(List images, String title, {String? watermark}) async {
     if (_interstitialAd != null) {
       _interstitialAd!.show();
@@ -532,7 +530,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     await Share.shareXFiles([XFile(file.path)], text: '$title - Scanned by Bharat Scanner AI');
   }
 
-  // --- टूल्स डायलॉग्स ---
   void _openWatermarkDialog() {
     if (_savedDocs.isEmpty) {
       _showToast('Please scan a document first.');
@@ -917,7 +914,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     return ListView(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       children: [
-        // Quick Stats Strip
         Container(
           padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
@@ -941,7 +937,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
         ),
         const SizedBox(height: 16),
 
-        // Category Filter Pills
         SizedBox(
           height: 36,
           child: ListView(
@@ -974,7 +969,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
         ),
         const SizedBox(height: 14),
 
-        // Subheader
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
@@ -1005,7 +999,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
         ),
         const SizedBox(height: 10),
 
-        // Document List / Grid
         if (_filteredDocs.isEmpty)
           Padding(
             padding: const EdgeInsets.only(top: 60),
@@ -1135,7 +1128,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                     const SizedBox(height: 8),
                     Row(
                       children: [
-                        // Save directly to phone storage
                         InkWell(
                           onTap: () => _savePdfToDeviceStorage(imgList, doc['title']),
                           child: Container(
@@ -1154,7 +1146,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                           ),
                         ),
                         const SizedBox(width: 8),
-                        // AI OCR
                         InkWell(
                           onTap: () => _extractTextWithAI(imgList.first),
                           child: Container(
@@ -1450,7 +1441,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
   }
 }
 
-// ---------------- 3. नया शानदार डॉक्यूमेंट व्यूअर (FULL SCREEN DOCUMENT VIEWER) ----------------
+// ---------------- 3. डॉक्यूमेंट व्यूअर (FULL SCREEN DOCUMENT VIEWER) ----------------
 class DocumentDetailScreen extends StatefulWidget {
   final Map<String, dynamic> doc;
   final VoidCallback onDelete;
@@ -1654,7 +1645,7 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
           ),
         ),
       ),
-    ); me
+    );
   }
 
   Widget _buildBottomAction(IconData icon, String label, VoidCallback onTap) {
