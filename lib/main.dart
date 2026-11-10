@@ -1,4 +1,3 @@
-``dart
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -243,9 +242,13 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
   bool _isSelectionMode = false;
   final Set<String> _selectedDocIds = {};
 
-  // Production AdMob Ad Unit IDs
-  final String _bannerId = 'ca-app-pub-7940311763952252/4182204348';
-  final String _interstitialId = 'ca-app-pub-7940311763952252/1256658100';
+  // AdMob Ad Units (Supports Test Units in Debug to guarantee ads display)
+  final String _bannerId = kDebugMode
+      ? 'ca-app-pub-3940256099942544/6300978111'
+      : 'ca-app-pub-7940311763952252/4182204348';
+  final String _interstitialId = kDebugMode
+      ? 'ca-app-pub-3940256099942544/1033173712'
+      : 'ca-app-pub-7940311763952252/1256658100';
 
   BannerAd? _bannerAd;
   bool _isBannerLoaded = false;
@@ -262,15 +265,22 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
   }
 
   void _loadBannerAd() {
+    _bannerAd?.dispose();
     _bannerAd = BannerAd(
       adUnitId: _bannerId,
       request: const AdRequest(),
       size: AdSize.banner,
       listener: BannerAdListener(
-        onAdLoaded: (_) => setState(() => _isBannerLoaded = true),
+        onAdLoaded: (_) {
+          if (mounted) setState(() => _isBannerLoaded = true);
+        },
         onAdFailedToLoad: (ad, err) {
-          debugPrint("Banner err: $err");
+          debugPrint("Banner Ad Failed to load: $err");
           ad.dispose();
+          // Retry loading after 12 seconds
+          Future.delayed(const Duration(seconds: 12), () {
+            if (mounted) _loadBannerAd();
+          });
         },
       ),
     )..load();
@@ -283,7 +293,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       adLoadCallback: InterstitialAdLoadCallback(
         onAdLoaded: (ad) => _interstitialAd = ad,
         onAdFailedToLoad: (err) {
-          debugPrint("Interstitial err: $err");
+          debugPrint("Interstitial Ad Failed: $err");
           _interstitialAd = null;
         },
       ),
@@ -1039,7 +1049,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
             onPressed: () => Scaffold.of(ctx).openDrawer(),
           ),
         ),
-        // Home page app name is clear & fully visible
         title: _isSearching
             ? TextField(
                 controller: _searchController,
@@ -1324,7 +1333,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     );
   }
 
-  // PDF & Productivity Studio View (All Tools Restored)
+  // PDF & Productivity Studio View (All Tools Active)
   Widget _buildPdfToolsView() {
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -2291,7 +2300,7 @@ class _SigPainter extends CustomPainter {
 }
 
 // ============================================================================
-// 7. PASSPORT PHOTO STUDIO (8 & 16 Photos Sheet)
+// 7. PASSPORT PHOTO STUDIO
 // ============================================================================
 class PassportPhotoStudioScreen extends StatefulWidget {
   const PassportPhotoStudioScreen({super.key});
@@ -2497,7 +2506,7 @@ class _TxtEditorNotesScreenState extends State<TxtEditorNotesScreen> {
 }
 
 // ============================================================================
-// 10. RESUME BUILDER
+// 10. RESUME BUILDER (Fixed const double.infinity issue)
 // ============================================================================
 class ResumeBuilderScreen extends StatefulWidget {
   const ResumeBuilderScreen({super.key});
@@ -2572,7 +2581,16 @@ class _ResumeBuilderScreenState extends State<ResumeBuilderScreen> {
             const SizedBox(height: 8),
             TextField(controller: _skills, decoration: const InputDecoration(labelText: 'Skills', border: OutlineInputBorder())),
             const SizedBox(height: 16),
-            ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white, minimumSize: const Size(double.infinity, 48)), onPressed: _export, child: const Text('Generate Resume PDF')),
+            // Corrected minimumSize (Removed illegal const with double.infinity)
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: appPrimaryColor.value,
+                foregroundColor: Colors.white,
+                minimumSize: const Size.fromHeight(48),
+              ),
+              onPressed: _export,
+              child: const Text('Generate Resume PDF'),
+            ),
           ],
         ),
       ),
@@ -2581,7 +2599,7 @@ class _ResumeBuilderScreenState extends State<ResumeBuilderScreen> {
 }
 
 // ============================================================================
-// 11. INVOICE MAKER (GST Tax Calculation)
+// 11. INVOICE MAKER (Fixed const double.infinity issue)
 // ============================================================================
 class InvoiceMakerProScreen extends StatefulWidget {
   const InvoiceMakerProScreen({super.key});
@@ -2685,7 +2703,16 @@ class _InvoiceMakerProScreenState extends State<InvoiceMakerProScreen> {
                   trailing: Text('INR ${i['price']}', style: const TextStyle(fontWeight: FontWeight.bold)),
                 )),
             const SizedBox(height: 16),
-            ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white, minimumSize: const Size(double.infinity, 48)), onPressed: items.isEmpty ? null : _export, child: const Text('Export Invoice PDF')),
+            // Corrected minimumSize (Removed illegal const with double.infinity)
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: appPrimaryColor.value,
+                foregroundColor: Colors.white,
+                minimumSize: const Size.fromHeight(48),
+              ),
+              onPressed: items.isEmpty ? null : _export,
+              child: const Text('Export Invoice PDF'),
+            ),
           ],
         ),
       ),
@@ -2745,17 +2772,3 @@ class _LetterTemplatesScreenState extends State<LetterTemplatesScreen> {
     );
   }
 }
-```
-
-अब आप इस कोड को बिना किसी संकोच के सीधे अपनी `main.dart` में पेस्ट कर सकते हैं। इसमें कोई भी फंक्शन या स्क्रीन छूटी नहीं है।
-Citations
-
-https://github.com/LakinduVirajith/CalcPal---Mobile-Application(MIT)
-https://github.com/SE-Final-Project-SafetyEye/SafetyEye
-https://github.com/AppMaste/Resume_Builder
-https://github.com/Squadron-team/Rukunin-App(MIT)
-3m57.7s
-Google AI models may make mistakes, so double-check outputs.
-Use Arrow Up and Arrow Down to select a turn, Enter to jump to it, and Escape to return to the chat.
-Start typing a prompt
-
