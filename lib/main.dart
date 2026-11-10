@@ -15,9 +15,9 @@ import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:intl/intl.dart';
 
-// GLOBAL THEME CONTROLLER
+// GLOBAL THEME CONTROLLER (Default clean Teal theme)
 final ValueNotifier<ThemeMode> appThemeMode = ValueNotifier(ThemeMode.light);
-final ValueNotifier<Color> appPrimaryColor = ValueNotifier(const Color(0xFFD32F2F)); // Attractive Red
+final ValueNotifier<Color> appPrimaryColor = ValueNotifier(const Color(0xFF00796B));
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -87,7 +87,7 @@ class BharatDocScannerApp extends StatelessWidget {
   }
 }
 
-// 1. SPLASH SCREEN (Attractive Red Glossy Logo)
+// 1. SPLASH SCREEN (Attractive Red Glossy Badge Logo as requested)
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
   @override
@@ -127,6 +127,7 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
     super.dispose();
   }
 
+  // RED COLOR GLOSSY ATTRACTIVE LOGO
   Widget _buildAppBadgeLogo() {
     return Container(
       width: 140,
@@ -140,17 +141,18 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
         ),
         boxShadow: [
           BoxShadow(
-            color: const Color(0xFFD32F2F).withAlpha(120),
+            color: const Color(0xFFD32F2F).withAlpha(140),
             blurRadius: 28,
             offset: const Offset(0, 12),
           ),
         ],
-        border: Border.all(color: Colors.white.withAlpha(80), width: 2),
+        border: Border.all(color: Colors.white.withAlpha(90), width: 2),
       ),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(30),
         child: Stack(
           children: [
+            // Glass Reflection Shine (Chamak)
             Positioned(
               top: -30,
               left: -30,
@@ -158,7 +160,7 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
                 width: 130,
                 height: 90,
                 decoration: BoxDecoration(
-                  color: Colors.white.withAlpha(40),
+                  color: Colors.white.withAlpha(45),
                   borderRadius: const BorderRadius.all(Radius.elliptical(120, 80)),
                 ),
               ),
@@ -220,7 +222,7 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF1E0A0A),
+      backgroundColor: const Color(0xFF0F172A),
       body: Center(
         child: FadeTransition(
           opacity: _fadeAnimation,
@@ -239,7 +241,7 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
                   decoration: BoxDecoration(color: Colors.white.withAlpha(25), borderRadius: BorderRadius.circular(20)),
-                  child: const Text('⚡ India’s Smartest AI Office & Scan Suite', style: TextStyle(color: Color(0xFFFFCDD2), fontSize: 12, fontWeight: FontWeight.w600)),
+                  child: const Text('⚡ India’s Smartest AI Office & Scan Suite', style: TextStyle(color: Color(0xFFB2DFDB), fontSize: 12, fontWeight: FontWeight.w600)),
                 ),
               ],
             ),
@@ -464,6 +466,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     }
   }
 
+  // Bottom Sheet matching Screenshot 1
   void _openAddDocumentBottomSheet() {
     showModalBottomSheet(
       context: context,
@@ -998,12 +1001,12 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     );
   }
 
-  // Multi-Theme Picker Dialog (col.value used for compatibility with Flutter 3.24)
   void _openThemeColorPicker() {
     final colors = [
+      {'name': 'Emerald Teal', 'color': const Color(0xFF00796B)},
+      {'name': 'Ocean Cyan', 'color': const Color(0xFF0288D1)},
       {'name': 'Ruby Red', 'color': const Color(0xFFD32F2F)},
       {'name': 'Deep Crimson', 'color': const Color(0xFFB71C1C)},
-      {'name': 'Emerald Teal', 'color': const Color(0xFF00796B)},
       {'name': 'Sapphire Blue', 'color': const Color(0xFF1565C0)},
       {'name': 'Amethyst Purple', 'color': const Color(0xFF7B1FA2)},
       {'name': 'Dark Charcoal', 'color': const Color(0xFF37474F)},
@@ -1022,7 +1025,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
               onTap: () async {
                 appPrimaryColor.value = col;
                 final prefs = await SharedPreferences.getInstance();
-                await prefs.setInt('primary_color_val', col.value); // FIXED HERE
+                await prefs.setInt('primary_color_val', col.value);
                 if (ctx.mounted) Navigator.pop(ctx);
               },
               child: Column(
@@ -1045,6 +1048,49 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
             );
           }).toList(),
         ),
+      ),
+    );
+  }
+
+  // Dual Pill Floating Button [ 📷 | ➕ ] exactly as in the Screenshot!
+  Widget _buildDualFab() {
+    return Container(
+      height: 52,
+      decoration: BoxDecoration(
+        color: const Color(0xFF0288D1), // Cyan/Blue as in screenshot
+        borderRadius: BorderRadius.circular(30),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF0288D1).withAlpha(120),
+            blurRadius: 12,
+            offset: const Offset(0, 5),
+          ),
+        ],
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Camera Button (Left side) -> Directly scans
+          InkWell(
+            borderRadius: const BorderRadius.horizontal(left: Radius.circular(30)),
+            onTap: () => _startDocScan(),
+            child: const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              child: Icon(Icons.camera_alt_rounded, color: Colors.white, size: 26),
+            ),
+          ),
+          // Vertical divider line in center
+          Container(width: 1.2, height: 26, color: Colors.white.withAlpha(130)),
+          // Plus Button (Right side) -> Opens bottom sheet popup
+          InkWell(
+            borderRadius: const BorderRadius.horizontal(right: Radius.circular(30)),
+            onTap: _openAddDocumentBottomSheet,
+            child: const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              child: Icon(Icons.add_rounded, color: Colors.white, size: 30),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -1100,7 +1146,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
             ListTile(
               leading: const Icon(Icons.palette_rounded),
               title: const Text('Change Theme Color'),
-              subtitle: const Text('Red, Teal, Blue, Purple & more'),
+              subtitle: const Text('Teal, Blue, Red, Purple & more'),
               onTap: _openThemeColorPicker,
             ),
             const Divider(),
@@ -1164,42 +1210,36 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
           ),
         ],
       ),
-      body: Column(
+      body: Stack(
         children: [
-          Expanded(child: _currentTabIndex == 0 ? _buildDocsTab() : _buildToolsTab()),
-          if (_isBannerLoaded && _bannerAd != null)
-            SafeArea(
-              top: false,
-              child: SizedBox(
-                width: _bannerAd!.size.width.toDouble(),
-                height: _bannerAd!.size.height.toDouble(),
-                child: AdWidget(ad: _bannerAd!),
-              ),
-            ),
-        ],
-      ),
-      floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
-      floatingActionButton: Container(
-        height: 64,
-        width: 64,
-        margin: const EdgeInsets.only(top: 18),
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          gradient: LinearGradient(
-            colors: [appPrimaryColor.value, appPrimaryColor.value.withAlpha(200)],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
+          Column(
+            children: [
+              Expanded(child: _currentTabIndex == 0 ? _buildDocsTab() : _buildToolsTab()),
+              // Clean Ad Space container at bottom as in the Screenshot
+              if (_isBannerLoaded && _bannerAd != null)
+                SafeArea(
+                  top: false,
+                  child: SizedBox(
+                    width: _bannerAd!.size.width.toDouble(),
+                    height: _bannerAd!.size.height.toDouble(),
+                    child: AdWidget(ad: _bannerAd!),
+                  ),
+                )
+              else
+                Container(
+                  height: 38,
+                  alignment: Alignment.center,
+                  child: const Text('Ad Space', style: TextStyle(color: Colors.grey, fontSize: 11)),
+                ),
+            ],
           ),
-          boxShadow: [BoxShadow(color: appPrimaryColor.value.withAlpha(100), blurRadius: 10, offset: const Offset(0, 4))],
-        ),
-        child: FloatingActionButton(
-          shape: const CircleBorder(),
-          backgroundColor: Colors.transparent,
-          foregroundColor: Colors.white,
-          elevation: 0,
-          onPressed: _openAddDocumentBottomSheet,
-          child: const Icon(Icons.add_rounded, size: 34),
-        ),
+          // Dual Pill Floating Button [ 📷 | ➕ ] placed at bottom right above Ad Space
+          Positioned(
+            right: 18,
+            bottom: _isBannerLoaded && _bannerAd != null ? (_bannerAd!.size.height.toDouble() + 14) : 52,
+            child: _buildDualFab(),
+          ),
+        ],
       ),
       bottomNavigationBar: BottomAppBar(
         shape: const CircularNotchedRectangle(),
@@ -1221,7 +1261,12 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                   ],
                 ),
               ),
-              const SizedBox(width: 44),
+              // Camera button in center as was originally present
+              IconButton(
+                icon: Icon(Icons.camera_alt_rounded, color: appPrimaryColor.value, size: 28),
+                tooltip: 'Scan Document',
+                onPressed: () => _startDocScan(),
+              ),
               InkWell(
                 onTap: () => setState(() => _currentTabIndex = 1),
                 child: Column(
@@ -1579,7 +1624,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
             _buildToolCard(title: 'Photo Studio', subtitle: 'Physical Rotate', icon: Icons.crop_rotate_rounded, iconColor: const Color(0xFF00897B), onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const UniversalImageToolScreen()))),
           ],
         ),
-        const SizedBox(height: 20),
+        const SizedBox(height: 70), // Padding so FAB doesn't hide last cards
       ],
     );
   }
@@ -2628,11 +2673,11 @@ class _PowerPointStudioScreenState extends State<PowerPointStudioScreen> {
           build: (pw.Context ctx) {
             return pw.Container(
               padding: const pw.EdgeInsets.all(32),
-              decoration: pw.BoxDecoration(border: pw.Border.all(color: PdfColors.red900, width: 3)),
+              decoration: pw.BoxDecoration(border: pw.Border.all(color: PdfColors.teal, width: 3)),
               child: pw.Column(
                 crossAxisAlignment: pw.CrossAxisAlignment.start,
                 children: [
-                  pw.Text(s['title'] ?? '', style: pw.TextStyle(fontSize: 26, fontWeight: pw.FontWeight.bold, color: PdfColors.red900)),
+                  pw.Text(s['title'] ?? '', style: pw.TextStyle(fontSize: 26, fontWeight: pw.FontWeight.bold, color: PdfColors.teal)),
                   pw.Divider(thickness: 2),
                   pw.SizedBox(height: 20),
                   pw.Text(s['content'] ?? '', style: const pw.TextStyle(fontSize: 18)),
@@ -2793,9 +2838,9 @@ class _ResumeBuilderScreenState extends State<ResumeBuilderScreen> {
             child: pw.Column(
               crossAxisAlignment: pw.CrossAxisAlignment.start,
               children: [
-                pw.Text(_name.text, style: pw.TextStyle(fontSize: 24, fontWeight: pw.FontWeight.bold, color: PdfColors.red900)),
+                pw.Text(_name.text, style: pw.TextStyle(fontSize: 24, fontWeight: pw.FontWeight.bold, color: PdfColors.teal)),
                 pw.Text('${_phone.text} | ${_email.text}', style: const pw.TextStyle(fontSize: 11, color: PdfColors.grey700)),
-                pw.Divider(thickness: 1.5, color: PdfColors.red900),
+                pw.Divider(thickness: 1.5, color: PdfColors.teal),
                 pw.SizedBox(height: 10),
                 _buildPdfSection('Profile Summary', _summary.text),
                 _buildPdfSection('Work Experience', _experience.text),
@@ -2820,7 +2865,7 @@ class _ResumeBuilderScreenState extends State<ResumeBuilderScreen> {
       child: pw.Column(
         crossAxisAlignment: pw.CrossAxisAlignment.start,
         children: [
-          pw.Text(title, style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold, color: PdfColors.red900)),
+          pw.Text(title, style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold, color: PdfColors.teal)),
           pw.SizedBox(height: 4),
           pw.Text(body, style: const pw.TextStyle(fontSize: 11, lineSpacing: 2)),
         ],
@@ -2896,17 +2941,17 @@ class _InvoiceMakerProScreenState extends State<InvoiceMakerProScreen> {
             child: pw.Column(
               crossAxisAlignment: pw.CrossAxisAlignment.start,
               children: [
-                pw.Text('TAX INVOICE', style: pw.TextStyle(fontSize: 26, fontWeight: pw.FontWeight.bold, color: PdfColors.red900)),
+                pw.Text('TAX INVOICE', style: pw.TextStyle(fontSize: 26, fontWeight: pw.FontWeight.bold, color: PdfColors.teal)),
                 pw.SizedBox(height: 8),
                 pw.Text('Invoice No: ${_invoiceNum.text} | Client: ${_clientName.text}'),
                 pw.Text('Date: ${DateFormat('dd MMM yyyy').format(DateTime.now())}'),
-                pw.Divider(thickness: 1.5, color: PdfColors.red900),
+                pw.Divider(thickness: 1.5, color: PdfColors.teal),
                 pw.SizedBox(height: 12),
                 pw.TableHelper.fromTextArray(
                   headers: ['Item / Service Description', 'Amount (INR)'],
                   data: items.map((e) => [e['name'], 'INR ${e['price']}']).toList(),
                   headerStyle: pw.TextStyle(color: PdfColors.white, fontWeight: pw.FontWeight.bold),
-                  headerDecoration: const pw.BoxDecoration(color: PdfColors.red900),
+                  headerDecoration: const pw.BoxDecoration(color: PdfColors.teal),
                 ),
                 pw.SizedBox(height: 16),
                 pw.Align(
@@ -2918,7 +2963,7 @@ class _InvoiceMakerProScreenState extends State<InvoiceMakerProScreen> {
                       pw.Text('CGST (9%): INR ${cgst.toStringAsFixed(2)}'),
                       pw.Text('SGST (9%): INR ${sgst.toStringAsFixed(2)}'),
                       pw.Divider(),
-                      pw.Text('Grand Total: INR ${grandTotal.toStringAsFixed(2)}', style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold, color: PdfColors.red900)),
+                      pw.Text('Grand Total: INR ${grandTotal.toStringAsFixed(2)}', style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold, color: PdfColors.teal)),
                     ],
                   ),
                 ),
