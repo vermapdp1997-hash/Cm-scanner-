@@ -638,16 +638,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       return;
     }
 
-    final dateReg = RegExp(r'\b(?:\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})\b');
-    final amountReg = RegExp(r'(?:₹|INR|Rs\.?|\$)\s*([\d,]+(?:\.\d{2})?)|\bTotal\s*[:=]?\s*([\d,]+(?:\.\d{2})?)', caseSensitive: false);
-    final emailReg = RegExp(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}');
-    final phoneReg = RegExp(r'\b(?:\+91|0)?[6-9]\d{9}\b');
-
-    final dates = dateReg.allMatches(extractedText).map((m) => m.group(0)!).toSet().toList();
-    final amounts = amountReg.allMatches(extractedText).map((m) => m.group(0)!).toSet().toList();
-    final emails = emailReg.allMatches(extractedText).map((m) => m.group(0)!).toSet().toList();
-    final phones = phoneReg.allMatches(extractedText).map((m) => m.group(0)!).toSet().toList();
-
     final textCtrl = TextEditingController(text: extractedText);
 
     showModalBottomSheet(
@@ -655,97 +645,50 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       isScrollControlled: true,
       backgroundColor: Colors.white,
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
-      builder: (ctx) => StatefulBuilder(
-        builder: (context, setSheetState) {
-          return Padding(
-            padding: EdgeInsets.only(left: 20, right: 20, top: 20, bottom: MediaQuery.of(ctx).viewInsets.bottom + 20),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
+      builder: (ctx) => Padding(
+        padding: EdgeInsets.only(left: 20, right: 20, top: 20, bottom: MediaQuery.of(ctx).viewInsets.bottom + 20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                const Row(
                   children: [
-                    const Row(
-                      children: [
-                        Icon(Icons.auto_awesome, color: Color(0xFF00796B)),
-                        SizedBox(width: 8),
-                        Text('AI Document Insights', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                      ],
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.copy_rounded, color: Color(0xFF00796B)),
-                      onPressed: () {
-                        Clipboard.setData(ClipboardData(text: textCtrl.text));
-                        _showToast('Copied to clipboard!');
-                      },
-                    ),
+                    Icon(Icons.auto_awesome, color: Color(0xFF00796B)),
+                    SizedBox(width: 8),
+                    Text('AI Document Insights', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                   ],
                 ),
-                const Divider(),
-                if (dates.isNotEmpty || amounts.isNotEmpty || phones.isNotEmpty || emails.isNotEmpty)
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 6,
-                    children: [
-                      if (amounts.isNotEmpty) Chip(avatar: const Icon(Icons.currency_rupee, size: 14, color: Colors.green), label: Text(amounts.first, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)), backgroundColor: Colors.green.shade50),
-                      if (dates.isNotEmpty) Chip(avatar: const Icon(Icons.calendar_today, size: 14, color: Colors.blue), label: Text(dates.first, style: const TextStyle(fontSize: 11)), backgroundColor: Colors.blue.shade50),
-                      if (phones.isNotEmpty) Chip(avatar: const Icon(Icons.phone, size: 14, color: Colors.orange), label: Text(phones.first, style: const TextStyle(fontSize: 11)), backgroundColor: Colors.orange.shade50),
-                      if (emails.isNotEmpty) Chip(avatar: const Icon(Icons.email, size: 14, color: Colors.purple), label: Text(emails.first, style: const TextStyle(fontSize: 11)), backgroundColor: Colors.purple.shade50),
-                    ],
-                  ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        icon: const Icon(Icons.summarize_rounded, size: 15),
-                        label: const Text('Summary', style: TextStyle(fontSize: 11)),
-                        onPressed: () {
-                          final sentences = textCtrl.text.split(RegExp(r'(?<=[.!?\n])'));
-                          final summary = sentences.where((s) => s.trim().length > 15).take(4).join(" ").trim();
-                          setSheetState(() => textCtrl.text = "📌 Summary:\n$summary");
-                        },
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        icon: const Icon(Icons.format_list_bulleted_rounded, size: 15),
-                        label: const Text('Key Points', style: TextStyle(fontSize: 11)),
-                        onPressed: () {
-                          final lines = textCtrl.text.split('\n').where((l) => l.trim().isNotEmpty).toList();
-                          final points = lines.take(6).map((l) => "• ${l.trim()}").join("\n");
-                          setSheetState(() => textCtrl.text = "⚡ Key Points:\n$points");
-                        },
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 10),
-                Container(
-                  constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.35),
-                  child: TextField(
-                    controller: textCtrl,
-                    maxLines: null,
-                    decoration: InputDecoration(filled: true, fillColor: Colors.grey.shade50, border: OutlineInputBorder(borderRadius: BorderRadius.circular(10))),
-                  ),
-                ),
-                const SizedBox(height: 14),
-                SizedBox(
-                  width: double.infinity,
-                  height: 48,
-                  child: ElevatedButton.icon(
-                    icon: const Icon(Icons.share_rounded),
-                    label: const Text('Share Extracted Text', style: TextStyle(fontWeight: FontWeight.bold)),
-                    style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00796B), foregroundColor: Colors.white),
-                    onPressed: () => Share.share(textCtrl.text),
-                  ),
+                IconButton(
+                  icon: const Icon(Icons.copy_rounded, color: Color(0xFF00796B)),
+                  onPressed: () {
+                    Clipboard.setData(ClipboardData(text: textCtrl.text));
+                    _showToast('Copied to clipboard!');
+                  },
                 ),
               ],
             ),
-          );
-        },
+            const Divider(),
+            TextField(
+              controller: textCtrl,
+              maxLines: 8,
+              decoration: InputDecoration(filled: true, fillColor: Colors.grey.shade50, border: OutlineInputBorder(borderRadius: BorderRadius.circular(10))),
+            ),
+            const SizedBox(height: 14),
+            SizedBox(
+              width: double.infinity,
+              height: 48,
+              child: ElevatedButton.icon(
+                icon: const Icon(Icons.share_rounded),
+                label: const Text('Share Extracted Text', style: TextStyle(fontWeight: FontWeight.bold)),
+                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00796B), foregroundColor: Colors.white),
+                onPressed: () => Share.share(textCtrl.text),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1204,7 +1147,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
           ],
         ),
         const SizedBox(height: 24),
-        _buildSectionHeader('Image Power Tools & Studio (Fixed & Real)'),
+        _buildSectionHeader('Image & PDF Studio (Fixed & Complete)'),
         const SizedBox(height: 12),
         GridView.count(
           shrinkWrap: true,
@@ -1214,8 +1157,23 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
           mainAxisSpacing: 14,
           childAspectRatio: 0.85,
           children: [
+            _buildToolCard(
+              title: 'PDF Studio',
+              subtitle: 'Merge & Split',
+              icon: Icons.picture_as_pdf_rounded,
+              iconColor: const Color(0xFFD32F2F),
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => PdfStudioScreen(
+                    savedDocs: _savedDocs,
+                    onExportPdf: (paths, title) => _exportPdfWithScale(paths, title),
+                  ),
+                ),
+              ),
+            ),
             _buildToolCard(title: 'Passport Photo', subtitle: '8 & 16 Print Sheet', icon: Icons.portrait_rounded, iconColor: const Color(0xFF1565C0), onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PassportPhotoStudioScreen()))),
-            _buildToolCard(title: 'Digital Sign', subtitle: 'E-Signature Pad', icon: Icons.draw_rounded, iconColor: const Color(0xFF7B1FA2), onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const DigitalSignatureScreen()))),
+            _buildToolCard(title: 'Digital Sign', subtitle: 'Auto-Crop PNG', icon: Icons.draw_rounded, iconColor: const Color(0xFF7B1FA2), onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const DigitalSignatureScreen()))),
             _buildToolCard(
               title: 'Compressor',
               subtitle: 'Slider Control',
@@ -1231,20 +1189,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
               },
             ),
             _buildToolCard(title: 'Watermark', subtitle: 'Custom Stamp', icon: Icons.branding_watermark_outlined, iconColor: const Color(0xFF0288D1), onTap: () => _openWatermarkDialog()),
-            _buildToolCard(
-              title: 'Export Images',
-              subtitle: 'Save as JPG/PNG',
-              icon: Icons.image_rounded,
-              iconColor: const Color(0xFFE65100),
-              onTap: () {
-                if (_savedDocs.isNotEmpty) {
-                  final doc = _savedDocs.first;
-                  _shareImages(doc['images'], doc['title']);
-                } else {
-                  _showToast('No documents to share.');
-                }
-              },
-            ),
             _buildToolCard(title: 'Photo Studio', subtitle: 'Rotate & Save', icon: Icons.crop_rotate_rounded, iconColor: const Color(0xFF00897B), onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const UniversalImageToolScreen()))),
           ],
         ),
@@ -1285,7 +1229,251 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
   }
 }
 
-// 3. DOCUMENT DETAIL SCREEN WITH REAL FILTER BAKING
+// 3. DEDICATED PDF STUDIO SCREEN (Merge & Split)
+class PdfStudioScreen extends StatefulWidget {
+  final List<Map<String, dynamic>> savedDocs;
+  final Function(List, String) onExportPdf;
+
+  const PdfStudioScreen({super.key, required this.savedDocs, required this.onExportPdf});
+
+  @override
+  State<PdfStudioScreen> createState() => _PdfStudioScreenState();
+}
+
+class _PdfStudioScreenState extends State<PdfStudioScreen> with SingleTickerProviderStateMixin {
+  late TabController _tabController;
+  final Set<String> _selectedMergeDocIds = {};
+
+  String? _selectedSplitDocId;
+  final Set<int> _selectedSplitPageIndices = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _tabController = TabController(length: 2, vsync: this);
+    if (widget.savedDocs.isNotEmpty) {
+      _selectedSplitDocId = widget.savedDocs.first['id'];
+    }
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
+  }
+
+  void _executeMerge() {
+    if (_selectedMergeDocIds.length < 2) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please select at least 2 documents to merge.')));
+      return;
+    }
+
+    List<String> combinedImages = [];
+    for (String id in _selectedMergeDocIds) {
+      final doc = widget.savedDocs.firstWhere((d) => d['id'] == id, orElse: () => {});
+      if (doc.isNotEmpty && doc['images'] != null) {
+        combinedImages.addAll(List<String>.from(doc['images']));
+      }
+    }
+
+    if (combinedImages.isNotEmpty) {
+      widget.onExportPdf(combinedImages, "Merged_Document_${DateFormat('ddMMM_HHmm').format(DateTime.now())}");
+    }
+  }
+
+  void _executeSplit() {
+    if (_selectedSplitDocId == null || _selectedSplitPageIndices.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please select a document and at least 1 page to extract.')));
+      return;
+    }
+
+    final doc = widget.savedDocs.firstWhere((d) => d['id'] == _selectedSplitDocId, orElse: () => {});
+    if (doc.isNotEmpty && doc['images'] != null) {
+      final allImgs = List<String>.from(doc['images']);
+      List<String> chosenImgs = [];
+      for (int i in _selectedSplitPageIndices) {
+        if (i < allImgs.length) chosenImgs.add(allImgs[i]);
+      }
+
+      if (chosenImgs.isNotEmpty) {
+        widget.onExportPdf(chosenImgs, "${doc['title']}_Split_${DateFormat('ddMMM_HHmm').format(DateTime.now())}");
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('PDF Studio (Merge & Split)'),
+        bottom: TabBar(
+          controller: _tabController,
+          indicatorColor: const Color(0xFF00796B),
+          labelColor: const Color(0xFF00796B),
+          tabs: const [
+            Tab(icon: Icon(Icons.merge_type_rounded), text: 'Merge PDFs'),
+            Tab(icon: Icon(Icons.call_split_rounded), text: 'Split / Extract'),
+          ],
+        ),
+      ),
+      body: widget.savedDocs.isEmpty
+          ? const Center(child: Text('No scanned documents available. Scan some pages first!'))
+          : TabBarView(
+              controller: _tabController,
+              children: [
+                _buildMergeTab(),
+                _buildSplitTab(),
+              ],
+            ),
+    );
+  }
+
+  Widget _buildMergeTab() {
+    return Column(
+      children: [
+        Container(
+          padding: const EdgeInsets.all(12),
+          color: const Color(0xFFE0F2F1),
+          child: const Row(
+            children: [
+              Icon(Icons.info_outline, color: Color(0xFF00796B), size: 20),
+              SizedBox(width: 8),
+              Expanded(child: Text('Select 2 or more documents to combine into a single PDF.', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold))),
+            ],
+          ),
+        ),
+        Expanded(
+          child: ListView.builder(
+            itemCount: widget.savedDocs.length,
+            itemBuilder: (ctx, i) {
+              final doc = widget.savedDocs[i];
+              final isSelected = _selectedMergeDocIds.contains(doc['id']);
+              return CheckboxListTile(
+                activeColor: const Color(0xFF00796B),
+                title: Text(doc['title'] ?? 'Untitled', style: const TextStyle(fontWeight: FontWeight.bold)),
+                subtitle: Text('${doc['pages']} pages • ${doc['date']}'),
+                value: isSelected,
+                onChanged: (val) {
+                  setState(() {
+                    if (val == true) {
+                      _selectedMergeDocIds.add(doc['id']);
+                    } else {
+                      _selectedMergeDocIds.remove(doc['id']);
+                    }
+                  });
+                },
+              );
+            },
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.all(16),
+          child: SizedBox(
+            width: double.infinity,
+            height: 48,
+            child: ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00796B), foregroundColor: Colors.white),
+              icon: const Icon(Icons.picture_as_pdf_rounded),
+              label: Text('Merge & Export PDF (${_selectedMergeDocIds.length} Selected)', style: const TextStyle(fontWeight: FontWeight.bold)),
+              onPressed: _executeMerge,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSplitTab() {
+    final currentDoc = widget.savedDocs.firstWhere((d) => d['id'] == _selectedSplitDocId, orElse: () => widget.savedDocs.first);
+    final List imgs = currentDoc['images'] ?? [];
+
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          DropdownButtonFormField<String>(
+            value: _selectedSplitDocId,
+            decoration: const InputDecoration(labelText: 'Choose Document to Split', border: OutlineInputBorder()),
+            items: widget.savedDocs.map((d) => DropdownMenuItem(value: d['id'].toString(), child: Text(d['title'], overflow: TextOverflow.ellipsis))).toList(),
+            onChanged: (val) {
+              setState(() {
+                _selectedSplitDocId = val;
+                _selectedSplitPageIndices.clear();
+              });
+            },
+          ),
+          const SizedBox(height: 16),
+          Text('Select Pages to Extract (${_selectedSplitPageIndices.length} chosen):', style: const TextStyle(fontWeight: FontWeight.bold)),
+          const SizedBox(height: 10),
+          Expanded(
+            child: GridView.builder(
+              itemCount: imgs.length,
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 3, crossAxisSpacing: 10, mainAxisSpacing: 10, childAspectRatio: 0.75),
+              itemBuilder: (ctx, idx) {
+                final isChosen = _selectedSplitPageIndices.contains(idx);
+                return InkWell(
+                  onTap: () {
+                    setState(() {
+                      if (isChosen) {
+                        _selectedSplitPageIndices.remove(idx);
+                      } else {
+                        _selectedSplitPageIndices.add(idx);
+                      }
+                    });
+                  },
+                  child: Container(
+                    decoration: BoxDecoration(
+                      border: Border.all(color: isChosen ? const Color(0xFF00796B) : Colors.grey.shade300, width: isChosen ? 3 : 1),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Stack(
+                      children: [
+                        Positioned.fill(
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(6),
+                            child: Image.file(File(imgs[idx]), fit: BoxFit.cover),
+                          ),
+                        ),
+                        Positioned(
+                          top: 4,
+                          left: 4,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(color: Colors.black87, borderRadius: BorderRadius.circular(4)),
+                            child: Text('P${idx + 1}', style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
+                          ),
+                        ),
+                        if (isChosen)
+                          const Positioned(
+                            top: 4,
+                            right: 4,
+                            child: Icon(Icons.check_circle, color: Color(0xFF00796B), size: 22),
+                          ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+          SizedBox(
+            width: double.infinity,
+            height: 48,
+            child: ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00796B), foregroundColor: Colors.white),
+              icon: const Icon(Icons.call_split_rounded),
+              label: const Text('Extract Selected Pages as New PDF', style: TextStyle(fontWeight: FontWeight.bold)),
+              onPressed: _executeSplit,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// 4. DOCUMENT DETAIL SCREEN WITH REAL FILTER BAKING
 class DocumentDetailScreen extends StatefulWidget {
   final Map<String, dynamic> doc;
   final VoidCallback onDelete;
@@ -1566,7 +1754,7 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
   }
 }
 
-// 4. DIGITAL SIGNATURE STUDIO (Auto-Trimmed Transparent PNG)
+// 5. DIGITAL SIGNATURE STUDIO (Auto-Trimmed Transparent PNG)
 class DigitalSignatureScreen extends StatefulWidget {
   const DigitalSignatureScreen({super.key});
   @override
@@ -1705,7 +1893,7 @@ class _SignaturePainter extends CustomPainter {
   bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
 }
 
-// 5. PASSPORT PHOTO STUDIO (8 & 16 Photos Toggle)
+// 6. PASSPORT PHOTO STUDIO (8 & 16 Photos Toggle)
 class PassportPhotoStudioScreen extends StatefulWidget {
   const PassportPhotoStudioScreen({super.key});
   @override
@@ -1828,7 +2016,7 @@ class _PassportPhotoStudioScreenState extends State<PassportPhotoStudioScreen> {
   }
 }
 
-// 6. UNIVERSAL IMAGE TOOLS (Physical 90° Rotate & Real Save)
+// 7. UNIVERSAL IMAGE TOOLS (Physical 90° Rotate & Real Save)
 class UniversalImageToolScreen extends StatefulWidget {
   const UniversalImageToolScreen({super.key});
   @override
@@ -1901,7 +2089,7 @@ class _UniversalImageToolScreenState extends State<UniversalImageToolScreen> {
   }
 }
 
-// 7. POWERPOINT STUDIO
+// 8. POWERPOINT STUDIO
 class PowerPointStudioScreen extends StatefulWidget {
   const PowerPointStudioScreen({super.key});
   @override
@@ -2004,7 +2192,7 @@ class _PowerPointStudioScreenState extends State<PowerPointStudioScreen> {
   }
 }
 
-// 8. TXT EDITOR & NOTES MAKER (Permanent Save)
+// 9. TXT EDITOR & NOTES MAKER (Permanent Save)
 class TxtEditorNotesScreen extends StatefulWidget {
   final bool isNotes;
   const TxtEditorNotesScreen({super.key, required this.isNotes});
@@ -2066,7 +2254,7 @@ class _TxtEditorNotesScreenState extends State<TxtEditorNotesScreen> {
   }
 }
 
-// 9. PRO RESUME BUILDER
+// 10. PRO RESUME BUILDER
 class ResumeBuilderScreen extends StatefulWidget {
   const ResumeBuilderScreen({super.key});
   @override
@@ -2163,7 +2351,7 @@ class _ResumeBuilderScreenState extends State<ResumeBuilderScreen> {
   }
 }
 
-// 10. INVOICE MAKER WITH REAL GST CALCULATION (18% Split)
+// 11. INVOICE MAKER WITH REAL GST CALCULATION (18% Split)
 class InvoiceMakerProScreen extends StatefulWidget {
   const InvoiceMakerProScreen({super.key});
   @override
@@ -2285,7 +2473,7 @@ class _InvoiceMakerProScreenState extends State<InvoiceMakerProScreen> {
   }
 }
 
-// 11. LETTER TEMPLATES
+// 12. LETTER TEMPLATES
 class LetterTemplatesScreen extends StatefulWidget {
   const LetterTemplatesScreen({super.key});
   @override
@@ -2350,4 +2538,3 @@ class _LetterTemplatesScreenState extends State<LetterTemplatesScreen> {
     );
   }
 }
-
