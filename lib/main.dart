@@ -151,7 +151,6 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
         borderRadius: BorderRadius.circular(30),
         child: Stack(
           children: [
-            // Gloss effect
             Positioned(
               top: -30,
               left: -30,
@@ -397,7 +396,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       'isFavorite': false,
       'date': DateFormat('dd MMM yyyy, hh:mm a').format(DateTime.now()),
       'images': List<String>.from(persistentPaths),
-      'originalImages': List<String>.from(persistentPaths), // Preserved for filter undo!
+      'originalImages': List<String>.from(persistentPaths),
       'pages': persistentPaths.length,
     };
 
@@ -441,7 +440,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     _showToast('Document deleted permanently');
   }
 
-  // Scan or Gallery Pick
   Future<void> _startDocScan({int limit = 50, String category = 'Documents', String prefix = 'Doc', bool galleryOnly = false}) async {
     final scanner = DocumentScanner(
       options: DocumentScannerOptions(
@@ -466,7 +464,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     }
   }
 
-  // Bottom Sheet corresponding to Screenshot 1
   void _openAddDocumentBottomSheet() {
     showModalBottomSheet(
       context: context,
@@ -679,7 +676,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     );
   }
 
-  // Enhanced Compressor (High Quality Preservation, 100KB to 2MB+)
   void _openCompressionDialog(List<dynamic> images, String title) {
     double scaleSlider = 0.85;
     showDialog(
@@ -755,7 +751,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     );
   }
 
-  // Direct Save to Phone Storage / Downloads
   Future<void> _saveToDeviceStorage(List images, String title, {double scale = 1.0}) async {
     try {
       final pdf = await _generatePdfDoc(images, scale: scale);
@@ -775,7 +770,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
 
       _showToast('📁 Saved directly to Downloads:\n$savePath');
     } catch (e) {
-      // Fallback to sharing directly
       await _exportPdfWithScale(images, title, scale: scale);
     }
   }
@@ -846,8 +840,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
 
   Future<void> _shareImages(List images, String title, {double scale = 1.0}) async {
     List<XFile> shareFiles = [];
-    final appDir = await getTemporaryDirectory();
-
     for (int i = 0; i < images.length; i++) {
       final f = File(images[i]);
       if (await f.exists()) {
@@ -1006,7 +998,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     );
   }
 
-  // Multi-Theme Picker Dialog
+  // Multi-Theme Picker Dialog (col.value used for compatibility with Flutter 3.24)
   void _openThemeColorPicker() {
     final colors = [
       {'name': 'Ruby Red', 'color': const Color(0xFFD32F2F)},
@@ -1030,7 +1022,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
               onTap: () async {
                 appPrimaryColor.value = col;
                 final prefs = await SharedPreferences.getInstance();
-                await prefs.setInt('primary_color_val', col.toARGB32());
+                await prefs.setInt('primary_color_val', col.value); // FIXED HERE
                 if (ctx.mounted) Navigator.pop(ctx);
               },
               child: Column(
@@ -1039,7 +1031,12 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                   Container(
                     width: 48,
                     height: 48,
-                    decoration: BoxDecoration(shape: BoxShape.circle, color: col, border: Border.all(color: Colors.white, width: 3), boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 4)]),
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: col,
+                      border: Border.all(color: Colors.white, width: 3),
+                      boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 4)],
+                    ),
                   ),
                   const SizedBox(height: 4),
                   Text(item['name'] as String, style: const TextStyle(fontSize: 11)),
@@ -1170,7 +1167,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       body: Column(
         children: [
           Expanded(child: _currentTabIndex == 0 ? _buildDocsTab() : _buildToolsTab()),
-          // Docked Banner Ad at the very bottom
           if (_isBannerLoaded && _bannerAd != null)
             SafeArea(
               top: false,
@@ -1201,7 +1197,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
           backgroundColor: Colors.transparent,
           foregroundColor: Colors.white,
           elevation: 0,
-          onPressed: _openAddDocumentBottomSheet, // Opens Bottom sheet matching Screenshot 1
+          onPressed: _openAddDocumentBottomSheet,
           child: const Icon(Icons.add_rounded, size: 34),
         ),
       ),
@@ -1620,7 +1616,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
   }
 }
 
-// 3. UPGRADED DOCUMENT DETAIL SCREEN (Back/Next Arrows, Add/Delete Pages, Save, Undo Filters)
+// 3. UPGRADED DOCUMENT DETAIL SCREEN
 class DocumentDetailScreen extends StatefulWidget {
   final Map<String, dynamic> doc;
   final VoidCallback onDelete;
@@ -1688,7 +1684,6 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
     );
   }
 
-  // Add more pages to this active document
   Future<void> _addNewPages() async {
     final scanner = DocumentScanner(
       options: DocumentScannerOptions(documentFormat: DocumentFormat.jpeg, mode: ScannerMode.full, isGalleryImport: true, pageLimit: 20),
@@ -1726,7 +1721,6 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
 
   void _deleteCurrentPage() {
     if (_images.length <= 1) {
-      // Entire doc deletion
       showDialog(
         context: context,
         builder: (ctx) => AlertDialog(
@@ -1785,7 +1779,6 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
     );
   }
 
-  // Restore Original Clean Image
   void _resetToOriginalImage() {
     if (_currentPage < _originalImages.length) {
       setState(() {
@@ -1797,13 +1790,11 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
     }
   }
 
-  // Filter with Non-Destructive Backup
   Future<void> _applyFilter(int mode) async {
     if (_images.isEmpty) return;
 
     ColorFilter? filter;
     if (mode == 1) {
-      // Magic Color
       filter = const ColorFilter.matrix([
         1.25, 0, 0, 0, -10,
         0, 1.25, 0, 0, -10,
@@ -1811,7 +1802,6 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
         0, 0, 0, 1, 0,
       ]);
     } else if (mode == 2) {
-      // High Contrast B&W
       filter = const ColorFilter.matrix([
         1.5, 1.5, 1.5, 0, -160,
         1.5, 1.5, 1.5, 0, -160,
@@ -1819,7 +1809,6 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
         0, 0, 0, 1, 0,
       ]);
     } else if (mode == 3) {
-      // Crisp Grayscale
       filter = const ColorFilter.matrix([
         0.299, 0.587, 0.114, 0, 0,
         0.299, 0.587, 0.114, 0, 0,
@@ -1830,7 +1819,6 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
 
     if (filter == null) return;
 
-    // Use original image to bake so it doesn't double-degrade
     final sourcePath = (_currentPage < _originalImages.length) ? _originalImages[_currentPage] : _images[_currentPage];
     final currFile = File(sourcePath);
     final bytes = await currFile.readAsBytes();
@@ -1963,7 +1951,6 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
                     ),
                   ],
                 ),
-                // Previous Page Arrow Button
                 if (_currentPage > 0)
                   Positioned(
                     left: 12,
@@ -1981,7 +1968,6 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
                       ),
                     ),
                   ),
-                // Next Page Arrow Button
                 if (_currentPage < _images.length - 1)
                   Positioned(
                     right: 12,
@@ -2037,7 +2023,7 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
   }
 }
 
-// 4. PDF STUDIO SCREEN (Merge & Split)
+// 4. PDF STUDIO SCREEN
 class PdfStudioScreen extends StatefulWidget {
   final List<Map<String, dynamic>> savedDocs;
   final Function(List, String) onExportPdf;
@@ -2281,7 +2267,7 @@ class _PdfStudioScreenState extends State<PdfStudioScreen> with SingleTickerProv
   }
 }
 
-// 5. DIGITAL SIGNATURE STUDIO (Auto-Trimmed Transparent PNG)
+// 5. DIGITAL SIGNATURE STUDIO
 class DigitalSignatureScreen extends StatefulWidget {
   const DigitalSignatureScreen({super.key});
   @override
@@ -2419,7 +2405,7 @@ class _SignaturePainter extends CustomPainter {
   bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
 }
 
-// 6. PASSPORT PHOTO STUDIO (8 & 16 Photos Toggle)
+// 6. PASSPORT PHOTO STUDIO
 class PassportPhotoStudioScreen extends StatefulWidget {
   const PassportPhotoStudioScreen({super.key});
   @override
