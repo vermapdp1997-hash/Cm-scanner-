@@ -15,7 +15,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:intl/intl.dart';
 
-// GLOBAL THEME CONTROLLER (Default clean Teal theme)
+// GLOBAL THEME CONTROLLER
 final ValueNotifier<ThemeMode> appThemeMode = ValueNotifier(ThemeMode.light);
 final ValueNotifier<Color> appPrimaryColor = ValueNotifier(const Color(0xFF00796B));
 
@@ -87,7 +87,7 @@ class BharatDocScannerApp extends StatelessWidget {
   }
 }
 
-// 1. SPLASH SCREEN (Attractive Red Glossy Badge Logo as requested)
+// 1. SPLASH SCREEN (Attractive Red Glossy Badge Logo)
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
   @override
@@ -127,7 +127,6 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
     super.dispose();
   }
 
-  // RED COLOR GLOSSY ATTRACTIVE LOGO
   Widget _buildAppBadgeLogo() {
     return Container(
       width: 140,
@@ -152,7 +151,6 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
         borderRadius: BorderRadius.circular(30),
         child: Stack(
           children: [
-            // Glass Reflection Shine (Chamak)
             Positioned(
               top: -30,
               left: -30,
@@ -466,7 +464,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     }
   }
 
-  // Bottom Sheet matching Screenshot 1
   void _openAddDocumentBottomSheet() {
     showModalBottomSheet(
       context: context,
@@ -1001,97 +998,132 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     );
   }
 
+  // Multi-Theme Picker Dialog (12 Colors Palette)
   void _openThemeColorPicker() {
     final colors = [
       {'name': 'Emerald Teal', 'color': const Color(0xFF00796B)},
       {'name': 'Ocean Cyan', 'color': const Color(0xFF0288D1)},
       {'name': 'Ruby Red', 'color': const Color(0xFFD32F2F)},
       {'name': 'Deep Crimson', 'color': const Color(0xFFB71C1C)},
-      {'name': 'Sapphire Blue', 'color': const Color(0xFF1565C0)},
+      {'name': 'Saffron Orange', 'color': const Color(0xFFFF6F00)},
+      {'name': 'Royal Sapphire', 'color': const Color(0xFF1565C0)},
       {'name': 'Amethyst Purple', 'color': const Color(0xFF7B1FA2)},
-      {'name': 'Dark Charcoal', 'color': const Color(0xFF37474F)},
+      {'name': 'Velvet Violet', 'color': const Color(0xFF4A148C)},
+      {'name': 'Forest Green', 'color': const Color(0xFF2E7D32)},
+      {'name': 'Midnight Charcoal', 'color': const Color(0xFF263238)},
+      {'name': 'Sunset Rose', 'color': const Color(0xFFC2185B)},
+      {'name': 'Golden Amber', 'color': const Color(0xFFFFA000)},
     ];
 
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Choose App Theme'),
-        content: Wrap(
-          spacing: 12,
-          runSpacing: 12,
-          children: colors.map((item) {
-            final col = item['color'] as Color;
-            return InkWell(
-              onTap: () async {
-                appPrimaryColor.value = col;
-                final prefs = await SharedPreferences.getInstance();
-                await prefs.setInt('primary_color_val', col.value);
-                if (ctx.mounted) Navigator.pop(ctx);
-              },
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    width: 48,
-                    height: 48,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: col,
-                      border: Border.all(color: Colors.white, width: 3),
-                      boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 4)],
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text('Choose Color Theme', style: TextStyle(fontWeight: FontWeight.bold)),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: GridView.builder(
+            shrinkWrap: true,
+            itemCount: colors.length,
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 3,
+              crossAxisSpacing: 12,
+              mainAxisSpacing: 14,
+              childAspectRatio: 0.9,
+            ),
+            itemBuilder: (ctx, i) {
+              final item = colors[i];
+              final col = item['color'] as Color;
+              final isSelected = appPrimaryColor.value.value == col.value;
+
+              return InkWell(
+                borderRadius: BorderRadius.circular(12),
+                onTap: () async {
+                  appPrimaryColor.value = col;
+                  final prefs = await SharedPreferences.getInstance();
+                  await prefs.setInt('primary_color_val', col.value);
+                  if (ctx.mounted) Navigator.pop(ctx);
+                },
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 44,
+                      height: 44,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: col,
+                        border: Border.all(color: isSelected ? Colors.black : Colors.white, width: isSelected ? 3 : 2),
+                        boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 4, offset: Offset(0, 2))],
+                      ),
+                      child: isSelected ? const Icon(Icons.check, color: Colors.white, size: 24) : null,
                     ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(item['name'] as String, style: const TextStyle(fontSize: 11)),
-                ],
-              ),
-            );
-          }).toList(),
+                    const SizedBox(height: 4),
+                    Text(
+                      item['name'] as String,
+                      textAlign: TextAlign.center,
+                      maxLines: 1,
+                      style: TextStyle(fontSize: 10, fontWeight: isSelected ? FontWeight.bold : FontWeight.normal),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
         ),
       ),
     );
   }
 
-  // Dual Pill Floating Button [ 📷 | ➕ ] exactly as in the Screenshot!
+  // Dual Pill Floating Button [ 📷 | ➕ ] set dynamically to current Theme Color!
   Widget _buildDualFab() {
-    return Container(
-      height: 52,
-      decoration: BoxDecoration(
-        color: const Color(0xFF0288D1), // Cyan/Blue as in screenshot
-        borderRadius: BorderRadius.circular(30),
-        boxShadow: [
-          BoxShadow(
-            color: const Color(0xFF0288D1).withAlpha(120),
-            blurRadius: 12,
-            offset: const Offset(0, 5),
-          ),
-        ],
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // Camera Button (Left side) -> Directly scans
-          InkWell(
-            borderRadius: const BorderRadius.horizontal(left: Radius.circular(30)),
-            onTap: () => _startDocScan(),
-            child: const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              child: Icon(Icons.camera_alt_rounded, color: Colors.white, size: 26),
+    return ValueListenableBuilder<Color>(
+      valueListenable: appPrimaryColor,
+      builder: (_, themeColor, __) {
+        return Container(
+          height: 52,
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [themeColor, themeColor.withAlpha(220)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
             ),
+            borderRadius: BorderRadius.circular(30),
+            boxShadow: [
+              BoxShadow(
+                color: themeColor.withAlpha(140),
+                blurRadius: 14,
+                offset: const Offset(0, 6),
+              ),
+            ],
           ),
-          // Vertical divider line in center
-          Container(width: 1.2, height: 26, color: Colors.white.withAlpha(130)),
-          // Plus Button (Right side) -> Opens bottom sheet popup
-          InkWell(
-            borderRadius: const BorderRadius.horizontal(right: Radius.circular(30)),
-            onTap: _openAddDocumentBottomSheet,
-            child: const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              child: Icon(Icons.add_rounded, color: Colors.white, size: 30),
-            ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Camera button (Direct Scan)
+              InkWell(
+                borderRadius: const BorderRadius.horizontal(left: Radius.circular(30)),
+                onTap: () => _startDocScan(),
+                child: const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  child: Icon(Icons.camera_alt_rounded, color: Colors.white, size: 26),
+                ),
+              ),
+              // Thin white line separator
+              Container(width: 1.2, height: 26, color: Colors.white.withAlpha(140)),
+              // Plus button (Add Document Options)
+              InkWell(
+                borderRadius: const BorderRadius.horizontal(right: Radius.circular(30)),
+                onTap: _openAddDocumentBottomSheet,
+                child: const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  child: Icon(Icons.add_rounded, color: Colors.white, size: 30),
+                ),
+              ),
+            ],
           ),
-        ],
-      ),
+        );
+      },
     );
   }
 
@@ -1146,12 +1178,12 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
             ListTile(
               leading: const Icon(Icons.palette_rounded),
               title: const Text('Change Theme Color'),
-              subtitle: const Text('Teal, Blue, Red, Purple & more'),
+              subtitle: const Text('12 Vibrant Colors Available'),
               onTap: _openThemeColorPicker,
             ),
             const Divider(),
             ListTile(
-              leading: const Icon(Icons.folder_shared_rounded),
+              leading: const Icon(Icons.folder_special_rounded),
               title: const Text('Documents Manager'),
               onTap: () {
                 Navigator.pop(context);
@@ -1159,7 +1191,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
               },
             ),
             ListTile(
-              leading: const Icon(Icons.widgets_rounded),
+              leading: const Icon(Icons.auto_awesome_mosaic_rounded),
               title: const Text('Office & AI Studio'),
               onTap: () {
                 Navigator.pop(context);
@@ -1212,74 +1244,133 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       ),
       body: Stack(
         children: [
-          Column(
-            children: [
-              Expanded(child: _currentTabIndex == 0 ? _buildDocsTab() : _buildToolsTab()),
-              // Clean Ad Space container at bottom as in the Screenshot
-              if (_isBannerLoaded && _bannerAd != null)
-                SafeArea(
-                  top: false,
-                  child: SizedBox(
-                    width: _bannerAd!.size.width.toDouble(),
-                    height: _bannerAd!.size.height.toDouble(),
-                    child: AdWidget(ad: _bannerAd!),
-                  ),
-                )
-              else
-                Container(
-                  height: 38,
-                  alignment: Alignment.center,
-                  child: const Text('Ad Space', style: TextStyle(color: Colors.grey, fontSize: 11)),
-                ),
-            ],
-          ),
-          // Dual Pill Floating Button [ 📷 | ➕ ] placed at bottom right above Ad Space
+          _currentTabIndex == 0 ? _buildDocsTab() : _buildToolsTab(),
+          // Floating Dual Pill Button [ 📷 | ➕ ] placed above bottom bar on right side
           Positioned(
             right: 18,
-            bottom: _isBannerLoaded && _bannerAd != null ? (_bannerAd!.size.height.toDouble() + 14) : 52,
+            bottom: 20,
             child: _buildDualFab(),
           ),
         ],
       ),
-      bottomNavigationBar: BottomAppBar(
-        shape: const CircularNotchedRectangle(),
-        notchMargin: 8,
-        elevation: 8,
-        child: SizedBox(
-          height: 56,
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
-            children: [
-              InkWell(
-                onTap: () => setState(() => _currentTabIndex = 0),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.folder_shared_rounded, color: _currentTabIndex == 0 ? appPrimaryColor.value : Colors.grey.shade400),
-                    const SizedBox(height: 2),
-                    Text('Documents', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: _currentTabIndex == 0 ? appPrimaryColor.value : Colors.grey.shade400)),
-                  ],
+      // Bada Gol Camera Button Center Docked
+      floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
+      floatingActionButton: ValueListenableBuilder<Color>(
+        valueListenable: appPrimaryColor,
+        builder: (_, col, __) {
+          return Container(
+            height: 64,
+            width: 64,
+            margin: const EdgeInsets.only(top: 14),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              gradient: LinearGradient(
+                colors: [col, col.withAlpha(210)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              boxShadow: [
+                BoxShadow(color: col.withAlpha(120), blurRadius: 12, offset: const Offset(0, 5)),
+              ],
+            ),
+            child: FloatingActionButton(
+              shape: const CircleBorder(),
+              backgroundColor: Colors.transparent,
+              foregroundColor: Colors.white,
+              elevation: 0,
+              onPressed: () => _startDocScan(),
+              child: const Icon(Icons.camera_alt_rounded, size: 30),
+            ),
+          );
+        },
+      ),
+      // Bottom Bar with Modernized & Attractive Buttons + Docked Banner Ad at bottom
+      bottomNavigationBar: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          BottomAppBar(
+            shape: const CircularNotchedRectangle(),
+            notchMargin: 8,
+            elevation: 10,
+            height: 60,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: [
+                // Stylish "Documents" Button
+                _buildModernNavButton(
+                  title: 'Documents',
+                  icon: Icons.folder_special_rounded,
+                  isSelected: _currentTabIndex == 0,
+                  onTap: () => setState(() => _currentTabIndex = 0),
                 ),
-              ),
-              // Camera button in center as was originally present
-              IconButton(
-                icon: Icon(Icons.camera_alt_rounded, color: appPrimaryColor.value, size: 28),
-                tooltip: 'Scan Document',
-                onPressed: () => _startDocScan(),
-              ),
-              InkWell(
-                onTap: () => setState(() => _currentTabIndex = 1),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.widgets_rounded, color: _currentTabIndex == 1 ? appPrimaryColor.value : Colors.grey.shade400),
-                    const SizedBox(height: 2),
-                    Text('Studio Tools', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: _currentTabIndex == 1 ? appPrimaryColor.value : Colors.grey.shade400)),
-                  ],
+                // Center Gap for Gol Camera Button
+                const SizedBox(width: 56),
+                // Stylish "Studio Tools" Button
+                _buildModernNavButton(
+                  title: 'Studio Tools',
+                  icon: Icons.auto_awesome_mosaic_rounded,
+                  isSelected: _currentTabIndex == 1,
+                  onTap: () => setState(() => _currentTabIndex = 1),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
+          // Banner Ad firmly locked at the very bottom edge
+          if (_isBannerLoaded && _bannerAd != null)
+            SafeArea(
+              top: false,
+              child: SizedBox(
+                width: _bannerAd!.size.width.toDouble(),
+                height: _bannerAd!.size.height.toDouble(),
+                child: AdWidget(ad: _bannerAd!),
+              ),
+            )
+          else
+            SafeArea(
+              top: false,
+              child: Container(
+                height: 24,
+                alignment: Alignment.center,
+                child: const Text('Ad Space', style: TextStyle(color: Colors.grey, fontSize: 10)),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  // Modern Navigation Button with Pill Indicator & Glow Dot
+  Widget _buildModernNavButton({
+    required String title,
+    required IconData icon,
+    required bool isSelected,
+    required VoidCallback onTap,
+  }) {
+    final themeColor = appPrimaryColor.value;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(16),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+        decoration: BoxDecoration(
+          color: isSelected ? themeColor.withAlpha(25) : Colors.transparent,
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, color: isSelected ? themeColor : Colors.grey.shade400, size: 22),
+            const SizedBox(height: 2),
+            Text(
+              title,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: isSelected ? FontWeight.w900 : FontWeight.w500,
+                color: isSelected ? themeColor : Colors.grey.shade400,
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -1394,6 +1485,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
             itemCount: _filteredDocs.length,
             itemBuilder: (ctx, i) => _buildListCard(_filteredDocs[i]),
           ),
+        const SizedBox(height: 80),
       ],
     );
   }
@@ -1624,7 +1716,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
             _buildToolCard(title: 'Photo Studio', subtitle: 'Physical Rotate', icon: Icons.crop_rotate_rounded, iconColor: const Color(0xFF00897B), onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const UniversalImageToolScreen()))),
           ],
         ),
-        const SizedBox(height: 70), // Padding so FAB doesn't hide last cards
+        const SizedBox(height: 80),
       ],
     );
   }
