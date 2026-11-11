@@ -1,4 +1,3 @@
-``dart
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -285,7 +284,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
   bool _isSelectionMode = false;
   final Set<String> _selectedDocIds = {};
 
-  // AdMob Ad Unit IDs (Test IDs in Debug to ensure ads show during testing)
+  // AdMob Ad Unit IDs
   final String _bannerId = kDebugMode
       ? 'ca-app-pub-3940256099942544/6300978111'
       : 'ca-app-pub-7940311763952252/4182204348';
@@ -728,7 +727,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
   }
 
   // ==========================================================================
-  // PLUS (+) BUTTON BOTTOM SHEET (Screenshot 1: "Add New Document" Menu)
+  // PLUS (+) BUTTON BOTTOM SHEET ("Add New Document" Menu)
   // ==========================================================================
   void _openAddNewDocumentSheet() {
     showModalBottomSheet(
@@ -2783,7 +2782,7 @@ class _TxtEditorNotesScreenState extends State<TxtEditorNotesScreen> {
 }
 
 // ============================================================================
-// 10. RESUME BUILDER (Fixed const double.infinity issue)
+// 10. RESUME BUILDER (Fixed Size.fromHeight)
 // ============================================================================
 class ResumeBuilderScreen extends StatefulWidget {
   const ResumeBuilderScreen({super.key});
@@ -2875,7 +2874,7 @@ class _ResumeBuilderScreenState extends State<ResumeBuilderScreen> {
 }
 
 // ============================================================================
-// 11. INVOICE MAKER (GST Tax Calculation)
+// 11. INVOICE MAKER (Fixed Size.fromHeight)
 // ============================================================================
 class InvoiceMakerProScreen extends StatefulWidget {
   const InvoiceMakerProScreen({super.key});
@@ -3105,15 +3104,3 @@ class _UniversalImageToolScreenState extends State<UniversalImageToolScreen> {
     );
   }
 }
-```
-Citations
-
-https://github.com/LakinduVirajith/CalcPal---Mobile-Application(MIT)
-https://github.com/SE-Final-Project-SafetyEye/SafetyEye
-https://github.com/AppMaste/Resume_Builder
-https://github.com/Squadron-team/Rukunin-App(MIT)
-4m10.3s
-Google AI models may make mistakes, so double-check outputs.
-Use Arrow Up and Arrow Down to select a turn, Enter to jump to it, and Escape to return to the chat.
-Start typing a prompt
-
