@@ -261,7 +261,7 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
 }
 
 // ============================================================================
-// 2. MAIN DASHBOARD SCREEN (Folders, Dual Pill Button [ 📷 | + ])
+// 2. MAIN DASHBOARD SCREEN (Round Camera Center Button + Side [ 📷 | + ])
 // ============================================================================
 class MainDashboardScreen extends StatefulWidget {
   const MainDashboardScreen({super.key});
@@ -359,7 +359,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     }
   }
 
-  Future<void> _createNewFolderDialog() async {
+  Future<void> _createNewFolderDialog({Function(String)? onCreated}) async {
     final folderCtrl = TextEditingController();
     showDialog(
       context: context,
@@ -398,6 +398,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                 });
                 _filterDocs();
                 Navigator.pop(ctx);
+                if (onCreated != null) onCreated(name);
               }
             },
             child: Text(AppLang.tr('create')),
@@ -442,6 +443,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       if (_sortAscending) {
         _filteredDocs.sort((a, b) => (a['title'] ?? '').toString().compareTo((b['title'] ?? '').toString()));
       } else {
+        // Rank wise: Recent scanned documents first
         _filteredDocs.sort((a, b) => (b['id'] ?? '').toString().compareTo((a['id'] ?? '').toString()));
       }
     });
@@ -485,7 +487,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     };
 
     setState(() {
-      _savedDocs.insert(0, newDoc);
+      _savedDocs.insert(0, newDoc); // Rank #1 at top
       _filterDocs();
     });
     await _commitDocsToPrefs();
@@ -696,8 +698,25 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                   ),
                 ),
                 const SizedBox(height: 14),
-                Text(AppLang.tr('choose_folder'), style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 6),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(AppLang.tr('choose_folder'), style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                    TextButton.icon(
+                      style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
+                      icon: const Icon(Icons.add, size: 14),
+                      label: const Text('New', style: TextStyle(fontSize: 11)),
+                      onPressed: () {
+                        _createNewFolderDialog(onCreated: (newF) {
+                          setDialogState(() {
+                            chosenFolder = newF;
+                          });
+                        });
+                      },
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
                 DropdownButtonFormField<String>(
                   value: chosenFolder,
                   decoration: InputDecoration(border: OutlineInputBorder(borderRadius: BorderRadius.circular(10))),
@@ -895,6 +914,75 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
           ),
         );
       },
+    );
+  }
+
+  // Multi-Theme Picker Dialog (All 9 color themes restored)
+  void _openThemeColorPicker() {
+    final colors = [
+      {'name': 'Emerald Teal (Default)', 'color': const Color(0xFF00796B)},
+      {'name': 'Ocean Cyan', 'color': const Color(0xFF0288D1)},
+      {'name': 'Pink Blossom', 'color': const Color(0xFFE91E63)},
+      {'name': 'Ruby Red', 'color': const Color(0xFFD32F2F)},
+      {'name': 'Saffron Orange', 'color': const Color(0xFFFF6F00)},
+      {'name': 'Royal Sapphire', 'color': const Color(0xFF1565C0)},
+      {'name': 'Amethyst Purple', 'color': const Color(0xFF7B1FA2)},
+      {'name': 'Forest Green', 'color': const Color(0xFF2E7D32)},
+      {'name': 'Midnight Charcoal', 'color': const Color(0xFF263238)},
+    ];
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text('Choose Color Theme', style: TextStyle(fontWeight: FontWeight.bold)),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: GridView.builder(
+            shrinkWrap: true,
+            itemCount: colors.length,
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 3,
+              crossAxisSpacing: 12,
+              mainAxisSpacing: 14,
+              childAspectRatio: 0.9,
+            ),
+            itemBuilder: (ctx, i) {
+              final item = colors[i];
+              final col = item['color'] as Color;
+              final isSelected = appPrimaryColor.value.value == col.value;
+
+              return InkWell(
+                borderRadius: BorderRadius.circular(12),
+                onTap: () async {
+                  appPrimaryColor.value = col;
+                  final prefs = await SharedPreferences.getInstance();
+                  await prefs.setInt('primary_color_val', col.value);
+                  if (ctx.mounted) Navigator.pop(ctx);
+                },
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 44,
+                      height: 44,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: col,
+                        border: Border.all(color: isSelected ? Colors.black : Colors.white, width: isSelected ? 3 : 2),
+                        boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 4, offset: Offset(0, 2))],
+                      ),
+                      child: isSelected ? const Icon(Icons.check, color: Colors.white, size: 24) : null,
+                    ),
+                    const SizedBox(height: 4),
+                    Text(item['name'] as String, textAlign: TextAlign.center, maxLines: 1, style: const TextStyle(fontSize: 10)),
+                  ],
+                ),
+              );
+            },
+          ),
+        ),
+      ),
     );
   }
 
@@ -1301,15 +1389,49 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
           ),
         ],
       ),
+      // Center Docked Round Camera Button (Restored)
+      floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
+      floatingActionButton: ValueListenableBuilder<Color>(
+        valueListenable: appPrimaryColor,
+        builder: (_, col, __) {
+          return Container(
+            height: 56,
+            width: 56,
+            margin: const EdgeInsets.only(top: 8),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              gradient: LinearGradient(
+                colors: [col, col.withOpacity(0.85)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              boxShadow: [
+                BoxShadow(color: col.withOpacity(0.4), blurRadius: 10, offset: const Offset(0, 4)),
+              ],
+            ),
+            child: FloatingActionButton(
+              shape: const CircleBorder(),
+              backgroundColor: Colors.transparent,
+              foregroundColor: Colors.white,
+              elevation: 0,
+              onPressed: () => _startDocScan(),
+              child: const Icon(Icons.camera_alt_rounded, size: 28),
+            ),
+          );
+        },
+      ),
       bottomNavigationBar: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           BottomAppBar(
-            height: 56,
+            shape: const CircularNotchedRectangle(),
+            notchMargin: 8,
+            height: 58,
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceAround,
               children: [
                 _buildNavItem(AppLang.tr('docs'), Icons.folder_special_rounded, _currentTabIndex == 0, () => setState(() => _currentTabIndex = 0)),
+                const SizedBox(width: 48), // Notch space for center camera button
                 _buildNavItem(AppLang.tr('tools'), Icons.auto_awesome_mosaic_rounded, _currentTabIndex == 1, () => setState(() => _currentTabIndex = 1)),
               ],
             ),
@@ -1334,12 +1456,12 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       onTap: onTap,
       borderRadius: BorderRadius.circular(12),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 4),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(icon, color: color, size: 22),
-            Text(label, style: TextStyle(fontSize: 11, fontWeight: isSel ? FontWeight.bold : FontWeight.normal, color: color)),
+            Text(label, style: TextStyle(fontSize: 10, fontWeight: isSel ? FontWeight.bold : FontWeight.normal, color: color)),
           ],
         ),
       ),
@@ -1370,34 +1492,27 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
         ),
         const SizedBox(height: 10),
 
+        // Clean Chips Bar (Clean categories like original, "+ New Folder" removed from here)
         SizedBox(
           height: 38,
           child: ListView(
             scrollDirection: Axis.horizontal,
-            children: [
-              ActionChip(
-                avatar: Icon(Icons.create_new_folder_rounded, size: 16, color: appPrimaryColor.value),
-                label: Text(AppLang.tr('new_folder'), style: TextStyle(color: appPrimaryColor.value, fontWeight: FontWeight.bold, fontSize: 11)),
-                onPressed: _createNewFolderDialog,
-              ),
-              const SizedBox(width: 6),
-              ..._userFolders.map((cat) {
-                final isSel = _selectedCategory == cat;
-                return Padding(
-                  padding: const EdgeInsets.only(right: 6.0),
-                  child: ChoiceChip(
-                    label: Text(cat),
-                    selected: isSel,
-                    selectedColor: appPrimaryColor.value,
-                    labelStyle: TextStyle(color: isSel ? Colors.white : null, fontSize: 11, fontWeight: isSel ? FontWeight.bold : FontWeight.normal),
-                    onSelected: (val) => setState(() {
-                      _selectedCategory = cat;
-                      _filterDocs();
-                    }),
-                  ),
-                );
-              }),
-            ],
+            children: _userFolders.map((cat) {
+              final isSel = _selectedCategory == cat;
+              return Padding(
+                padding: const EdgeInsets.only(right: 6.0),
+                child: ChoiceChip(
+                  label: Text(cat),
+                  selected: isSel,
+                  selectedColor: appPrimaryColor.value,
+                  labelStyle: TextStyle(color: isSel ? Colors.white : null, fontSize: 11, fontWeight: isSel ? FontWeight.bold : FontWeight.normal),
+                  onSelected: (val) => setState(() {
+                    _selectedCategory = cat;
+                    _filterDocs();
+                  }),
+                ),
+              );
+            }).toList(),
           ),
         ),
         const SizedBox(height: 10),
@@ -1697,7 +1812,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
           children: [
             _buildToolCard(title: 'PDF Studio', subtitle: 'Merge & Split', icon: Icons.picture_as_pdf_rounded, iconColor: const Color(0xFFD32F2F), onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => PdfStudioScreen(savedDocs: _savedDocs, onExportPdf: (paths, title) => _exportPdfWithTargetSize(paths, title))))),
             _buildToolCard(title: 'Passport Photo', subtitle: 'Print Sheet', icon: Icons.portrait_rounded, iconColor: const Color(0xFF1565C0), onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PassportPhotoStudioScreen()))),
-            _buildToolCard(title: 'Digital Sign', subtitle: 'Sign PNG', icon: Icons.draw_rounded, iconColor: const Color(0xFF7B1FA2), onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const DigitalSignatureScreen()))),
+            _buildToolCard(title: 'Digital Sign', subtitle: 'Sign PNG', icon: Icons.draw_rounded, iconColor: const Color(0xFF7B1FA2), onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const DigitalSignatureScreen())),),
             _buildToolCard(title: 'Compressor', subtitle: '1KB - 5MB', icon: Icons.tune_rounded, iconColor: const Color(0xFF00796B), onTap: () {
               if (_savedDocs.isNotEmpty) {
                 final doc = _savedDocs.first;
@@ -1773,6 +1888,15 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
               appThemeMode.value = isDark ? ThemeMode.light : ThemeMode.dark;
               final prefs = await SharedPreferences.getInstance();
               await prefs.setBool('is_dark_mode', !isDark);
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.palette_rounded),
+            title: const Text('Change Theme Color'),
+            subtitle: const Text('Choose from 9 colors'),
+            onTap: () {
+              Navigator.pop(context);
+              _openThemeColorPicker();
             },
           ),
           ListTile(
@@ -3149,4 +3273,3 @@ class _UniversalImageToolScreenState extends State<UniversalImageToolScreen> {
     );
   }
 }
-
