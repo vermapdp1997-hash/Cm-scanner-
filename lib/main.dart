@@ -442,7 +442,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       if (_sortAscending) {
         _filteredDocs.sort((a, b) => (a['title'] ?? '').toString().compareTo((b['title'] ?? '').toString()));
       } else {
-        // Rank wise: Recent scanned documents first
         _filteredDocs.sort((a, b) => (b['id'] ?? '').toString().compareTo((a['id'] ?? '').toString()));
       }
     });
@@ -486,7 +485,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     };
 
     setState(() {
-      _savedDocs.insert(0, newDoc); // Rank #1 at top
+      _savedDocs.insert(0, newDoc);
       _filterDocs();
     });
     await _commitDocsToPrefs();
@@ -875,7 +874,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              // Camera button on Left -> Direct Camera Scan
               InkWell(
                 borderRadius: const BorderRadius.horizontal(left: Radius.circular(26)),
                 onTap: () => _startDocScan(),
@@ -884,9 +882,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                   child: Icon(Icons.camera_alt_rounded, color: Colors.white, size: 24),
                 ),
               ),
-              // Thin vertical divider line
               Container(width: 1.2, height: 24, color: Colors.white.withOpacity(0.4)),
-              // Plus button on Right -> Opens Add New Document menu
               InkWell(
                 borderRadius: const BorderRadius.horizontal(right: Radius.circular(26)),
                 onTap: _openAddNewDocumentSheet,
@@ -968,6 +964,55 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                   Navigator.pop(ctx);
                   _exportPdfWithTargetSize(images, "${title}_Compressed", targetKb: targetSizeKb.toInt());
                 },
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  // PDF Watermark Dialog
+  void _openWatermarkDialog() {
+    if (_savedDocs.isEmpty) {
+      _showToast('Please scan a document first.');
+      return;
+    }
+    String selectedDocId = _savedDocs.first['id'];
+    final wmCtrl = TextEditingController(text: 'CONFIDENTIAL');
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setModalState) {
+          return AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+            title: const Text('Add PDF Watermark', style: TextStyle(fontWeight: FontWeight.bold)),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                DropdownButtonFormField<String>(
+                  value: selectedDocId,
+                  decoration: const InputDecoration(labelText: 'Select Document', border: OutlineInputBorder()),
+                  items: _savedDocs.map((doc) => DropdownMenuItem<String>(value: doc['id'].toString(), child: Text(doc['title'] ?? 'Untitled', overflow: TextOverflow.ellipsis))).toList(),
+                  onChanged: (val) {
+                    if (val != null) setModalState(() => selectedDocId = val);
+                  },
+                ),
+                const SizedBox(height: 14),
+                TextField(controller: wmCtrl, decoration: const InputDecoration(labelText: 'Watermark Text', border: OutlineInputBorder())),
+              ],
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white),
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  final chosenDoc = _savedDocs.firstWhere((d) => d['id'] == selectedDocId, orElse: () => _savedDocs.first);
+                  _exportPdfWithTargetSize(chosenDoc['images'], "${chosenDoc['title']}_Watermarked", watermark: wmCtrl.text.trim());
+                },
+                child: const Text('Apply & Share PDF'),
               ),
             ],
           );
@@ -2782,7 +2827,7 @@ class _TxtEditorNotesScreenState extends State<TxtEditorNotesScreen> {
 }
 
 // ============================================================================
-// 10. RESUME BUILDER (Fixed Size.fromHeight)
+// 10. RESUME BUILDER
 // ============================================================================
 class ResumeBuilderScreen extends StatefulWidget {
   const ResumeBuilderScreen({super.key});
@@ -2874,7 +2919,7 @@ class _ResumeBuilderScreenState extends State<ResumeBuilderScreen> {
 }
 
 // ============================================================================
-// 11. INVOICE MAKER (Fixed Size.fromHeight)
+// 11. INVOICE MAKER (GST Tax Calculation)
 // ============================================================================
 class InvoiceMakerProScreen extends StatefulWidget {
   const InvoiceMakerProScreen({super.key});
@@ -3104,3 +3149,4 @@ class _UniversalImageToolScreenState extends State<UniversalImageToolScreen> {
     );
   }
 }
+
