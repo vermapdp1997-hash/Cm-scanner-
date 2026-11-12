@@ -16,17 +16,12 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:intl/intl.dart';
-import 'package:syncfusion_flutter_pdf/pdf.dart' as syncPdf;
 
 // ============================================================================
 // GLOBAL CONTROLLERS & LOCALIZATION
 // ============================================================================
 final ValueNotifier<ThemeMode> appThemeMode = ValueNotifier(ThemeMode.light);
-
-// डिफ़ॉल्ट थीम कलर: Pink Blossom (0xFFE91E63)
 final ValueNotifier<Color> appPrimaryColor = ValueNotifier(const Color(0xFFE91E63));
-
-// Language state: false = English, true = Hindi
 final ValueNotifier<bool> isHindiLanguage = ValueNotifier(false);
 
 class AppLang {
@@ -188,7 +183,6 @@ final List<DocFilterPreset> kDocFilters = [
 // AI DESKEW & STRAIGHTENING ENGINE
 // ============================================================================
 class AIDeskewEngine {
-  /// AI Detects text line slopes to calculate crooked/skew angle in degrees
   static Future<double> detectSkewAngle(String imagePath) async {
     try {
       final inputImage = InputImage.fromFilePath(imagePath);
@@ -207,7 +201,6 @@ class AIDeskewEngine {
             double angleRad = atan2(dy, dx);
             double angleDeg = angleRad * 180 / pi;
 
-            // Normalize angle between -45 and 45 degrees
             while (angleDeg > 45) {
               angleDeg -= 90;
             }
@@ -221,7 +214,7 @@ class AIDeskewEngine {
 
       if (angles.isNotEmpty) {
         angles.sort();
-        return angles[angles.length ~/ 2]; // Return median angle
+        return angles[angles.length ~/ 2];
       }
     } catch (e) {
       debugPrint("Deskew angle detection err: $e");
@@ -229,7 +222,6 @@ class AIDeskewEngine {
     return 0.0;
   }
 
-  /// Rotates and deskews image by angleDegrees with clean white canvas padding
   static Future<String> rotateAndDeskewImage(String sourcePath, double angleDegrees) async {
     try {
       final file = File(sourcePath);
@@ -248,7 +240,6 @@ class AIDeskewEngine {
       final recorder = ui.PictureRecorder();
       final canvas = Canvas(recorder, Rect.fromLTWH(0, 0, newW.toDouble(), newH.toDouble()));
 
-      // Draw pure white background around corrected document
       canvas.drawRect(Rect.fromLTWH(0, 0, newW.toDouble(), newH.toDouble()), Paint()..color = Colors.white);
 
       canvas.translate(newW / 2, newH / 2);
@@ -290,7 +281,7 @@ void main() async {
   if (colorVal != null) {
     appPrimaryColor.value = Color(colorVal);
   } else {
-    appPrimaryColor.value = const Color(0xFFE91E63); // डिफ़ॉल्ट Pink
+    appPrimaryColor.value = const Color(0xFFE91E63);
   }
 
   isHindiLanguage.value = prefs.getBool('app_language_hindi') ?? false;
@@ -651,9 +642,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     });
   }
 
-  // ==========================================================================
-  // PUBLIC STORAGE DIRECTORIES (Pictures/BharatScanner & Download/BharatScanner)
-  // ==========================================================================
   Future<Directory> _getPublicStorageFolder({bool isPdf = false}) async {
     Directory? targetDir;
     if (Platform.isAndroid) {
@@ -693,10 +681,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       final pdfDoc = await _generatePdfDoc(images, targetKb: targetKb);
       Uint8List pdfBytes = await pdfDoc.save();
 
-      if (userPassword != null && userPassword.isNotEmpty) {
-        pdfBytes = await _applyRealPdfPassword(pdfBytes, userPassword);
-      }
-
       final targetFolder = await _getPublicStorageFolder(isPdf: true);
       final safeName = title.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
       final saveFile = File("${targetFolder.path}/${safeName}_${DateTime.now().millisecondsSinceEpoch}.pdf");
@@ -705,29 +689,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       _showToast('✅ PDF saved: Download/BharatScanner');
     } catch (e) {
       _showToast('Failed to save PDF: $e');
-    }
-  }
-
-  // ==========================================================================
-  // REAL PDF PASSWORD ENCRYPTION VIA SYNCPDF
-  // ==========================================================================
-  Future<Uint8List> _applyRealPdfPassword(Uint8List rawPdfBytes, String password) async {
-    try {
-      final syncPdfDoc = syncPdf.PdfDocument(inputBytes: rawPdfBytes);
-      syncPdfDoc.security.userPassword = password;
-      syncPdfDoc.security.ownerPassword = password;
-      syncPdfDoc.security.algorithm = syncPdf.PdfEncryptionAlgorithm.aesx256Bit;
-      syncPdfDoc.security.permissions.addAll([
-        syncPdf.PdfPermissionsFlags.print,
-        syncPdf.PdfPermissionsFlags.copyContent,
-      ]);
-
-      final List<int> securedBytes = await syncPdfDoc.save();
-      syncPdfDoc.dispose();
-      return Uint8List.fromList(securedBytes);
-    } catch (e) {
-      debugPrint("PDF Encrypt err: $e");
-      return rawPdfBytes;
     }
   }
 
@@ -867,7 +828,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
 
       if (!mounted || persistentRawPaths.isEmpty) return;
 
-      // Opens AI Live Filter & Deskew Review Screen
       Navigator.push(
         context,
         MaterialPageRoute(
@@ -1660,10 +1620,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     final pdf = await _generatePdfDoc(images, targetKb: targetKb, watermark: watermark);
     Uint8List pdfBytes = await pdf.save();
 
-    if (userPassword != null && userPassword.isNotEmpty) {
-      pdfBytes = await _applyRealPdfPassword(pdfBytes, userPassword);
-    }
-
     final dir = await getTemporaryDirectory();
     final safeName = title.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
     final file = File("${dir.path}/$safeName.pdf");
@@ -2374,7 +2330,7 @@ class ScanFilterReviewScreen extends StatefulWidget {
 
 class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
   int _curPageIndex = 0;
-  int _activeTopTab = 1; // 0 = Auto Straighten, 1 = Filters, 2 = Crop & Rotate
+  int _activeTopTab = 1;
   bool _isProcessing = false;
   double _manualDeskewAngle = 0.0;
 
@@ -2393,7 +2349,6 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
         orElse: () => kDocFilters[1],
       );
 
-  // AI Automatic Tilt/Skew Detection & Straightener
   Future<void> _runAutoStraightenAI() async {
     setState(() => _isProcessing = true);
     final curImg = _currentWorkingPaths[_curPageIndex];
@@ -2417,7 +2372,6 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
     }
   }
 
-  // 90 Degree Rotation
   Future<void> _rotateCurrentPage90() async {
     setState(() => _isProcessing = true);
     final curPath = _currentWorkingPaths[_curPageIndex];
@@ -2459,7 +2413,6 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
     for (int i = 0; i < _currentWorkingPaths.length; i++) {
       String sourceImg = _currentWorkingPaths[i];
 
-      // If manual angle adjustment was touched for current page
       if (i == _curPageIndex && _manualDeskewAngle.abs() > 0.5) {
         sourceImg = await AIDeskewEngine.rotateAndDeskewImage(sourceImg, _manualDeskewAngle);
       }
@@ -2514,7 +2467,6 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
             ? const Center(child: CircularProgressIndicator(color: Color(0xFF8AB4F8)))
             : Column(
                 children: [
-                  // 1. TOP TOOLBAR (Auto Straighten AI | Filters | Crop & Rotate)
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                     child: Row(
@@ -2546,8 +2498,6 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
                       ],
                     ),
                   ),
-
-                  // 2. MAIN DOCUMENT PREVIEW WITH LIVE COLOR FILTER AND ANGLE TILT
                   Expanded(
                     child: Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
@@ -2567,8 +2517,6 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
                       ),
                     ),
                   ),
-
-                  // 3. PAGE INDICATOR (If multiple pages)
                   if (_currentWorkingPaths.length > 1)
                     Padding(
                       padding: const EdgeInsets.only(bottom: 6),
@@ -2590,10 +2538,7 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
                         }),
                       ),
                     ),
-
-                  // 4. SUB-CONTROLS PANEL (FILTER LIST OR ROTATE / MANUAL DESKEW)
                   if (_activeTopTab == 2) ...[
-                    // Manual Fine Angle Slider & Rotate Panel
                     Container(
                       color: const Color(0xFF181A1F),
                       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -2629,7 +2574,6 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
                       ),
                     ),
                   ] else ...[
-                    // Horizontal Filter Selection Bar
                     Container(
                       padding: const EdgeInsets.only(top: 10, bottom: 6),
                       color: const Color(0xFF181A1F),
@@ -2694,8 +2638,6 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
                       ),
                     ),
                   ],
-
-                  // 5. BOTTOM BAR WITH "APPLY" PILL BUTTON
                   Container(
                     color: const Color(0xFF181A1F),
                     padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
