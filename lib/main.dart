@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
@@ -15,6 +16,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:intl/intl.dart';
+import 'package:syncfusion_flutter_pdf/pdf.dart' as syncPdf;
 
 // ============================================================================
 // GLOBAL CONTROLLERS & LOCALIZATION
@@ -68,6 +70,210 @@ class AppLang {
   }
 }
 
+// ============================================================================
+// ADVANCED AI COLOR FILTER PRESETS DEFINITIONS
+// ============================================================================
+class DocFilterPreset {
+  final String id;
+  final String title;
+  final List<double>? matrix;
+  final IconData icon;
+
+  const DocFilterPreset({
+    required this.id,
+    required this.title,
+    required this.matrix,
+    required this.icon,
+  });
+}
+
+final List<DocFilterPreset> kDocFilters = [
+  const DocFilterPreset(
+    id: 'original',
+    title: 'Original',
+    matrix: null,
+    icon: Icons.insert_drive_file_outlined,
+  ),
+  const DocFilterPreset(
+    id: 'auto',
+    title: 'Auto',
+    matrix: [
+      1.55, 0.05, 0.05, 0, -32,
+      0.05, 1.55, 0.05, 0, -32,
+      0.05, 0.05, 1.55, 0, -32,
+      0,    0,    0,    1, 0,
+    ],
+    icon: Icons.auto_awesome_rounded,
+  ),
+  const DocFilterPreset(
+    id: 'colour',
+    title: 'Colour',
+    matrix: [
+      1.40, -0.05, -0.05, 0, -10,
+      -0.05, 1.40, -0.05, 0, -10,
+      -0.05, -0.05, 1.40, 0, -10,
+      0,     0,     0,    1, 0,
+    ],
+    icon: Icons.color_lens_outlined,
+  ),
+  const DocFilterPreset(
+    id: 'greyscale',
+    title: 'Greysc',
+    matrix: [
+      0.299, 0.587, 0.114, 0, 0,
+      0.299, 0.587, 0.114, 0, 0,
+      0.299, 0.587, 0.114, 0, 0,
+      0,     0,     0,     1, 0,
+    ],
+    icon: Icons.filter_b_and_w_rounded,
+  ),
+  const DocFilterPreset(
+    id: 'bw_sharp',
+    title: 'B&W Ink',
+    matrix: [
+      2.3, 2.3, 2.3, 0, -320,
+      2.3, 2.3, 2.3, 0, -320,
+      2.3, 2.3, 2.3, 0, -320,
+      0,   0,   0,   1, 0,
+    ],
+    icon: Icons.contrast_rounded,
+  ),
+  const DocFilterPreset(
+    id: 'shadow_free',
+    title: 'Shadow Free',
+    matrix: [
+      1.35, 0, 0, 0, 42,
+      0, 1.35, 0, 0, 42,
+      0, 0, 1.35, 0, 42,
+      0, 0, 0, 1, 0,
+    ],
+    icon: Icons.wb_sunny_outlined,
+  ),
+  const DocFilterPreset(
+    id: 'super_white',
+    title: 'Super White',
+    matrix: [
+      1.80, 0, 0, 0, -48,
+      0, 1.80, 0, 0, -48,
+      0, 0, 1.80, 0, -48,
+      0, 0, 0, 1, 0,
+    ],
+    icon: Icons.cleaning_services_rounded,
+  ),
+  const DocFilterPreset(
+    id: 'warm',
+    title: 'Warm Book',
+    matrix: [
+      1.20, 0, 0, 0, 25,
+      0, 1.10, 0, 0, 12,
+      0, 0, 0.90, 0, -12,
+      0, 0, 0, 1, 0,
+    ],
+    icon: Icons.menu_book_rounded,
+  ),
+  const DocFilterPreset(
+    id: 'cool',
+    title: 'Cool Sharp',
+    matrix: [
+      1.0, 0, 0, 0, -6,
+      0, 1.15, 0, 0, 2,
+      0, 0, 1.38, 0, 18,
+      0, 0, 0, 1, 0,
+    ],
+    icon: Icons.ac_unit_rounded,
+  ),
+];
+
+// ============================================================================
+// AI DESKEW & STRAIGHTENING ENGINE
+// ============================================================================
+class AIDeskewEngine {
+  /// AI Detects text line slopes to calculate crooked/skew angle in degrees
+  static Future<double> detectSkewAngle(String imagePath) async {
+    try {
+      final inputImage = InputImage.fromFilePath(imagePath);
+      final textRecognizer = TextRecognizer();
+      final recognizedText = await textRecognizer.processImage(inputImage);
+      await textRecognizer.close();
+
+      List<double> angles = [];
+      for (var block in recognizedText.blocks) {
+        for (var line in block.lines) {
+          if (line.cornerPoints.length >= 2) {
+            final p1 = line.cornerPoints[0];
+            final p2 = line.cornerPoints[1];
+            final dx = (p2.x - p1.x).toDouble();
+            final dy = (p2.y - p1.y).toDouble();
+            double angleRad = atan2(dy, dx);
+            double angleDeg = angleRad * 180 / pi;
+
+            // Normalize angle between -45 and 45 degrees
+            while (angleDeg > 45) {
+              angleDeg -= 90;
+            }
+            while (angleDeg < -45) {
+              angleDeg += 90;
+            }
+            angles.add(angleDeg);
+          }
+        }
+      }
+
+      if (angles.isNotEmpty) {
+        angles.sort();
+        return angles[angles.length ~/ 2]; // Return median angle
+      }
+    } catch (e) {
+      debugPrint("Deskew angle detection err: $e");
+    }
+    return 0.0;
+  }
+
+  /// Rotates and deskews image by angleDegrees with clean white canvas padding
+  static Future<String> rotateAndDeskewImage(String sourcePath, double angleDegrees) async {
+    try {
+      final file = File(sourcePath);
+      final bytes = await file.readAsBytes();
+      final codec = await ui.instantiateImageCodec(bytes);
+      final frame = await codec.getNextFrame();
+      final img = frame.image;
+
+      final angleRad = angleDegrees * pi / 180.0;
+      final absCos = cos(angleRad).abs();
+      final absSin = sin(angleRad).abs();
+
+      final newW = (img.width * absCos + img.height * absSin).round();
+      final newH = (img.width * absSin + img.height * absCos).round();
+
+      final recorder = ui.PictureRecorder();
+      final canvas = Canvas(recorder, Rect.fromLTWH(0, 0, newW.toDouble(), newH.toDouble()));
+
+      // Draw pure white background around corrected document
+      canvas.drawRect(Rect.fromLTWH(0, 0, newW.toDouble(), newH.toDouble()), Paint()..color = Colors.white);
+
+      canvas.translate(newW / 2, newH / 2);
+      canvas.rotate(angleRad);
+      canvas.drawImage(img, Offset(-img.width / 2, -img.height / 2), Paint());
+
+      final picture = recorder.endRecording();
+      final outputImg = await picture.toImage(newW, newH);
+      final byteData = await outputImg.toByteData(format: ui.ImageByteFormat.png);
+
+      if (byteData != null) {
+        final appDir = await getApplicationDocumentsDirectory();
+        final scansDir = Directory('${appDir.path}/scans');
+        if (!await scansDir.exists()) await scansDir.create(recursive: true);
+        final outF = File('${scansDir.path}/deskew_${DateTime.now().millisecondsSinceEpoch}.png');
+        await outF.writeAsBytes(byteData.buffer.asUint8List());
+        return outF.path;
+      }
+    } catch (e) {
+      debugPrint("Rotate Deskew err: $e");
+    }
+    return sourcePath;
+  }
+}
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   try {
@@ -80,7 +286,6 @@ void main() async {
   final isDark = prefs.getBool('is_dark_mode') ?? false;
   appThemeMode.value = isDark ? ThemeMode.dark : ThemeMode.light;
 
-  // यदि यूज़र ने पहले कोई रंग चुना हो तो वह लोड होगा, अन्यथा डिफ़ॉल्ट Pink रहेगा
   final colorVal = prefs.getInt('primary_color_val');
   if (colorVal != null) {
     appPrimaryColor.value = Color(colorVal);
@@ -147,7 +352,7 @@ class BharatDocScannerApp extends StatelessWidget {
 }
 
 // ============================================================================
-// 1. SPLASH SCREEN (लोगो और ब्रांडिंग के साथ)
+// 1. SPLASH SCREEN
 // ============================================================================
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
@@ -189,7 +394,7 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF0F1E36), // Deep Navy Metallic Tone
+      backgroundColor: const Color(0xFF0F1E36),
       body: Center(
         child: ScaleTransition(
           scale: _scaleAnimation,
@@ -224,22 +429,12 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
                 const SizedBox(height: 4),
                 const Text(
                   'DOCUMENT SCANNER',
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: 2.0,
-                    color: Colors.white,
-                  ),
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, letterSpacing: 2.0, color: Colors.white),
                 ),
                 const SizedBox(height: 10),
                 const Text(
                   'PDF',
-                  style: TextStyle(
-                    fontSize: 34,
-                    fontWeight: FontWeight.w900,
-                    letterSpacing: 1.5,
-                    color: Color(0xFFE53935),
-                  ),
+                  style: TextStyle(fontSize: 34, fontWeight: FontWeight.w900, letterSpacing: 1.5, color: Color(0xFFE53935)),
                 ),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
@@ -253,19 +448,11 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
                 Container(
                   width: double.infinity,
                   padding: const EdgeInsets.symmetric(vertical: 8),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF26A69A),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
+                  decoration: BoxDecoration(color: const Color(0xFF26A69A), borderRadius: BorderRadius.circular(12)),
                   child: const Center(
                     child: Text(
-                      'CREATE DOCUMENT',
-                      style: TextStyle(
-                        color: Color(0xFF003830),
-                        fontSize: 12,
-                        fontWeight: FontWeight.w900,
-                        letterSpacing: 1.5,
-                      ),
+                      'AI DESKEW & CLARITY',
+                      style: TextStyle(color: Color(0xFF003830), fontSize: 11, fontWeight: FontWeight.w900, letterSpacing: 1.5),
                     ),
                   ),
                 ),
@@ -465,77 +652,87 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
   }
 
   // ==========================================================================
-  // ULTRA AI AUTO-ENHANCE PIPELINE (Auto-HD Paper Whitener + High Contrast Ink)
+  // PUBLIC STORAGE DIRECTORIES (Pictures/BharatScanner & Download/BharatScanner)
   // ==========================================================================
-  Future<String> _autoEnhanceAndSaveImage(String sourcePath, String outName) async {
-    try {
-      final file = File(sourcePath);
-      final bytes = await file.readAsBytes();
-      final codec = await ui.instantiateImageCodec(bytes);
-      final frame = await codec.getNextFrame();
-      final img = frame.image;
+  Future<Directory> _getPublicStorageFolder({bool isPdf = false}) async {
+    Directory? targetDir;
+    if (Platform.isAndroid) {
+      final base = isPdf ? '/storage/emulated/0/Download' : '/storage/emulated/0/Pictures';
+      targetDir = Directory('$base/BharatScanner');
+    } else {
+      targetDir = await getApplicationDocumentsDirectory();
+    }
+    if (!await targetDir.exists()) {
+      await targetDir.create(recursive: true);
+    }
+    return targetDir;
+  }
 
-      // Ultra-HD Clarity Matrix: Removes yellowing/shadows, whitens paper, darkens ink
-      const autoMatrix = ColorFilter.matrix([
-        1.60, 0.04, 0.04, 0, -35,
-        0.04, 1.60, 0.04, 0, -35,
-        0.04, 0.04, 1.60, 0, -35,
-        0,    0,    0,    1, 0,
+  Future<void> _saveJpgToDeviceStorage(List images, String title) async {
+    try {
+      final targetFolder = await _getPublicStorageFolder(isPdf: false);
+      int count = 0;
+      final cleanTitle = title.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+
+      for (int i = 0; i < images.length; i++) {
+        final f = File(images[i]);
+        if (await f.exists()) {
+          final target = File('${targetFolder.path}/${cleanTitle}_${DateTime.now().millisecondsSinceEpoch}_p${i + 1}.jpg');
+          await f.copy(target.path);
+          count++;
+        }
+      }
+      _showToast('✅ Saved $count photos to Gallery: Pictures/BharatScanner');
+    } catch (e) {
+      _showToast('Failed to save in Gallery: $e');
+    }
+  }
+
+  Future<void> _saveToDeviceStorage(List images, String title, {int? targetKb, String? userPassword}) async {
+    try {
+      final pdfDoc = await _generatePdfDoc(images, targetKb: targetKb);
+      Uint8List pdfBytes = await pdfDoc.save();
+
+      if (userPassword != null && userPassword.isNotEmpty) {
+        pdfBytes = await _applyRealPdfPassword(pdfBytes, userPassword);
+      }
+
+      final targetFolder = await _getPublicStorageFolder(isPdf: true);
+      final safeName = title.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+      final saveFile = File("${targetFolder.path}/${safeName}_${DateTime.now().millisecondsSinceEpoch}.pdf");
+      await saveFile.writeAsBytes(pdfBytes);
+
+      _showToast('✅ PDF saved: Download/BharatScanner');
+    } catch (e) {
+      _showToast('Failed to save PDF: $e');
+    }
+  }
+
+  // ==========================================================================
+  // REAL PDF PASSWORD ENCRYPTION VIA SYNCPDF
+  // ==========================================================================
+  Future<Uint8List> _applyRealPdfPassword(Uint8List rawPdfBytes, String password) async {
+    try {
+      final syncPdfDoc = syncPdf.PdfDocument(inputBytes: rawPdfBytes);
+      syncPdfDoc.security.userPassword = password;
+      syncPdfDoc.security.ownerPassword = password;
+      syncPdfDoc.security.algorithm = syncPdf.PdfEncryptionAlgorithm.aesx256Bit;
+      syncPdfDoc.security.permissions.addAll([
+        syncPdf.PdfPermissionsFlags.print,
+        syncPdf.PdfPermissionsFlags.copyContent,
       ]);
 
-      final recorder = ui.PictureRecorder();
-      final canvas = Canvas(recorder, Rect.fromLTWH(0, 0, img.width.toDouble(), img.height.toDouble()));
-      final paint = Paint()..colorFilter = autoMatrix;
-      canvas.drawImage(img, Offset.zero, paint);
-
-      final picture = recorder.endRecording();
-      final enhancedImg = await picture.toImage(img.width, img.height);
-      final byteData = await enhancedImg.toByteData(format: ui.ImageByteFormat.png);
-
-      if (byteData != null) {
-        final appDir = await getApplicationDocumentsDirectory();
-        final scansDir = Directory('${appDir.path}/scans');
-        if (!await scansDir.exists()) await scansDir.create(recursive: true);
-        final enhancedFile = File('${scansDir.path}/$outName');
-        await enhancedFile.writeAsBytes(byteData.buffer.asUint8List());
-        return enhancedFile.path;
-      }
+      final List<int> securedBytes = await syncPdfDoc.save();
+      syncPdfDoc.dispose();
+      return Uint8List.fromList(securedBytes);
     } catch (e) {
-      debugPrint("Auto enhance err: $e");
+      debugPrint("PDF Encrypt err: $e");
+      return rawPdfBytes;
     }
-    return sourcePath;
   }
 
-  Future<Map<String, List<String>>> _processAndCopyImages(List<String> tempPaths) async {
-    final appDir = await getApplicationDocumentsDirectory();
-    final scansDir = Directory('${appDir.path}/scans');
-    if (!await scansDir.exists()) await scansDir.create(recursive: true);
-
-    List<String> persistentRawPaths = [];
-    List<String> enhancedPaths = [];
-
-    for (int i = 0; i < tempPaths.length; i++) {
-      final tempFile = File(tempPaths[i]);
-      if (await tempFile.exists()) {
-        final timestamp = DateTime.now().millisecondsSinceEpoch;
-        final rawFileName = 'raw_${timestamp}_p$i.jpg';
-        final savedRawFile = await tempFile.copy('${scansDir.path}/$rawFileName');
-        persistentRawPaths.add(savedRawFile.path);
-
-        final enhancedFileName = 'doc_${timestamp}_p$i.png';
-        final enhancedPath = await _autoEnhanceAndSaveImage(savedRawFile.path, enhancedFileName);
-        enhancedPaths.add(enhancedPath);
-      }
-    }
-    return {'enhanced': enhancedPaths, 'raw': persistentRawPaths};
-  }
-
-  Future<void> _saveDocToStorage(String title, List<String> rawPaths, {String category = 'General'}) async {
-    final result = await _processAndCopyImages(rawPaths);
-    final enhancedImgs = result['enhanced'] ?? [];
-    final rawImgs = result['raw'] ?? [];
-
-    if (enhancedImgs.isEmpty) {
+  Future<void> _saveDocToStorage(String title, List<String> enhancedPaths, List<String> rawPaths, {String category = 'General'}) async {
+    if (enhancedPaths.isEmpty) {
       _showToast('Failed to save scanned images.');
       return;
     }
@@ -546,9 +743,9 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       'category': category,
       'isFavorite': false,
       'date': DateFormat('dd MMM yyyy, hh:mm a').format(DateTime.now()),
-      'images': List<String>.from(enhancedImgs),
-      'originalImages': List<String>.from(rawImgs), // हमेशा असली ओरिजिनल फोटो सुरक्षित
-      'pages': enhancedImgs.length,
+      'images': List<String>.from(enhancedPaths),
+      'originalImages': List<String>.from(rawPaths),
+      'pages': enhancedPaths.length,
     };
 
     setState(() {
@@ -556,7 +753,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       _filterDocs();
     });
     await _commitDocsToPrefs();
-    _showToast('✅ Saved with Ultra-AI HD Quality in $category');
+    _showToast('✅ Saved successfully in $category');
   }
 
   Future<void> _updateExistingDoc(Map<String, dynamic> updatedDoc) async {
@@ -572,8 +769,9 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
 
   Future<void> _deleteDoc(String id) async {
     final docToDelete = _savedDocs.firstWhere((d) => d['id'] == id, orElse: () => {});
-    if (docToDelete.isNotEmpty && docToDelete['images'] != null) {
-      for (String p in docToDelete['images']) {
+    if (docToDelete.isNotEmpty) {
+      final List allImgs = [...(docToDelete['images'] ?? []), ...(docToDelete['originalImages'] ?? [])];
+      for (String p in allImgs) {
         final f = File(p);
         if (await f.exists()) {
           try {
@@ -636,6 +834,9 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     }
   }
 
+  // ==========================================================================
+  // SCANNING FLOW -> OPENS AI DESKEW & LIVE FILTER STUDIO
+  // ==========================================================================
   Future<void> _startDocScan({int limit = 50, String category = 'General', String prefix = 'Doc', bool galleryOnly = false}) async {
     final scanner = DocumentScanner(
       options: DocumentScannerOptions(
@@ -650,19 +851,43 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       final result = await scanner.scanDocument();
       if (!mounted || result?.images == null || result!.images.isEmpty) return;
 
-      if (category == 'Personal' && prefix.contains('ID_Card') && result.images.length >= 2) {
-        _processIdCardCollage(result.images.sublist(0, 2), prefix);
-      } else {
-        _promptDocNameAndFolder(result.images, prefix, category);
+      final appDir = await getApplicationDocumentsDirectory();
+      final scansDir = Directory('${appDir.path}/scans');
+      if (!await scansDir.exists()) await scansDir.create(recursive: true);
+
+      List<String> persistentRawPaths = [];
+      for (int i = 0; i < result.images.length; i++) {
+        final f = File(result.images[i]);
+        if (await f.exists()) {
+          final time = DateTime.now().millisecondsSinceEpoch;
+          final target = await f.copy('${scansDir.path}/raw_${time}_$i.jpg');
+          persistentRawPaths.add(target.path);
+        }
       }
+
+      if (!mounted || persistentRawPaths.isEmpty) return;
+
+      // Opens AI Live Filter & Deskew Review Screen
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ScanFilterReviewScreen(
+            rawImagePaths: persistentRawPaths,
+            onApplyAndProceed: (filteredImages) {
+              if (category == 'Personal' && prefix.contains('ID_Card') && filteredImages.length >= 2) {
+                _processIdCardCollage(filteredImages.sublist(0, 2), prefix);
+              } else {
+                _promptDocNameAndFolder(filteredImages, persistentRawPaths, prefix, category);
+              }
+            },
+          ),
+        ),
+      );
     } catch (e) {
       debugPrint("Scan Err: $e");
     }
   }
 
-  // ==========================================================================
-  // ID CARD MODE (Front & Back into Single A4 Document / Image)
-  // ==========================================================================
   Future<void> _processIdCardCollage(List<String> frontAndBack, String prefix) async {
     try {
       final frontBytes = await File(frontAndBack[0]).readAsBytes();
@@ -691,26 +916,15 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
         ..style = PaintingStyle.stroke
         ..strokeWidth = 2.0;
 
-      // Front
       const top1 = 200.0;
       final rect1 = Rect.fromLTWH(left, top1, cardW, cardH);
       canvas.drawImageRect(frontImg, Rect.fromLTWH(0, 0, frontImg.width.toDouble(), frontImg.height.toDouble()), rect1, Paint());
       canvas.drawRect(rect1, borderPaint);
 
-      // Back
       const top2 = 820.0;
       final rect2 = Rect.fromLTWH(left, top2, cardW, cardH);
       canvas.drawImageRect(backImg, Rect.fromLTWH(0, 0, backImg.width.toDouble(), backImg.height.toDouble()), rect2, Paint());
       canvas.drawRect(rect2, borderPaint);
-
-      final textPainter = TextPainter(
-        text: const TextSpan(
-          text: 'Bharat Document Scanner PDF AI • Verified ID Layout',
-          style: TextStyle(color: Colors.grey, fontSize: 18, fontWeight: FontWeight.bold),
-        ),
-        textDirection: ui.TextDirection.ltr,
-      )..layout();
-      textPainter.paint(canvas, Offset((a4Width - textPainter.width) / 2, a4Height - 90));
 
       final picture = recorder.endRecording();
       final a4CollageImg = await picture.toImage(a4Width.toInt(), a4Height.toInt());
@@ -724,15 +938,16 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
         await _saveDocToStorage(
           'ID_Card_${DateFormat('ddMMM_HHmm').format(DateTime.now())}',
           [collageFile.path],
+          frontAndBack,
           category: 'Personal',
         );
       }
     } catch (e) {
-      if (mounted) _promptDocNameAndFolder(frontAndBack, prefix, 'Personal');
+      if (mounted) _promptDocNameAndFolder(frontAndBack, frontAndBack, prefix, 'Personal');
     }
   }
 
-  void _promptDocNameAndFolder(List<String> images, String prefix, String defaultCat) {
+  void _promptDocNameAndFolder(List<String> enhancedImages, List<String> rawImages, String prefix, String defaultCat) {
     final nameCtrl = TextEditingController(text: "${prefix}_${DateFormat('ddMMM_HHmm').format(DateTime.now())}");
     String chosenFolder = (defaultCat == 'All' || defaultCat == 'Starred') ? 'General' : defaultCat;
 
@@ -758,7 +973,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('✅ ${images.length} page(s) ready with Ultra AI Clarity.', style: const TextStyle(fontSize: 13, color: Colors.grey)),
+                Text('✅ ${enhancedImages.length} page(s) ready with AI Clarity & Deskew.', style: const TextStyle(fontSize: 13, color: Colors.grey)),
                 const SizedBox(height: 14),
                 TextField(
                   controller: nameCtrl,
@@ -803,7 +1018,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                 style: ElevatedButton.styleFrom(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white),
                 onPressed: () {
                   Navigator.pop(ctx);
-                  _saveDocToStorage(nameCtrl.text.trim(), images, category: chosenFolder);
+                  _saveDocToStorage(nameCtrl.text.trim(), enhancedImages, rawImages, category: chosenFolder);
                 },
                 child: Text(AppLang.tr('save')),
               ),
@@ -861,7 +1076,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
               const SizedBox(height: 12),
               const Divider(height: 1),
               const SizedBox(height: 8),
-
               _buildModalListOption(
                 icon: Icons.photo_size_select_actual_rounded,
                 iconColor: const Color(0xFF00B0FF),
@@ -981,7 +1195,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     );
   }
 
-  // Multi-Theme Picker Dialog (9 color themes)
   void _openThemeColorPicker() {
     final colors = [
       {'name': 'Pink Blossom (Default)', 'color': const Color(0xFFE91E63)},
@@ -1050,9 +1263,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     );
   }
 
-  // ==========================================================================
-  // 1 KB to 5 MB ADVANCE COMPRESSOR (PDF + JPG SAVE/SHARE OPTIONS)
-  // ==========================================================================
   void _openCompressionDialog(List<dynamic> images, String title) {
     double targetSizeKb = 350;
     showDialog(
@@ -1140,7 +1350,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                   child: ElevatedButton.icon(
                     style: ElevatedButton.styleFrom(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white),
                     icon: const Icon(Icons.download_rounded, size: 16),
-                    label: const Text('Save Compressed JPG to Storage'),
+                    label: const Text('Save Compressed JPG to Gallery'),
                     onPressed: () {
                       Navigator.pop(ctx);
                       _compressAndSaveJpgToPhone(images, "${title}_Compressed", targetKb: targetSizeKb.toInt());
@@ -1157,7 +1367,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
 
   Future<void> _compressAndSaveJpgToPhone(List images, String title, {required int targetKb}) async {
     try {
-      final appDir = await getApplicationDocumentsDirectory();
+      final targetFolder = await _getPublicStorageFolder(isPdf: false);
       List<String> compressedPaths = [];
       double perPageKb = targetKb / (images.isEmpty ? 1 : images.length);
 
@@ -1171,14 +1381,14 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
           final frame = await codec.getNextFrame();
           final resized = await frame.image.toByteData(format: ui.ImageByteFormat.png);
 
-          final outF = File('${appDir.path}/${title}_p$i.jpg');
+          final outF = File('${targetFolder.path}/${title}_p$i.jpg');
           if (resized != null) {
             await outF.writeAsBytes(resized.buffer.asUint8List());
             compressedPaths.add(outF.path);
           }
         }
       }
-      _showToast('✅ Saved ${compressedPaths.length} compressed JPG(s) to storage!');
+      _showToast('✅ Saved ${compressedPaths.length} compressed JPG(s) in Gallery!');
     } catch (e) {
       _showToast('Compress error: $e');
     }
@@ -1386,44 +1596,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     );
   }
 
-  Future<void> _saveToDeviceStorage(List images, String title, {int? targetKb}) async {
-    try {
-      final pdf = await _generatePdfDoc(images, targetKb: targetKb);
-      Directory? appDir = await getExternalStorageDirectory();
-      appDir ??= await getApplicationDocumentsDirectory();
-
-      final safeName = title.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
-      final savePath = "${appDir.path}/${safeName}_${DateTime.now().millisecondsSinceEpoch}.pdf";
-      final file = File(savePath);
-      await file.writeAsBytes(await pdf.save());
-
-      _showToast('📁 PDF saved: ${file.path}');
-    } catch (e) {
-      await _exportPdfWithTargetSize(images, title, targetKb: targetKb);
-    }
-  }
-
-  Future<void> _saveJpgToDeviceStorage(List images, String title) async {
-    try {
-      Directory? appDir = await getExternalStorageDirectory();
-      appDir ??= await getApplicationDocumentsDirectory();
-
-      int count = 0;
-      for (int i = 0; i < images.length; i++) {
-        final f = File(images[i]);
-        if (await f.exists()) {
-          final target = File('${appDir.path}/${title}_page_${i + 1}.jpg');
-          await f.copy(target.path);
-          count++;
-        }
-      }
-      _showToast('📁 Successfully saved $count JPG file(s) to device storage.');
-    } catch (e) {
-      _showToast('Failed to save JPG: $e');
-    }
-  }
-
-  Future<pw.Document> _generatePdfDoc(List images, {int? targetKb, String? watermark, String? userPassword}) async {
+  Future<pw.Document> _generatePdfDoc(List images, {int? targetKb, String? watermark}) async {
     final pdf = pw.Document();
     final double perPageKb = (targetKb != null && images.isNotEmpty) ? (targetKb / images.length) : 800;
 
@@ -1484,11 +1657,17 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
 
   Future<void> _exportPdfWithTargetSize(List images, String title, {int? targetKb, String? watermark, String? userPassword}) async {
     _showInterstitialAd();
-    final pdf = await _generatePdfDoc(images, targetKb: targetKb, watermark: watermark, userPassword: userPassword);
+    final pdf = await _generatePdfDoc(images, targetKb: targetKb, watermark: watermark);
+    Uint8List pdfBytes = await pdf.save();
+
+    if (userPassword != null && userPassword.isNotEmpty) {
+      pdfBytes = await _applyRealPdfPassword(pdfBytes, userPassword);
+    }
+
     final dir = await getTemporaryDirectory();
     final safeName = title.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
     final file = File("${dir.path}/$safeName.pdf");
-    await file.writeAsBytes(await pdf.save());
+    await file.writeAsBytes(pdfBytes);
     await Share.shareXFiles([XFile(file.path)], text: '$title - Bharat Document Scanner PDF AI');
   }
 
@@ -1728,7 +1907,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
           ),
         ),
         const SizedBox(height: 10),
-
         SizedBox(
           height: 38,
           child: ListView(
@@ -1752,7 +1930,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
           ),
         ),
         const SizedBox(height: 10),
-
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
@@ -1774,7 +1951,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
             ),
           ],
         ),
-
         if (_filteredDocs.isEmpty)
           Padding(
             padding: const EdgeInsets.only(top: 50),
@@ -2115,7 +2291,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                 Icon(Icons.document_scanner_rounded, size: 36, color: Colors.white),
                 SizedBox(height: 8),
                 Text('BHARAT SCANNER PDF AI', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
-                Text('Ultra Clarity AI Edition', style: TextStyle(color: Colors.white70, fontSize: 11)),
+                Text('AI Deskew & Ultra Clarity Edition', style: TextStyle(color: Colors.white70, fontSize: 11)),
               ],
             ),
           ),
@@ -2166,7 +2342,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                     'Bharat Document Scanner PDF AI operates 100% locally on your device.\n\n'
                     '1. Scanned photos & PDF files stay strictly on your phone.\n'
                     '2. Zero files uploaded to external cloud servers.\n'
-                    '3. All tools (OCR, Compress, Sign, Resume) run offline on your device.',
+                    '3. All tools (AI Straightening, OCR, Compress, Sign, Resume) run offline on your device.',
                   ),
                   actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
                 ),
@@ -2180,7 +2356,408 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
 }
 
 // ============================================================================
-// 3. DOCUMENT DETAIL SCREEN (Save JPG, Save PDF, Share JPG & PDF)
+// 3. SCAN FILTER & AI AUTO-DESKEW REVIEW SCREEN (SCREENSHOT UI)
+// ============================================================================
+class ScanFilterReviewScreen extends StatefulWidget {
+  final List<String> rawImagePaths;
+  final Function(List<String> filteredPaths) onApplyAndProceed;
+
+  const ScanFilterReviewScreen({
+    super.key,
+    required this.rawImagePaths,
+    required this.onApplyAndProceed,
+  });
+
+  @override
+  State<ScanFilterReviewScreen> createState() => _ScanFilterReviewScreenState();
+}
+
+class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
+  int _curPageIndex = 0;
+  int _activeTopTab = 1; // 0 = Auto Straighten, 1 = Filters, 2 = Crop & Rotate
+  bool _isProcessing = false;
+  double _manualDeskewAngle = 0.0;
+
+  late List<String> _currentWorkingPaths;
+  late Map<int, String> _pageFilterSelections;
+
+  @override
+  void initState() {
+    super.initState();
+    _currentWorkingPaths = List<String>.from(widget.rawImagePaths);
+    _pageFilterSelections = {for (var i = 0; i < widget.rawImagePaths.length; i++) i: 'auto'};
+  }
+
+  DocFilterPreset get _currentPreset => kDocFilters.firstWhere(
+        (f) => f.id == (_pageFilterSelections[_curPageIndex] ?? 'auto'),
+        orElse: () => kDocFilters[1],
+      );
+
+  // AI Automatic Tilt/Skew Detection & Straightener
+  Future<void> _runAutoStraightenAI() async {
+    setState(() => _isProcessing = true);
+    final curImg = _currentWorkingPaths[_curPageIndex];
+    final detectedAngle = await AIDeskewEngine.detectSkewAngle(curImg);
+
+    if (detectedAngle.abs() > 0.4) {
+      final straightened = await AIDeskewEngine.rotateAndDeskewImage(curImg, -detectedAngle);
+      setState(() {
+        _currentWorkingPaths[_curPageIndex] = straightened;
+        _manualDeskewAngle = 0.0;
+        _isProcessing = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('✨ AI straightened document by ${detectedAngle.toStringAsFixed(1)}°')),
+      );
+    } else {
+      setState(() => _isProcessing = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('✅ Document is already straight and upright!')),
+      );
+    }
+  }
+
+  // 90 Degree Rotation
+  Future<void> _rotateCurrentPage90() async {
+    setState(() => _isProcessing = true);
+    final curPath = _currentWorkingPaths[_curPageIndex];
+    final bytes = await File(curPath).readAsBytes();
+    final codec = await ui.instantiateImageCodec(bytes);
+    final frame = await codec.getNextFrame();
+    final img = frame.image;
+
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder, Rect.fromLTWH(0, 0, img.height.toDouble(), img.width.toDouble()));
+    canvas.translate(img.height.toDouble() / 2, img.width.toDouble() / 2);
+    canvas.rotate(1.5708);
+    canvas.drawImage(img, Offset(-img.width.toDouble() / 2, -img.height.toDouble() / 2), Paint());
+
+    final outImg = await recorder.endRecording().toImage(img.height, img.width);
+    final data = await outImg.toByteData(format: ui.ImageByteFormat.png);
+    if (data != null) {
+      final appDir = await getApplicationDocumentsDirectory();
+      final rotatedFile = File('${appDir.path}/rot_${DateTime.now().millisecondsSinceEpoch}.png');
+      await rotatedFile.writeAsBytes(data.buffer.asUint8List());
+
+      setState(() {
+        _currentWorkingPaths[_curPageIndex] = rotatedFile.path;
+        _isProcessing = false;
+      });
+    } else {
+      setState(() => _isProcessing = false);
+    }
+  }
+
+  Future<void> _applyAndFinish() async {
+    setState(() => _isProcessing = true);
+    final appDir = await getApplicationDocumentsDirectory();
+    final outDir = Directory('${appDir.path}/scans');
+    if (!await outDir.exists()) await outDir.create(recursive: true);
+
+    List<String> finalSavedPaths = [];
+
+    for (int i = 0; i < _currentWorkingPaths.length; i++) {
+      String sourceImg = _currentWorkingPaths[i];
+
+      // If manual angle adjustment was touched for current page
+      if (i == _curPageIndex && _manualDeskewAngle.abs() > 0.5) {
+        sourceImg = await AIDeskewEngine.rotateAndDeskewImage(sourceImg, _manualDeskewAngle);
+      }
+
+      final filterId = _pageFilterSelections[i] ?? 'auto';
+      final preset = kDocFilters.firstWhere((f) => f.id == filterId, orElse: () => kDocFilters[1]);
+
+      if (preset.matrix == null) {
+        finalSavedPaths.add(sourceImg);
+      } else {
+        final f = File(sourceImg);
+        final bytes = await f.readAsBytes();
+        final codec = await ui.instantiateImageCodec(bytes);
+        final frame = await codec.getNextFrame();
+        final img = frame.image;
+
+        final recorder = ui.PictureRecorder();
+        final canvas = Canvas(recorder, Rect.fromLTWH(0, 0, img.width.toDouble(), img.height.toDouble()));
+        final paint = Paint()..colorFilter = ColorFilter.matrix(preset.matrix!);
+        canvas.drawImage(img, Offset.zero, paint);
+
+        final pic = recorder.endRecording();
+        final outImg = await pic.toImage(img.width, img.height);
+        final byteData = await outImg.toByteData(format: ui.ImageByteFormat.png);
+
+        if (byteData != null) {
+          final outFile = File('${outDir.path}/enhanced_${DateTime.now().millisecondsSinceEpoch}_p$i.png');
+          await outFile.writeAsBytes(byteData.buffer.asUint8List());
+          finalSavedPaths.add(outFile.path);
+        } else {
+          finalSavedPaths.add(sourceImg);
+        }
+      }
+    }
+
+    if (mounted) {
+      setState(() => _isProcessing = false);
+      Navigator.pop(context);
+      widget.onApplyAndProceed(finalSavedPaths);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final curImageFile = File(_currentWorkingPaths[_curPageIndex]);
+    final activePreset = _currentPreset;
+
+    return Scaffold(
+      backgroundColor: const Color(0xFF121316),
+      body: SafeArea(
+        child: _isProcessing
+            ? const Center(child: CircularProgressIndicator(color: Color(0xFF8AB4F8)))
+            : Column(
+                children: [
+                  // 1. TOP TOOLBAR (Auto Straighten AI | Filters | Crop & Rotate)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        _buildTopPill(
+                          title: 'Straighten AI',
+                          icon: Icons.auto_awesome,
+                          isSelected: _activeTopTab == 0,
+                          onTap: () {
+                            setState(() => _activeTopTab = 0);
+                            _runAutoStraightenAI();
+                          },
+                        ),
+                        const SizedBox(width: 8),
+                        _buildTopPill(
+                          title: 'Filters',
+                          icon: Icons.auto_fix_high_rounded,
+                          isSelected: _activeTopTab == 1,
+                          onTap: () => setState(() => _activeTopTab = 1),
+                        ),
+                        const SizedBox(width: 8),
+                        _buildTopPill(
+                          title: 'Crop & Rotate',
+                          icon: Icons.crop_rotate_rounded,
+                          isSelected: _activeTopTab == 2,
+                          onTap: () => setState(() => _activeTopTab = 2),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  // 2. MAIN DOCUMENT PREVIEW WITH LIVE COLOR FILTER AND ANGLE TILT
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                      child: Center(
+                        child: Transform.rotate(
+                          angle: _manualDeskewAngle * pi / 180,
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(10),
+                            child: activePreset.matrix != null
+                                ? ColorFiltered(
+                                    colorFilter: ColorFilter.matrix(activePreset.matrix!),
+                                    child: Image.file(curImageFile, fit: BoxFit.contain),
+                                  )
+                                : Image.file(curImageFile, fit: BoxFit.contain),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+
+                  // 3. PAGE INDICATOR (If multiple pages)
+                  if (_currentWorkingPaths.length > 1)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: List.generate(_currentWorkingPaths.length, (idx) {
+                          return GestureDetector(
+                            onTap: () => setState(() => _curPageIndex = idx),
+                            child: Container(
+                              margin: const EdgeInsets.symmetric(horizontal: 3),
+                              width: _curPageIndex == idx ? 22 : 8,
+                              height: 8,
+                              decoration: BoxDecoration(
+                                color: _curPageIndex == idx ? const Color(0xFF8AB4F8) : Colors.grey.shade700,
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                            ),
+                          );
+                        }),
+                      ),
+                    ),
+
+                  // 4. SUB-CONTROLS PANEL (FILTER LIST OR ROTATE / MANUAL DESKEW)
+                  if (_activeTopTab == 2) ...[
+                    // Manual Fine Angle Slider & Rotate Panel
+                    Container(
+                      color: const Color(0xFF181A1F),
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Row(
+                            children: [
+                              const Icon(Icons.straighten, color: Colors.white70, size: 18),
+                              const SizedBox(width: 8),
+                              Text('Tilt / Deskew: ${_manualDeskewAngle.toStringAsFixed(1)}°', style: const TextStyle(color: Colors.white, fontSize: 12)),
+                              const Spacer(),
+                              TextButton(
+                                onPressed: () => setState(() => _manualDeskewAngle = 0.0),
+                                child: const Text('Reset', style: TextStyle(color: Color(0xFF8AB4F8), fontSize: 12)),
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.rotate_right_rounded, color: Colors.white),
+                                tooltip: 'Rotate 90°',
+                                onPressed: _rotateCurrentPage90,
+                              ),
+                            ],
+                          ),
+                          Slider(
+                            value: _manualDeskewAngle,
+                            min: -30.0,
+                            max: 30.0,
+                            activeColor: const Color(0xFF8AB4F8),
+                            inactiveColor: Colors.grey.shade800,
+                            onChanged: (val) => setState(() => _manualDeskewAngle = val),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ] else ...[
+                    // Horizontal Filter Selection Bar
+                    Container(
+                      padding: const EdgeInsets.only(top: 10, bottom: 6),
+                      color: const Color(0xFF181A1F),
+                      child: SizedBox(
+                        height: 105,
+                        child: ListView.builder(
+                          scrollDirection: Axis.horizontal,
+                          padding: const EdgeInsets.symmetric(horizontal: 14),
+                          itemCount: kDocFilters.length,
+                          itemBuilder: (ctx, i) {
+                            final filter = kDocFilters[i];
+                            final isSel = (_pageFilterSelections[_curPageIndex] ?? 'auto') == filter.id;
+
+                            return GestureDetector(
+                              onTap: () {
+                                setState(() {
+                                  _pageFilterSelections[_curPageIndex] = filter.id;
+                                });
+                              },
+                              child: Container(
+                                width: 82,
+                                margin: const EdgeInsets.only(right: 12),
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Container(
+                                      width: 64,
+                                      height: 64,
+                                      decoration: BoxDecoration(
+                                        color: isSel ? const Color(0xFF2A3E5F) : const Color(0xFF23252B),
+                                        borderRadius: BorderRadius.circular(18),
+                                        border: Border.all(
+                                          color: isSel ? const Color(0xFF8AB4F8) : Colors.transparent,
+                                          width: 2.2,
+                                        ),
+                                      ),
+                                      child: Center(
+                                        child: Icon(
+                                          filter.icon,
+                                          color: isSel ? const Color(0xFF8AB4F8) : Colors.white70,
+                                          size: 30,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(height: 6),
+                                    Text(
+                                      filter.title,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: isSel ? FontWeight.bold : FontWeight.normal,
+                                        color: isSel ? const Color(0xFF8AB4F8) : Colors.white70,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+                  ],
+
+                  // 5. BOTTOM BAR WITH "APPLY" PILL BUTTON
+                  Container(
+                    color: const Color(0xFF181A1F),
+                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(context),
+                          child: const Text('Cancel', style: TextStyle(color: Colors.white70)),
+                        ),
+                        ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFFB0CCF9),
+                            foregroundColor: const Color(0xFF003062),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                            padding: const EdgeInsets.symmetric(horizontal: 42, vertical: 14),
+                            elevation: 0,
+                          ),
+                          onPressed: _applyAndFinish,
+                          child: const Text('Apply', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+      ),
+    );
+  }
+
+  Widget _buildTopPill({required String title, required IconData icon, required bool isSelected, required VoidCallback onTap}) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(24),
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        decoration: BoxDecoration(
+          color: isSelected ? const Color(0xFFB0CCF9) : const Color(0xFF26282E),
+          borderRadius: BorderRadius.circular(24),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 18, color: isSelected ? const Color(0xFF003062) : Colors.white),
+            const SizedBox(width: 6),
+            Text(
+              title,
+              style: TextStyle(
+                color: isSelected ? const Color(0xFF003062) : Colors.white,
+                fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                fontSize: 13,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// 4. DOCUMENT DETAIL SCREEN
 // ============================================================================
 class DocumentDetailScreen extends StatefulWidget {
   final Map<String, dynamic> doc;
@@ -2418,7 +2995,6 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
             ),
           ),
           const Divider(height: 1),
-
           Expanded(
             child: _images.isEmpty
                 ? const Center(child: Text('No pages in this document.'))
@@ -2544,7 +3120,7 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
 }
 
 // ============================================================================
-// 4. FULL SCREEN PHOTO VIEWER (Advanced AI Filters + Reset to Raw Original)
+// 5. FULL SCREEN PHOTO VIEWER
 // ============================================================================
 class FullScreenPhotoViewer extends StatefulWidget {
   final List<String> images;
@@ -2579,7 +3155,6 @@ class _FullScreenPhotoViewerState extends State<FullScreenPhotoViewer> {
     _pageCtrl = PageController(initialPage: widget.initialIndex);
   }
 
-  // असली ओरिजिनल फोटो पर वापस लौटने की सुविधा
   void _resetImage() {
     if (_curPage < widget.originalImages.length) {
       setState(() {
@@ -2590,13 +3165,39 @@ class _FullScreenPhotoViewerState extends State<FullScreenPhotoViewer> {
     }
   }
 
+  Future<void> _rotatePage() async {
+    final curPath = widget.images[_curPage];
+    final bytes = await File(curPath).readAsBytes();
+    final codec = await ui.instantiateImageCodec(bytes);
+    final frame = await codec.getNextFrame();
+    final img = frame.image;
+
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder, Rect.fromLTWH(0, 0, img.height.toDouble(), img.width.toDouble()));
+    canvas.translate(img.height.toDouble() / 2, img.width.toDouble() / 2);
+    canvas.rotate(1.5708);
+    canvas.drawImage(img, Offset(-img.width.toDouble() / 2, -img.height.toDouble() / 2), Paint());
+
+    final outImg = await recorder.endRecording().toImage(img.height, img.width);
+    final data = await outImg.toByteData(format: ui.ImageByteFormat.png);
+    if (data != null) {
+      final appDir = await getApplicationDocumentsDirectory();
+      final f = File('${appDir.path}/rot_${DateTime.now().millisecondsSinceEpoch}.png');
+      await f.writeAsBytes(data.buffer.asUint8List());
+
+      setState(() {
+        widget.images[_curPage] = f.path;
+      });
+      widget.onDocUpdated();
+    }
+  }
+
   Future<void> _applyAdvancedAIFilter(int filterType) async {
     if (widget.images.isEmpty) return;
 
     ColorFilter? filter;
     switch (filterType) {
       case 1:
-        // Ultra Magic Paper Whitener (Auto HD)
         filter = const ColorFilter.matrix([
           1.65, 0.05, 0.05, 0, -36,
           0.05, 1.65, 0.05, 0, -36,
@@ -2605,7 +3206,6 @@ class _FullScreenPhotoViewerState extends State<FullScreenPhotoViewer> {
         ]);
         break;
       case 2:
-        // Super Deep Black (Sharp Text)
         filter = const ColorFilter.matrix([
           2.2, 2.2, 2.2, 0, -300,
           2.2, 2.2, 2.2, 0, -300,
@@ -2614,7 +3214,6 @@ class _FullScreenPhotoViewerState extends State<FullScreenPhotoViewer> {
         ]);
         break;
       case 3:
-        // AI Vibrant HD Color (Stamps, Seals, Logos)
         filter = const ColorFilter.matrix([
           1.4, 0,   0,   0, -5,
           0,   1.4, 0,   0, -5,
@@ -2623,7 +3222,6 @@ class _FullScreenPhotoViewerState extends State<FullScreenPhotoViewer> {
         ]);
         break;
       case 4:
-        // Shadow & Yellowing Removal
         filter = const ColorFilter.matrix([
           1.3, 0,   0,   0, 35,
           0,   1.3, 0,   0, 35,
@@ -2632,7 +3230,6 @@ class _FullScreenPhotoViewerState extends State<FullScreenPhotoViewer> {
         ]);
         break;
       case 5:
-        // Clean Studio Grayscale
         filter = const ColorFilter.matrix([
           0.30, 0.59, 0.11, 0, 0,
           0.30, 0.59, 0.11, 0, 0,
@@ -2672,33 +3269,6 @@ class _FullScreenPhotoViewerState extends State<FullScreenPhotoViewer> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('✨ AI Filter applied. Tap Reset anytime.')));
       }
-    }
-  }
-
-  Future<void> _rotatePage() async {
-    final curPath = widget.images[_curPage];
-    final bytes = await File(curPath).readAsBytes();
-    final codec = await ui.instantiateImageCodec(bytes);
-    final frame = await codec.getNextFrame();
-    final img = frame.image;
-
-    final recorder = ui.PictureRecorder();
-    final canvas = Canvas(recorder, Rect.fromLTWH(0, 0, img.height.toDouble(), img.width.toDouble()));
-    canvas.translate(img.height.toDouble() / 2, img.width.toDouble() / 2);
-    canvas.rotate(1.5708);
-    canvas.drawImage(img, Offset(-img.width.toDouble() / 2, -img.height.toDouble() / 2), Paint());
-
-    final outImg = await recorder.endRecording().toImage(img.height, img.width);
-    final data = await outImg.toByteData(format: ui.ImageByteFormat.png);
-    if (data != null) {
-      final appDir = await getApplicationDocumentsDirectory();
-      final f = File('${appDir.path}/rot_${DateTime.now().millisecondsSinceEpoch}.png');
-      await f.writeAsBytes(data.buffer.asUint8List());
-
-      setState(() {
-        widget.images[_curPage] = f.path;
-      });
-      widget.onDocUpdated();
     }
   }
 
@@ -2777,7 +3347,7 @@ class _FullScreenPhotoViewerState extends State<FullScreenPhotoViewer> {
 }
 
 // ============================================================================
-// 5. PDF STUDIO (Merge PDFs)
+// 6. PDF STUDIO (Merge PDFs)
 // ============================================================================
 class PdfStudioScreen extends StatefulWidget {
   final List<Map<String, dynamic>> savedDocs;
@@ -2861,7 +3431,7 @@ class _PdfStudioScreenState extends State<PdfStudioScreen> {
 }
 
 // ============================================================================
-// 6. DIGITAL SIGNATURE SCREEN (Multi-Color, Stroke Size, Undo, Save JPG/PNG)
+// 7. DIGITAL SIGNATURE SCREEN
 // ============================================================================
 class StrokeLine {
   final List<Offset> points;
@@ -2883,10 +3453,10 @@ class _DigitalSignatureScreenState extends State<DigitalSignatureScreen> {
 
   final List<Color> _penColors = [
     Colors.black,
-    const Color(0xFF1565C0), // Blue ink
-    const Color(0xFFD32F2F), // Red
-    const Color(0xFF2E7D32), // Green
-    const Color(0xFF6A1B9A), // Purple
+    const Color(0xFF1565C0),
+    const Color(0xFFD32F2F),
+    const Color(0xFF2E7D32),
+    const Color(0xFF6A1B9A),
   ];
 
   void _undo() {
@@ -3042,7 +3612,7 @@ class _MultiColorSigPainter extends CustomPainter {
 }
 
 // ============================================================================
-// 7. PASSPORT PHOTO STUDIO (Working 1, 4, 8, 16, 32 Sheet Maker with JPG & PDF)
+// 8. PASSPORT PHOTO STUDIO
 // ============================================================================
 class PassportPhotoStudioScreen extends StatefulWidget {
   const PassportPhotoStudioScreen({super.key});
@@ -3252,7 +3822,7 @@ class _PassportPhotoStudioScreenState extends State<PassportPhotoStudioScreen> {
 }
 
 // ============================================================================
-// 8. POWERPOINT STUDIO
+// 9. POWERPOINT STUDIO
 // ============================================================================
 class PowerPointStudioScreen extends StatefulWidget {
   const PowerPointStudioScreen({super.key});
@@ -3322,7 +3892,7 @@ class _PowerPointStudioScreenState extends State<PowerPointStudioScreen> {
 }
 
 // ============================================================================
-// 9. TXT & NOTES MAKER
+// 10. TXT & NOTES MAKER
 // ============================================================================
 class TxtEditorNotesScreen extends StatefulWidget {
   final bool isNotes;
@@ -3379,7 +3949,7 @@ class _TxtEditorNotesScreenState extends State<TxtEditorNotesScreen> {
 }
 
 // ============================================================================
-// 10. RESUME BUILDER
+// 11. RESUME BUILDER
 // ============================================================================
 class ResumeBuilderScreen extends StatefulWidget {
   const ResumeBuilderScreen({super.key});
@@ -3471,7 +4041,7 @@ class _ResumeBuilderScreenState extends State<ResumeBuilderScreen> {
 }
 
 // ============================================================================
-// 11. INVOICE MAKER (GST Tax Calculation)
+// 12. INVOICE MAKER (GST Tax Calculation)
 // ============================================================================
 class InvoiceMakerProScreen extends StatefulWidget {
   const InvoiceMakerProScreen({super.key});
@@ -3592,7 +4162,7 @@ class _InvoiceMakerProScreenState extends State<InvoiceMakerProScreen> {
 }
 
 // ============================================================================
-// 12. LETTER TEMPLATES
+// 13. LETTER TEMPLATES
 // ============================================================================
 class LetterTemplatesScreen extends StatefulWidget {
   const LetterTemplatesScreen({super.key});
@@ -3645,7 +4215,7 @@ class _LetterTemplatesScreenState extends State<LetterTemplatesScreen> {
 }
 
 // ============================================================================
-// 13. UNIVERSAL IMAGE ROTATE (Physical 90°)
+// 14. UNIVERSAL IMAGE ROTATE (Physical 90°)
 // ============================================================================
 class UniversalImageToolScreen extends StatefulWidget {
   const UniversalImageToolScreen({super.key});
