@@ -1,3 +1,4 @@
+// ==================== PART 1 START ====================
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -121,18 +122,21 @@ class DocFilterPreset {
   const DocFilterPreset({required this.id, required this.title, required this.icon, required this.badgeColor});
 }
 
+// PRO DOC SCANNER PRESET FILTERS
 final List<DocFilterPreset> kDocFilters = [
   const DocFilterPreset(id: 'original', title: 'Original', icon: Icons.image_outlined, badgeColor: Colors.blueGrey),
+  const DocFilterPreset(id: 'magic_pro', title: 'Magic Color', icon: Icons.auto_awesome_rounded, badgeColor: Color(0xFF00B4D8)),
   const DocFilterPreset(id: 'auto_pro', title: 'Auto AI', icon: Icons.auto_fix_high_rounded, badgeColor: Color(0xFF2E7D32)),
-  const DocFilterPreset(id: 'magic_pro', title: 'Magic Pro', icon: Icons.auto_awesome_rounded, badgeColor: Color(0xFF00B4D8)),
-  const DocFilterPreset(id: 'book_ultra', title: 'Book Ultra', icon: Icons.menu_book_rounded, badgeColor: Color(0xFF4CAF50)),
-  const DocFilterPreset(id: 'super_bw', title: 'Super B&W', icon: Icons.contrast_rounded, badgeColor: Colors.black87),
-  const DocFilterPreset(id: 'deshadow', title: 'De-Shadow', icon: Icons.wb_sunny_outlined, badgeColor: Colors.orange),
+  const DocFilterPreset(id: 'lighten_pro', title: 'Lighten Pro', icon: Icons.wb_sunny_outlined, badgeColor: Colors.orange),
+  const DocFilterPreset(id: 'super_bw', title: 'B&W Pro', icon: Icons.contrast_rounded, badgeColor: Colors.black87),
+  const DocFilterPreset(id: 'dark_ink', title: 'Dark Ink', icon: Icons.draw_rounded, badgeColor: Color(0xFF4CAF50)),
   const DocFilterPreset(id: 'ocv_crisp', title: 'Grayscale Pro', icon: Icons.filter_b_and_w_rounded, badgeColor: Colors.grey),
   const DocFilterPreset(id: 'vivid_color', title: 'Vivid Color', icon: Icons.color_lens_outlined, badgeColor: Colors.pink),
 ];
 
-// FAST SINGLE-PASS PRO IMAGE PROCESSOR
+// ============================================================================
+// ULTRA-CLARITY PRO IMAGE PROCESSOR (WHITE BALANCE + DENOISE + SAUVOLA + LUT)
+// ============================================================================
 class ProDocImageProcessor {
   static List<int>? _readDimensionsFast(Uint8List rawBytes) {
     try {
@@ -179,9 +183,30 @@ class ProDocImageProcessor {
     }
   }
 
-  static Future<Uint8List> applyProFilterToRgba({required Uint8List rgba, required int width, required int height, required String filterId, required double intensity}) async {
-    if (filterId == 'original') return rgba;
-    return compute(_processRgbaIsolate, {'rgba': rgba, 'w': width, 'h': height, 'filter': filterId, 'intensity': intensity});
+  static Future<Uint8List> applyProFilterToRgba({
+    required Uint8List rgba,
+    required int width,
+    required int height,
+    required String filterId,
+    required double intensity,
+    double brightness = 0.0,
+    double contrast = 1.0,
+    double sharpness = 0.5,
+    List<Map<String, dynamic>>? eraserStrokes,
+  }) async {
+    final bool hasAdjustments = brightness.abs() > 0.01 || (contrast - 1.0).abs() > 0.01 || (eraserStrokes != null && eraserStrokes.isNotEmpty);
+    if (filterId == 'original' && !hasAdjustments) return rgba;
+    return compute(_processRgbaIsolate, {
+      'rgba': rgba,
+      'w': width,
+      'h': height,
+      'filter': filterId,
+      'intensity': intensity,
+      'brightness': brightness,
+      'contrast': contrast,
+      'sharpness': sharpness,
+      'eraserStrokes': eraserStrokes ?? const <Map<String, dynamic>>[],
+    });
   }
 
   static Future<ui.Image?> rgbaToUiImage(Uint8List rgba, int width, int height) {
@@ -190,16 +215,36 @@ class ProDocImageProcessor {
     return completer.future;
   }
 
-  static Future<String> processAndSaveHighRes({required String sourcePath, required String filterId, required double intensity, required String outputPath}) async {
-    if (filterId == 'original') {
+  static Future<String> processAndSaveHighRes({
+    required String sourcePath,
+    required String filterId,
+    required double intensity,
+    required String outputPath,
+    double brightness = 0.0,
+    double contrast = 1.0,
+    double sharpness = 0.5,
+    List<Map<String, dynamic>>? eraserStrokes,
+  }) async {
+    final bool hasAdjustments = brightness.abs() > 0.01 || (contrast - 1.0).abs() > 0.01 || (eraserStrokes != null && eraserStrokes.isNotEmpty);
+    if (filterId == 'original' && !hasAdjustments) {
       await File(sourcePath).copy(outputPath);
       return outputPath;
     }
     final wh = [0, 0];
-    final rgba = await decodeImageToRgba(sourcePath, maxDimension: 1800, outWidthHeight: wh);
+    final rgba = await decodeImageToRgba(sourcePath, maxDimension: 2400, outWidthHeight: wh);
     if (rgba == null) return sourcePath;
-    final enhanced = await applyProFilterToRgba(rgba: rgba, width: wh[0], height: wh[1], filterId: filterId, intensity: intensity);
-    final jpgBytes = await compute(_encodeRgbaToJpgIsolate, {'rgba': enhanced, 'w': wh[0], 'h': wh[1], 'quality': 91});
+    final enhanced = await applyProFilterToRgba(
+      rgba: rgba,
+      width: wh[0],
+      height: wh[1],
+      filterId: filterId,
+      intensity: intensity,
+      brightness: brightness,
+      contrast: contrast,
+      sharpness: sharpness,
+      eraserStrokes: eraserStrokes,
+    );
+    final jpgBytes = await compute(_encodeRgbaToJpgIsolate, {'rgba': enhanced, 'w': wh[0], 'h': wh[1], 'quality': 93});
     await File(outputPath).writeAsBytes(jpgBytes);
     return outputPath;
   }
@@ -224,7 +269,7 @@ Uint8List? _rotate90Isolate(Uint8List rawBytes) {
   if (decoded == null) return null;
   final oriented = img.bakeOrientation(decoded);
   final rotated = img.copyRotate(oriented, angle: 90);
-  return Uint8List.fromList(img.encodeJpg(rotated, quality: 92));
+  return Uint8List.fromList(img.encodeJpg(rotated, quality: 93));
 }
 
 Uint8List _encodeRgbaToJpgIsolate(Map<String, dynamic> params) {
@@ -234,148 +279,276 @@ Uint8List _encodeRgbaToJpgIsolate(Map<String, dynamic> params) {
 }
 
 Uint8List _processRgbaIsolate(Map<String, dynamic> params) {
-  final Uint8List src = params['rgba'];
+  final Uint8List rawSrc = params['rgba'];
   final int w = params['w'];
   final int h = params['h'];
   final String filter = params['filter'];
   final double intensity = (params['intensity'] as double).clamp(0.0, 1.0);
+  final double brightness = (params['brightness'] as double).clamp(-0.5, 0.5);
+  final double contrast = (params['contrast'] as double).clamp(0.5, 2.0);
+  final double userSharpness = (params['sharpness'] as double).clamp(0.0, 1.5);
+  final List eraserStrokes = params['eraserStrokes'] as List? ?? const [];
+
   final int total = w * h;
-  final Uint8List out = Uint8List.fromList(src);
-  if (filter == 'original' || total == 0) return out;
+  final Uint8List out = Uint8List.fromList(rawSrc);
+  if (total == 0) return out;
 
-  // Global paper floor prevents dark blocks/photos from over-brightening
-  final Int32List globalHist = Int32List(256);
-  int globalSamples = 0;
-  final int gStep = max(1, total ~/ 25000);
-  for (int i = 0; i < total; i += gStep) {
-    final int p = i * 4;
-    globalHist[((77 * src[p] + 150 * src[p + 1] + 29 * src[p + 2]) >> 8).clamp(0, 255)]++;
-    globalSamples++;
-  }
-  int gAcc = 0, globalPaperLum = 220;
-  final int gTarget = max(1, (globalSamples * 0.15).round());
-  for (int b = 255; b >= 0; b--) {
-    gAcc += globalHist[b];
-    if (gAcc >= gTarget) {
-      globalPaperLum = b;
-      break;
-    }
-  }
-  final double minReliablePaper = max(85.0, globalPaperLum * 0.56);
+  // STEP 1: Fast Edge-Preserving Noise Removal
+  Uint8List src = rawSrc;
+  if (filter != 'original' && filter != 'vivid_color' && w > 4 && h > 4) {
+    final Uint8List denoised = Uint8List.fromList(rawSrc);
+    final int noiseThresh = (filter == 'super_bw' || filter == 'dark_ink') ? 22 : 16;
+    for (int y = 1; y < h - 1; y++) {
+      final int rb = y * w;
+      for (int x = 1; x < w - 1; x++) {
+        final int p = (rb + x) * 4;
+        final int cR = rawSrc[p], cG = rawSrc[p + 1], cB = rawSrc[p + 2];
+        final int cL = (77 * cR + 150 * cG + 29 * cB) >> 8;
 
-  final int gridCols = (filter == 'book_ultra') ? 28 : 20;
-  final int gridRows = (filter == 'book_ultra') ? 28 : 20;
-  final int gridCount = gridCols * gridRows;
-  final Float32List bgLumGrid = Float32List(gridCount);
-  final Int32List blockHist = Int32List(256);
-  final int step = (w > 900 || h > 900) ? 2 : 1;
-
-  for (int gy = 0; gy < gridRows; gy++) {
-    final int y0 = (gy * h) ~/ gridRows;
-    final int y1 = ((gy + 1) * h) ~/ gridRows;
-    for (int gx = 0; gx < gridCols; gx++) {
-      final int x0 = (gx * w) ~/ gridCols;
-      final int x1 = ((gx + 1) * w) ~/ gridCols;
-      blockHist.fillRange(0, 256, 0);
-      int samples = 0;
-      for (int y = y0; y < y1; y += step) {
-        final int rb = y * w;
-        for (int x = x0; x < x1; x += step) {
-          final int p = (rb + x) * 4;
-          blockHist[((77 * src[p] + 150 * src[p + 1] + 29 * src[p + 2]) >> 8).clamp(0, 255)]++;
-          samples++;
+        int sumR = cR, sumG = cG, sumB = cB, cnt = 1;
+        final int n1 = (rb + x - 1) * 4;
+        if ((((77 * rawSrc[n1] + 150 * rawSrc[n1 + 1] + 29 * rawSrc[n1 + 2]) >> 8) - cL).abs() <= noiseThresh) {
+          sumR += rawSrc[n1];
+          sumG += rawSrc[n1 + 1];
+          sumB += rawSrc[n1 + 2];
+          cnt++;
+        }
+        final int n2 = (rb + x + 1) * 4;
+        if ((((77 * rawSrc[n2] + 150 * rawSrc[n2 + 1] + 29 * rawSrc[n2 + 2]) >> 8) - cL).abs() <= noiseThresh) {
+          sumR += rawSrc[n2];
+          sumG += rawSrc[n2 + 1];
+          sumB += rawSrc[n2 + 2];
+          cnt++;
+        }
+        final int n3 = ((y - 1) * w + x) * 4;
+        if ((((77 * rawSrc[n3] + 150 * rawSrc[n3 + 1] + 29 * rawSrc[n3 + 2]) >> 8) - cL).abs() <= noiseThresh) {
+          sumR += rawSrc[n3];
+          sumG += rawSrc[n3 + 1];
+          sumB += rawSrc[n3 + 2];
+          cnt++;
+        }
+        final int n4 = ((y + 1) * w + x) * 4;
+        if ((((77 * rawSrc[n4] + 150 * rawSrc[n4 + 1] + 29 * rawSrc[n4 + 2]) >> 8) - cL).abs() <= noiseThresh) {
+          sumR += rawSrc[n4];
+          sumG += rawSrc[n4 + 1];
+          sumB += rawSrc[n4 + 2];
+          cnt++;
+        }
+        if (cnt > 1) {
+          denoised[p] = sumR ~/ cnt;
+          denoised[p + 1] = sumG ~/ cnt;
+          denoised[p + 2] = sumB ~/ cnt;
         }
       }
-      final int gIdx = gy * gridCols + gx;
-      if (samples == 0) {
-        bgLumGrid[gIdx] = 255.0;
-        continue;
-      }
-      final int target = max(1, (samples * 0.10).round());
+    }
+    src = denoised;
+  }
+
+  // STEP 2: 3-Channel (R, G, B) Illumination & White-Balance Grid Estimation
+  const int gridCols = 24;
+  const int gridRows = 24;
+  const int gridCount = gridCols * gridRows;
+  final Float32List bgRGrid = Float32List(gridCount);
+  final Float32List bgGGrid = Float32List(gridCount);
+  final Float32List bgBGrid = Float32List(gridCount);
+
+  if (filter != 'original' && filter != 'vivid_color') {
+    final Int32List gHistR = Int32List(256), gHistG = Int32List(256), gHistB = Int32List(256);
+    int gSamples = 0;
+    final int gStep = max(1, total ~/ 25000);
+    for (int i = 0; i < total; i += gStep) {
+      final int p = i * 4;
+      gHistR[src[p]]++;
+      gHistG[src[p + 1]]++;
+      gHistB[src[p + 2]]++;
+      gSamples++;
+    }
+    double percentile85(Int32List hist) {
       int acc = 0;
-      double sumLum = 0;
-      for (int bin = 255; bin >= 0; bin--) {
-        final int c = blockHist[bin];
-        if (c > 0) {
-          sumLum += bin * c;
-          acc += c;
-          if (acc >= target) break;
-        }
+      final int target = max(1, (gSamples * 0.15).round());
+      for (int b = 255; b >= 0; b--) {
+        acc += hist[b];
+        if (acc >= target) return b.toDouble();
       }
-      bgLumGrid[gIdx] = max(sumLum / acc, minReliablePaper).clamp(48.0, 255.0);
+      return 210.0;
     }
-  }
 
-  final Float32List tmpGrid = Float32List(gridCount);
-  for (int pass = 0; pass < 3; pass++) {
+    final double minFloorR = max(75.0, percentile85(gHistR) * 0.55);
+    final double minFloorG = max(75.0, percentile85(gHistG) * 0.55);
+    final double minFloorB = max(75.0, percentile85(gHistB) * 0.55);
+
+    final Int32List blkHist = Int32List(256);
+    final Int32List blkSumR = Int32List(256), blkSumG = Int32List(256), blkSumB = Int32List(256);
+    final int step = (w > 1000 || h > 1000) ? 2 : 1;
+
+    for (int gy = 0; gy < gridRows; gy++) {
+      final int y0 = (gy * h) ~/ gridRows, y1 = ((gy + 1) * h) ~/ gridRows;
+      for (int gx = 0; gx < gridCols; gx++) {
+        final int x0 = (gx * w) ~/ gridCols, x1 = ((gx + 1) * w) ~/ gridCols;
+        blkHist.fillRange(0, 256, 0);
+        blkSumR.fillRange(0, 256, 0);
+        blkSumG.fillRange(0, 256, 0);
+        blkSumB.fillRange(0, 256, 0);
+        int samples = 0;
+        for (int y = y0; y < y1; y += step) {
+          final int rb = y * w;
+          for (int x = x0; x < x1; x += step) {
+            final int p = (rb + x) * 4;
+            final int r = src[p], g = src[p + 1], b = src[p + 2];
+            final int l = ((77 * r + 150 * g + 29 * b) >> 8).clamp(0, 255);
+            blkHist[l]++;
+            blkSumR[l] += r;
+            blkSumG[l] += g;
+            blkSumB[l] += b;
+            samples++;
+          }
+        }
+        final int gIdx = gy * gridCols + gx;
+        if (samples == 0) {
+          bgRGrid[gIdx] = 255.0;
+          bgGGrid[gIdx] = 255.0;
+          bgBGrid[gIdx] = 255.0;
+          continue;
+        }
+        final int target = max(1, (samples * 0.12).round());
+        int acc = 0, sR = 0, sG = 0, sB = 0;
+        for (int bin = 255; bin >= 0; bin--) {
+          final int c = blkHist[bin];
+          if (c > 0) {
+            acc += c;
+            sR += blkSumR[bin];
+            sG += blkSumG[bin];
+            sB += blkSumB[bin];
+            if (acc >= target) break;
+          }
+        }
+        bgRGrid[gIdx] = max(sR / acc, minFloorR).clamp(48.0, 255.0);
+        bgGGrid[gIdx] = max(sG / acc, minFloorG).clamp(48.0, 255.0);
+        bgBGrid[gIdx] = max(sB / acc, minFloorB).clamp(48.0, 255.0);
+      }
+    }
+
+    final Float32List tmpR = Float32List(gridCount), tmpG = Float32List(gridCount), tmpB = Float32List(gridCount);
     for (int gy = 0; gy < gridRows; gy++) {
       for (int gx = 0; gx < gridCols; gx++) {
-        double sl = 0;
-        int cnt = 0;
+        final int idx = gy * gridCols + gx;
+        double mR = bgRGrid[idx], mG = bgGGrid[idx], mB = bgBGrid[idx];
         for (int dy = -1; dy <= 1; dy++) {
           final int ny = (gy + dy).clamp(0, gridRows - 1);
           for (int dx = -1; dx <= 1; dx++) {
             final int nx = (gx + dx).clamp(0, gridCols - 1);
-            sl += bgLumGrid[ny * gridCols + nx];
-            cnt++;
+            final int nIdx = ny * gridCols + nx;
+            if (bgRGrid[nIdx] > mR) mR = bgRGrid[nIdx];
+            if (bgGGrid[nIdx] > mG) mG = bgGGrid[nIdx];
+            if (bgBGrid[nIdx] > mB) mB = bgBGrid[nIdx];
           }
         }
-        tmpGrid[gy * gridCols + gx] = sl / cnt;
+        tmpR[idx] = bgRGrid[idx] * 0.55 + mR * 0.45;
+        tmpG[idx] = bgGGrid[idx] * 0.55 + mG * 0.45;
+        tmpB[idx] = bgBGrid[idx] * 0.55 + mB * 0.45;
       }
     }
-    bgLumGrid.setAll(0, tmpGrid);
+    bgRGrid.setAll(0, tmpR);
+    bgGGrid.setAll(0, tmpG);
+    bgBGrid.setAll(0, tmpB);
+
+    for (int pass = 0; pass < 2; pass++) {
+      for (int gy = 0; gy < gridRows; gy++) {
+        for (int gx = 0; gx < gridCols; gx++) {
+          double sR = 0, sG = 0, sB = 0;
+          int cnt = 0;
+          for (int dy = -1; dy <= 1; dy++) {
+            final int ny = (gy + dy).clamp(0, gridRows - 1);
+            for (int dx = -1; dx <= 1; dx++) {
+              final int nx = (gx + dx).clamp(0, gridCols - 1);
+              final int nIdx = ny * gridCols + nx;
+              sR += bgRGrid[nIdx];
+              sG += bgGGrid[nIdx];
+              sB += bgBGrid[nIdx];
+              cnt++;
+            }
+          }
+          final int idx = gy * gridCols + gx;
+          tmpR[idx] = sR / cnt;
+          tmpG[idx] = sG / cnt;
+          tmpB[idx] = sB / cnt;
+        }
+      }
+      bgRGrid.setAll(0, tmpR);
+      bgGGrid.setAll(0, tmpG);
+      bgBGrid.setAll(0, tmpB);
+    }
   }
 
-  double sampleBgLum(double gx, double gy) {
+  double sampleGrid(Float32List grid, double gx, double gy) {
     final int x0 = gx.floor().clamp(0, gridCols - 1);
     final int y0 = gy.floor().clamp(0, gridRows - 1);
     final int x1 = (x0 + 1).clamp(0, gridCols - 1);
     final int y1 = (y0 + 1).clamp(0, gridRows - 1);
     final double fx = gx - x0, fy = gy - y0;
-    final double top = bgLumGrid[y0 * gridCols + x0] + (bgLumGrid[y0 * gridCols + x1] - bgLumGrid[y0 * gridCols + x0]) * fx;
-    final double bot = bgLumGrid[y1 * gridCols + x0] + (bgLumGrid[y1 * gridCols + x1] - bgLumGrid[y1 * gridCols + x0]) * fx;
+    final double top = grid[y0 * gridCols + x0] + (grid[y0 * gridCols + x1] - grid[y0 * gridCols + x0]) * fx;
+    final double bot = grid[y1 * gridCols + x0] + (grid[y1 * gridCols + x1] - grid[y1 * gridCols + x0]) * fx;
     return top + (bot - top) * fy;
   }
 
   final double cellW = w / gridCols, cellH = h / gridRows;
+  final bool hasManualTone = brightness.abs() > 0.005 || (contrast - 1.0).abs() > 0.005;
 
+  // STEP 3A: TRUE SAUVOLA ADAPTIVE THRESHOLDING (B&W Pro)
   if (filter == 'super_bw') {
     final Uint8List normLum = Uint8List(total);
     final int iw = w + 1;
-    final Int64List integral = Int64List(iw * (h + 1));
+    final Int64List intSum = Int64List(iw * (h + 1));
+    final Int64List intSq = Int64List(iw * (h + 1));
+
     for (int y = 0; y < h; y++) {
       final double gy = ((y + 0.5) / cellH - 0.5).clamp(0.0, gridRows - 1.0001);
-      int rowSum = 0;
+      int rowSum = 0, rowSq = 0;
       final int rb = y * w, irb = (y + 1) * iw, iprb = y * iw;
       for (int x = 0; x < w; x++) {
         final double gx = ((x + 0.5) / cellW - 0.5).clamp(0.0, gridCols - 1.0001);
         final int p = (rb + x) * 4;
-        final double gain = min(252.0 / max(sampleBgLum(gx, gy), 45.0), 2.5);
-        final int nLum = ((0.299 * src[p] + 0.587 * src[p + 1] + 0.114 * src[p + 2]) * gain).round().clamp(0, 255);
-        normLum[rb + x] = nLum;
-        rowSum += nLum;
-        integral[irb + x + 1] = integral[iprb + x + 1] + rowSum;
+        final double gR = min(252.0 / max(sampleGrid(bgRGrid, gx, gy), 45.0), 2.8);
+        final double gG = min(252.0 / max(sampleGrid(bgGGrid, gx, gy), 45.0), 2.8);
+        final double gB = min(252.0 / max(sampleGrid(bgBGrid, gx, gy), 45.0), 2.8);
+        final int nL = (0.299 * src[p] * gR + 0.587 * src[p + 1] * gG + 0.114 * src[p + 2] * gB).round().clamp(0, 255);
+        normLum[rb + x] = nL;
+        rowSum += nL;
+        rowSq += nL * nL;
+        intSum[irb + x + 1] = intSum[iprb + x + 1] + rowSum;
+        intSq[irb + x + 1] = intSq[iprb + x + 1] + rowSq;
       }
     }
-    final int rad = max(12, min(w, h) ~/ 30);
-    final double kSens = 0.08 + 0.11 * (1.0 - intensity);
-    const double band = 18.0;
+
+    final int rad = max(14, min(w, h) ~/ 28);
+    final double kSauvola = 0.14 + 0.24 * (1.0 - intensity);
+    const double band = 14.0;
+
     for (int y = 0; y < h; y++) {
       final int y1 = max(0, y - rad), y2 = min(h - 1, y + rad), rowOff = y * w;
       for (int x = 0; x < w; x++) {
         final int x1 = max(0, x - rad), x2 = min(w - 1, x + rad);
         final int count = (x2 - x1 + 1) * (y2 - y1 + 1);
-        final int sum = integral[(y2 + 1) * iw + (x2 + 1)] - integral[y1 * iw + (x2 + 1)] - integral[(y2 + 1) * iw + x1] + integral[y1 * iw + x1];
-        final double localMean = sum / count;
+        final int sum = intSum[(y2 + 1) * iw + (x2 + 1)] - intSum[y1 * iw + (x2 + 1)] - intSum[(y2 + 1) * iw + x1] + intSum[y1 * iw + x1];
+        final int sqSum = intSq[(y2 + 1) * iw + (x2 + 1)] - intSq[y1 * iw + (x2 + 1)] - intSq[(y2 + 1) * iw + x1] + intSq[y1 * iw + x1];
+
+        final double mean = sum / count;
+        final double variance = max(0.0, (sqSum / count) - mean * mean);
+        final double stdDev = sqrt(variance);
         final int cur = normLum[rowOff + x];
+
         int bw;
-        if (cur > 232 || (cur > 190 && cur >= localMean - 7)) {
+        if (cur > 230 && stdDev < 18.0) {
           bw = 255;
-        } else if (localMean < 26) {
+        } else if (mean < 28.0 && stdDev < 12.0) {
           bw = 10;
         } else {
-          final double t = ((cur - (localMean * (1.0 - kSens) - band)) / (2.0 * band)).clamp(0.0, 1.0);
-          bw = (10 + (t * t * (3.0 - 2.0 * t)) * 245).round().clamp(0, 255);
+          final double thresh = mean * (1.0 + kSauvola * (stdDev / 128.0 - 1.0));
+          final double t = ((cur - (thresh - band)) / (2.0 * band)).clamp(0.0, 1.0);
+          bw = (8 + (t * t * (3.0 - 2.0 * t)) * 247).round().clamp(0, 255);
+        }
+        if (hasManualTone) {
+          bw = ((bw - 128.0) * contrast + 128.0 + brightness * 255.0).round().clamp(0, 255);
         }
         final int p = (rowOff + x) * 4;
         out[p] = bw;
@@ -384,40 +557,47 @@ Uint8List _processRgbaIsolate(Map<String, dynamic> params) {
         out[p + 3] = 255;
       }
     }
+    _paintEraserStrokes(out, w, h, eraserStrokes);
     return out;
   }
 
-  // Precompute 256-entry Tone Curve LUT (no expensive pow() in pixel loop)
+  // STEP 3B: PRO TONE CURVE LUT
   final Float32List toneLut = Float32List(256);
-  if (filter == 'auto_pro' || filter == 'magic_pro' || filter == 'book_ultra' || filter == 'ocv_crisp') {
-    final double paperSnap = filter == 'book_ultra'
-        ? (204.0 - 30.0 * intensity)
+  if (filter == 'magic_pro' || filter == 'auto_pro' || filter == 'dark_ink' || filter == 'ocv_crisp') {
+    final double paperSnap = filter == 'dark_ink'
+        ? (202.0 - 30.0 * intensity)
         : filter == 'magic_pro'
-            ? (212.0 - 28.0 * intensity)
+            ? (208.0 - 30.0 * intensity)
             : filter == 'ocv_crisp'
-                ? (206.0 - 30.0 * intensity)
-                : (218.0 - 24.0 * intensity);
-    final double inkGamma = filter == 'book_ultra'
-        ? (1.26 + 0.36 * intensity)
+                ? (205.0 - 28.0 * intensity)
+                : (220.0 - 22.0 * intensity);
+    final double inkGamma = filter == 'dark_ink'
+        ? (1.42 + 0.52 * intensity)
         : filter == 'magic_pro'
-            ? (1.16 + 0.28 * intensity)
+            ? (1.22 + 0.36 * intensity)
             : filter == 'ocv_crisp'
-                ? (1.30 + 0.35 * intensity)
+                ? (1.28 + 0.35 * intensity)
                 : (1.12 + 0.22 * intensity);
-    const double blackFloor = 12.0;
+    final double blackFloor = (filter == 'dark_ink') ? 22.0 : 12.0;
+
     for (int v = 0; v < 256; v++) {
       final double dv = v.toDouble();
       if (dv <= blackFloor) {
-        toneLut[v] = dv * 0.7;
+        toneLut[v] = dv * 0.55;
       } else {
         final double normalized = ((dv - blackFloor) / max(1.0, paperSnap - blackFloor)).clamp(0.0, 1.0);
         final double inkVal = pow(normalized, inkGamma) * paperSnap;
-        final double kneeStart = paperSnap - 36.0;
-        final double kneeEnd = min(253.0, paperSnap + 18.0);
+        final double kneeStart = paperSnap - 34.0;
+        final double kneeEnd = min(253.0, paperSnap + 16.0);
         final double t = ((dv - kneeStart) / max(1.0, kneeEnd - kneeStart)).clamp(0.0, 1.0);
         final double smoothWhite = t * t * (3.0 - 2.0 * t);
         toneLut[v] = (inkVal + (255.0 - inkVal) * smoothWhite).clamp(0.0, 255.0);
       }
+    }
+  } else if (filter == 'lighten_pro') {
+    final double liftGamma = 0.86 - 0.20 * intensity;
+    for (int v = 0; v < 256; v++) {
+      toneLut[v] = (pow(v / 255.0, liftGamma) * 255.0).clamp(0.0, 255.0);
     }
   } else {
     for (int v = 0; v < 256; v++) {
@@ -456,15 +636,16 @@ Uint8List _processRgbaIsolate(Map<String, dynamic> params) {
     }
   }
 
+  // STEP 4: WHITE BALANCE + TONE MAPPING + BRIGHTNESS/CONTRAST
   final Uint8List lumCache = Uint8List(total);
-  final double maxGain = (filter == 'book_ultra') ? 2.65 : 2.35;
+  final double maxGain = (filter == 'dark_ink' || filter == 'magic_pro') ? 2.80 : 2.45;
   final double satBoost = filter == 'magic_pro'
-      ? (1.16 + 0.16 * intensity)
+      ? (1.22 + 0.22 * intensity)
       : filter == 'auto_pro'
-          ? (1.10 + 0.10 * intensity)
+          ? (1.12 + 0.12 * intensity)
           : filter == 'vivid_color'
-              ? (1.24 + 0.35 * intensity)
-              : 1.05;
+              ? (1.28 + 0.35 * intensity)
+              : 1.06;
 
   for (int y = 0; y < h; y++) {
     final double gy = ((y + 0.5) / cellH - 0.5).clamp(0.0, gridRows - 1.0001);
@@ -472,47 +653,59 @@ Uint8List _processRgbaIsolate(Map<String, dynamic> params) {
     for (int x = 0; x < w; x++) {
       final double gx = ((x + 0.5) / cellW - 0.5).clamp(0.0, gridCols - 1.0001);
       final int p = (rowOff + x) * 4;
-      final double r = src[p].toDouble(), g = src[p + 1].toDouble(), b = src[p + 2].toDouble();
-      double nr = r, ng = g, nb = b;
+      double nr = src[p].toDouble(), ng = src[p + 1].toDouble(), nb = src[p + 2].toDouble();
 
       if (filter == 'vivid_color') {
         final double scale = 255.0 / (highClip - lowClip);
-        nr = ((r - lowClip) * scale).clamp(0.0, 255.0);
-        ng = ((g - lowClip) * scale).clamp(0.0, 255.0);
-        nb = ((b - lowClip) * scale).clamp(0.0, 255.0);
+        nr = ((nr - lowClip) * scale).clamp(0.0, 255.0);
+        ng = ((ng - lowClip) * scale).clamp(0.0, 255.0);
+        nb = ((nb - lowClip) * scale).clamp(0.0, 255.0);
         final double lum = 0.299 * nr + 0.587 * ng + 0.114 * nb;
         nr = (lum + (nr - lum) * satBoost).clamp(0.0, 255.0);
         ng = (lum + (ng - lum) * satBoost).clamp(0.0, 255.0);
         nb = (lum + (nb - lum) * satBoost).clamp(0.0, 255.0);
-      } else {
-        final double lbg = sampleBgLum(gx, gy);
-        final double lumGain = min(252.0 / max(lbg, 45.0), maxGain);
-        final double rawLum = 0.299 * r + 0.587 * g + 0.114 * b;
-        final double normLum = (rawLum * lumGain).clamp(0.0, 255.0);
+      } else if (filter != 'original') {
+        final double gR = min(253.0 / max(sampleGrid(bgRGrid, gx, gy), 45.0), maxGain);
+        final double gG = min(253.0 / max(sampleGrid(bgGGrid, gx, gy), 45.0), maxGain);
+        final double gB = min(253.0 / max(sampleGrid(bgBGrid, gx, gy), 45.0), maxGain);
 
-        if (filter == 'deshadow') {
-          final double effGain = 1.0 + (lumGain - 1.0) * (0.55 + 0.40 * intensity);
-          nr = (r * effGain).clamp(0.0, 255.0);
-          ng = (g * effGain).clamp(0.0, 255.0);
-          nb = (b * effGain).clamp(0.0, 255.0);
-        } else if (filter == 'ocv_crisp') {
-          final double targetL = toneLut[normLum.round().clamp(0, 255)];
+        final double wbR = (nr * gR).clamp(0.0, 255.0);
+        final double wbG = (ng * gG).clamp(0.0, 255.0);
+        final double wbB = (nb * gB).clamp(0.0, 255.0);
+        final double wbLum = (0.299 * wbR + 0.587 * wbG + 0.114 * wbB).clamp(0.0, 255.0);
+
+        if (filter == 'ocv_crisp') {
+          final double targetL = toneLut[wbLum.round().clamp(0, 255)];
           nr = targetL;
           ng = targetL;
           nb = targetL;
+        } else if (filter == 'lighten_pro') {
+          final double blend = 0.60 + 0.35 * intensity;
+          final double lR = nr + (wbR - nr) * blend;
+          final double lG = ng + (wbG - ng) * blend;
+          final double lB = nb + (wbB - nb) * blend;
+          nr = toneLut[lR.round().clamp(0, 255)];
+          ng = toneLut[lG.round().clamp(0, 255)];
+          nb = toneLut[lB.round().clamp(0, 255)];
         } else {
-          final double targetL = toneLut[normLum.round().clamp(0, 255)];
-          final double ratio = rawLum > 1.5 ? (targetL / rawLum) : 1.0;
-          final double sr = (r * ratio).clamp(0.0, 255.0);
-          final double sg = (g * ratio).clamp(0.0, 255.0);
-          final double sb = (b * ratio).clamp(0.0, 255.0);
-          final double paperFade = ((255.0 - targetL) / 60.0).clamp(0.0, 1.0);
+          final double targetL = toneLut[wbLum.round().clamp(0, 255)];
+          final double ratio = wbLum > 1.5 ? (targetL / wbLum) : 1.0;
+          final double sr = (wbR * ratio).clamp(0.0, 255.0);
+          final double sg = (wbG * ratio).clamp(0.0, 255.0);
+          final double sb = (wbB * ratio).clamp(0.0, 255.0);
+          final double paperFade = ((255.0 - targetL) / 56.0).clamp(0.0, 1.0);
           final double effSat = 1.0 + (satBoost - 1.0) * paperFade;
           final double satFactor = paperFade < 0.25 ? paperFade * 4.0 : effSat;
           nr = (targetL + (sr - targetL) * satFactor).clamp(0.0, 255.0);
           ng = (targetL + (sg - targetL) * satFactor).clamp(0.0, 255.0);
           nb = (targetL + (sb - targetL) * satFactor).clamp(0.0, 255.0);
         }
+      }
+
+      if (hasManualTone) {
+        nr = ((nr - 128.0) * contrast + 128.0 + brightness * 255.0).clamp(0.0, 255.0);
+        ng = ((ng - 128.0) * contrast + 128.0 + brightness * 255.0).clamp(0.0, 255.0);
+        nb = ((nb - 128.0) * contrast + 128.0 + brightness * 255.0).clamp(0.0, 255.0);
       }
 
       final int ri = nr.round().clamp(0, 255), gi = ng.round().clamp(0, 255), bi = nb.round().clamp(0, 255);
@@ -524,12 +717,13 @@ Uint8List _processRgbaIsolate(Map<String, dynamic> params) {
     }
   }
 
-  // Coring Unsharp Mask
-  final double sharpAmt = filter == 'book_ultra'
-      ? (0.52 + 0.45 * intensity)
-      : (filter == 'auto_pro' || filter == 'magic_pro' || filter == 'ocv_crisp')
-          ? (0.38 + 0.35 * intensity)
-          : (filter == 'vivid_color' ? 0.28 : 0.16);
+  // STEP 5: HALO-FREE GAUSSIAN CORING UNSHARP MASK
+  final double baseSharp = filter == 'dark_ink'
+      ? (0.48 + 0.40 * intensity)
+      : (filter == 'magic_pro' || filter == 'auto_pro' || filter == 'ocv_crisp')
+          ? (0.35 + 0.35 * intensity)
+          : (filter == 'original' ? 0.0 : 0.24);
+  final double sharpAmt = (baseSharp * (0.4 + userSharpness * 1.2)).clamp(0.0, 1.35);
 
   if (sharpAmt > 0.05 && w > 3 && h > 3) {
     for (int y = 1; y < h - 1; y++) {
@@ -537,10 +731,19 @@ Uint8List _processRgbaIsolate(Map<String, dynamic> params) {
       for (int x = 1; x < w - 1; x++) {
         final int center = lumCache[r1 + x];
         if (center >= 250) continue;
-        final int blur = (lumCache[r0 + x - 1] + lumCache[r0 + x] + lumCache[r0 + x + 1] + lumCache[r1 + x - 1] + center + lumCache[r1 + x + 1] + lumCache[r2 + x - 1] + lumCache[r2 + x] + lumCache[r2 + x + 1]) ~/ 9;
+        final int blur = (lumCache[r0 + x - 1] +
+                2 * lumCache[r0 + x] +
+                lumCache[r0 + x + 1] +
+                2 * lumCache[r1 + x - 1] +
+                4 * center +
+                2 * lumCache[r1 + x + 1] +
+                lumCache[r2 + x - 1] +
+                2 * lumCache[r2 + x] +
+                lumCache[r2 + x + 1]) >>
+            4;
         final int diff = center - blur;
-        if (diff.abs() > 6) {
-          final int delta = (diff * sharpAmt).round();
+        if (diff.abs() > 5) {
+          final int delta = (diff * sharpAmt).round().clamp(-45, 45);
           final int p = (r1 + x) * 4;
           out[p] = (out[p] + delta).clamp(0, 255);
           out[p + 1] = (out[p + 1] + delta).clamp(0, 255);
@@ -549,7 +752,57 @@ Uint8List _processRgbaIsolate(Map<String, dynamic> params) {
       }
     }
   }
+
+  _paintEraserStrokes(out, w, h, eraserStrokes);
   return out;
+}
+
+void _paintEraserStrokes(Uint8List out, int w, int h, List eraserStrokes) {
+  if (eraserStrokes.isEmpty) return;
+  final int minDim = min(w, h);
+  for (final stroke in eraserStrokes) {
+    final List pts = stroke['points'] as List? ?? const [];
+    final double rNorm = (stroke['radius'] as num?)?.toDouble() ?? 0.035;
+    final int radPx = max(2, (rNorm * minDim).round());
+    final int radSq = radPx * radPx;
+
+    for (int k = 0; k < pts.length; k++) {
+      final List p1 = pts[k] as List;
+      final double x1 = (p1[0] as num).toDouble() * w;
+      final double y1 = (p1[1] as num).toDouble() * h;
+
+      double x2 = x1, y2 = y1;
+      if (k + 1 < pts.length) {
+        final List p2 = pts[k + 1] as List;
+        x2 = (p2[0] as num).toDouble() * w;
+        y2 = (p2[1] as num).toDouble() * h;
+      }
+
+      final double dist = sqrt((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1));
+      final int steps = max(1, (dist / max(1.0, radPx * 0.4)).ceil());
+      for (int s = 0; s <= steps; s++) {
+        final double t = s / steps;
+        final int cx = (x1 + (x2 - x1) * t).round();
+        final int cy = (y1 + (y2 - y1) * t).round();
+        final int minY = max(0, cy - radPx), maxY = min(h - 1, cy + radPx);
+        final int minX = max(0, cx - radPx), maxX = min(w - 1, cx + radPx);
+        for (int py = minY; py <= maxY; py++) {
+          final int dy = py - cy;
+          final int rb = py * w;
+          for (int px = minX; px <= maxX; px++) {
+            final int dx = px - cx;
+            if (dx * dx + dy * dy <= radSq) {
+              final int idx = (rb + px) * 4;
+              out[idx] = 255;
+              out[idx + 1] = 255;
+              out[idx + 2] = 255;
+              out[idx + 3] = 255;
+            }
+          }
+        }
+      }
+    }
+  }
 }
 
 // AI DESKEW ENGINE
@@ -606,9 +859,10 @@ Uint8List? _rotateArbitraryIsolate(Map<String, dynamic> params) {
   if (decoded == null) return null;
   final oriented = img.bakeOrientation(decoded);
   final rotated = img.copyRotate(oriented, angle: params['angle']);
-  return Uint8List.fromList(img.encodeJpg(rotated, quality: 92));
+  return Uint8List.fromList(img.encodeJpg(rotated, quality: 93));
 }
-
+// ==================== PART 1 END ====================
+// ==================== PART 2 START ====================
 // PHONE STORAGE MANAGER
 class StorageSaveResult {
   final int count;
@@ -1301,7 +1555,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
         MaterialPageRoute(
           builder: (_) => ScanFilterReviewScreen(
             rawImagePaths: persistentRawPaths,
-            initialFilterId: 'auto_pro',
+            initialFilterId: 'magic_pro',
             onApplyAndProceed: (filteredImages) {
               if (category == 'Personal' && prefix.contains('ID_Card') && filteredImages.length >= 2) {
                 _processIdCardCollage(filteredImages.sublist(0, 2), persistentRawPaths);
@@ -1317,7 +1571,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     }
   }
 
-  Future<void> _startDocScan({int limit = 50, String category = 'General', String prefix = 'Doc', String defaultFilter = 'auto_pro'}) async {
+  Future<void> _startDocScan({int limit = 50, String category = 'General', String prefix = 'Doc', String defaultFilter = 'magic_pro'}) async {
     final scanner = DocumentScanner(options: DocumentScannerOptions(documentFormat: DocumentFormat.jpeg, mode: ScannerMode.base, isGalleryImport: true, pageLimit: limit));
     try {
       final result = await scanner.scanDocument();
@@ -1577,7 +1831,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
               _buildSheetTile(Icons.photo_library_rounded, const Color(0xFF00B4D8), AppLang.tr('from_gallery'), () { Navigator.pop(ctx); _importFromGalleryDirectly(prefix: 'Gallery'); }),
               _buildSheetTile(Icons.camera_alt_rounded, const Color(0xFF4A6572), AppLang.tr('from_camera'), () { Navigator.pop(ctx); _startDocScan(); }),
               _buildSheetTile(Icons.folder_open_rounded, const Color(0xFFEF5350), 'Import Images from Phone Storage', () { Navigator.pop(ctx); _importFromGalleryDirectly(prefix: 'Storage_Img'); }),
-              _buildSheetTile(Icons.menu_book_rounded, const Color(0xFF2E7D32), 'Book Page Scan (Book Ultra AI)', () { Navigator.pop(ctx); _startDocScan(prefix: 'Book_Page', defaultFilter: 'book_ultra'); }),
+              _buildSheetTile(Icons.menu_book_rounded, const Color(0xFF2E7D32), 'Book Page Scan (Dark Ink AI)', () { Navigator.pop(ctx); _startDocScan(prefix: 'Book_Page', defaultFilter: 'dark_ink'); }),
               const SizedBox(height: 8),
             ],
           ),
@@ -2016,7 +2270,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
           childAspectRatio: 0.88,
           children: [
             _buildToolCard('ID Card Mode', 'Front & Back', Icons.badge_outlined, Colors.blue, () => _startDocScan(limit: 2, category: 'Personal', prefix: 'ID_Card')),
-            _buildToolCard('Book Scan', 'Book Ultra AI', Icons.menu_book_rounded, Colors.green, () => _startDocScan(prefix: 'Book_Page', defaultFilter: 'book_ultra')),
+            _buildToolCard('Book Scan', 'Dark Ink AI', Icons.menu_book_rounded, Colors.green, () => _startDocScan(prefix: 'Book_Page', defaultFilter: 'dark_ink')),
             _buildToolCard('AI OCR Text', 'Extract Text', Icons.auto_awesome, Colors.purple, () {
               if (_savedDocs.isNotEmpty && (_savedDocs.first['images'] as List).isNotEmpty) {
                 _extractTextOCR(_savedDocs.first['images'][0]);
@@ -2088,14 +2342,17 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     );
   }
 }
-
-// 3. PRO SCAN FILTER & RETOUCH SCREEN (ZERO-LAG RAWIMAGE + PER-PAGE TILT)
+// ==================== PART 2 END ====================
+// ==================== PART 3 START ====================
+// ============================================================================
+// 3. PRO SCAN FILTER, MANUAL ADJUST & ERASER SCREEN
+// ============================================================================
 class ScanFilterReviewScreen extends StatefulWidget {
   final List<String> rawImagePaths;
   final String initialFilterId;
   final Function(List<String> filteredPaths) onApplyAndProceed;
 
-  const ScanFilterReviewScreen({super.key, required this.rawImagePaths, this.initialFilterId = 'auto_pro', required this.onApplyAndProceed});
+  const ScanFilterReviewScreen({super.key, required this.rawImagePaths, this.initialFilterId = 'magic_pro', required this.onApplyAndProceed});
   @override
   State<ScanFilterReviewScreen> createState() => _ScanFilterReviewScreenState();
 }
@@ -2105,12 +2362,20 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
   bool _isSaving = false;
   bool _isRenderingPreview = false;
   bool _showOriginalHold = false;
+  // Tabs: 0 = Straighten AI, 1 = Pro Filters, 2 = Adjust (B/C/S), 3 = Eraser, 4 = Tilt & Rotate
   int _activeTopTab = 1;
 
   late List<String> _workingPaths;
   late Map<int, String> _pageFilterSelections;
   late Map<int, double> _pageFilterIntensities;
+  late Map<int, double> _pageBrightness;
+  late Map<int, double> _pageContrast;
+  late Map<int, double> _pageSharpness;
   late Map<int, double> _pageDeskewAngles;
+  late Map<int, List<Map<String, dynamic>>> _pageEraserStrokes;
+
+  double _eraserRadiusNorm = 0.035;
+  List<List<double>>? _activeEraserPoints;
 
   final Map<int, Uint8List> _cachedBasePreviewRgba = {};
   final Map<int, List<int>> _cachedBasePreviewWH = {};
@@ -2122,8 +2387,12 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
     super.initState();
     _workingPaths = List<String>.from(widget.rawImagePaths);
     _pageFilterSelections = {for (var i = 0; i < widget.rawImagePaths.length; i++) i: widget.initialFilterId};
-    _pageFilterIntensities = {for (var i = 0; i < widget.rawImagePaths.length; i++) i: 0.55};
+    _pageFilterIntensities = {for (var i = 0; i < widget.rawImagePaths.length; i++) i: 0.62};
+    _pageBrightness = {for (var i = 0; i < widget.rawImagePaths.length; i++) i: 0.0};
+    _pageContrast = {for (var i = 0; i < widget.rawImagePaths.length; i++) i: 1.0};
+    _pageSharpness = {for (var i = 0; i < widget.rawImagePaths.length; i++) i: 0.60};
     _pageDeskewAngles = {for (var i = 0; i < widget.rawImagePaths.length; i++) i: 0.0};
+    _pageEraserStrokes = {for (var i = 0; i < widget.rawImagePaths.length; i++) i: []};
     _renderCurrentPagePreview();
   }
 
@@ -2137,9 +2406,13 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
     super.dispose();
   }
 
-  DocFilterPreset get _currentPreset => kDocFilters.firstWhere((f) => f.id == (_pageFilterSelections[_curPageIndex] ?? 'auto_pro'), orElse: () => kDocFilters[1]);
-  double get _currentIntensity => _pageFilterIntensities[_curPageIndex] ?? 0.55;
+  DocFilterPreset get _currentPreset => kDocFilters.firstWhere((f) => f.id == (_pageFilterSelections[_curPageIndex] ?? 'magic_pro'), orElse: () => kDocFilters[1]);
+  double get _currentIntensity => _pageFilterIntensities[_curPageIndex] ?? 0.62;
+  double get _currentBrightness => _pageBrightness[_curPageIndex] ?? 0.0;
+  double get _currentContrast => _pageContrast[_curPageIndex] ?? 1.0;
+  double get _currentSharpness => _pageSharpness[_curPageIndex] ?? 0.60;
   double get _currentTiltAngle => _pageDeskewAngles[_curPageIndex] ?? 0.0;
+  List<Map<String, dynamic>> get _currentEraserStrokes => _pageEraserStrokes[_curPageIndex] ?? const [];
 
   void _disposeOldPreviewSafely(ui.Image? oldImg) {
     if (oldImg == null) return;
@@ -2149,10 +2422,15 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
   Future<void> _renderCurrentPagePreview() async {
     final int pageIdx = _curPageIndex;
     final int token = ++_renderRequestToken;
-    final String filterId = _pageFilterSelections[pageIdx] ?? 'auto_pro';
-    final double intensity = _pageFilterIntensities[pageIdx] ?? 0.55;
+    final String filterId = _pageFilterSelections[pageIdx] ?? 'magic_pro';
+    final double intensity = _pageFilterIntensities[pageIdx] ?? 0.62;
+    final double brightness = _pageBrightness[pageIdx] ?? 0.0;
+    final double contrast = _pageContrast[pageIdx] ?? 1.0;
+    final double sharpness = _pageSharpness[pageIdx] ?? 0.60;
+    final List<Map<String, dynamic>> strokes = _pageEraserStrokes[pageIdx] ?? const [];
 
-    if (filterId == 'original') {
+    final bool hasAdjustments = brightness.abs() > 0.01 || (contrast - 1.0).abs() > 0.01 || strokes.isNotEmpty;
+    if (filterId == 'original' && !hasAdjustments) {
       final oldImg = _renderedPreviewImages.remove(pageIdx);
       if (mounted) setState(() => _isRenderingPreview = false);
       _disposeOldPreviewSafely(oldImg);
@@ -2162,7 +2440,7 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
 
     if (!_cachedBasePreviewRgba.containsKey(pageIdx)) {
       final wh = [0, 0];
-      final rgba = await ProDocImageProcessor.decodeImageToRgba(_workingPaths[pageIdx], maxDimension: 760, outWidthHeight: wh);
+      final rgba = await ProDocImageProcessor.decodeImageToRgba(_workingPaths[pageIdx], maxDimension: 900, outWidthHeight: wh);
       if (rgba != null) {
         _cachedBasePreviewRgba[pageIdx] = rgba;
         _cachedBasePreviewWH[pageIdx] = wh;
@@ -2175,7 +2453,17 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
       return;
     }
 
-    final filteredRgba = await ProDocImageProcessor.applyProFilterToRgba(rgba: baseRgba, width: wh[0], height: wh[1], filterId: filterId, intensity: intensity);
+    final filteredRgba = await ProDocImageProcessor.applyProFilterToRgba(
+      rgba: baseRgba,
+      width: wh[0],
+      height: wh[1],
+      filterId: filterId,
+      intensity: intensity,
+      brightness: brightness,
+      contrast: contrast,
+      sharpness: sharpness,
+      eraserStrokes: strokes,
+    );
     if (!mounted || token != _renderRequestToken) return;
 
     final uiImg = await ProDocImageProcessor.rgbaToUiImage(filteredRgba, wh[0], wh[1]);
@@ -2192,13 +2480,19 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
   }
 
   Future<void> _applyAllPagesSameFilter() async {
-    final activeFilter = _pageFilterSelections[_curPageIndex] ?? 'auto_pro';
+    final activeFilter = _pageFilterSelections[_curPageIndex] ?? 'magic_pro';
     final activeIntensity = _currentIntensity;
+    final activeBright = _currentBrightness;
+    final activeContrast = _currentContrast;
+    final activeSharp = _currentSharpness;
     final List<ui.Image> toDispose = [];
     setState(() {
       for (int i = 0; i < _workingPaths.length; i++) {
         _pageFilterSelections[i] = activeFilter;
         _pageFilterIntensities[i] = activeIntensity;
+        _pageBrightness[i] = activeBright;
+        _pageContrast[i] = activeContrast;
+        _pageSharpness[i] = activeSharp;
         if (i != _curPageIndex) {
           final removed = _renderedPreviewImages.remove(i);
           if (removed != null) toDispose.add(removed);
@@ -2209,7 +2503,7 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
       _disposeOldPreviewSafely(imgObj);
     }
     _renderCurrentPagePreview();
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('✅ Applied "${_currentPreset.title}" to ALL ${_workingPaths.length} pages!')));
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('✅ Applied "${_currentPreset.title}" & adjustments to ALL ${_workingPaths.length} pages!')));
   }
 
   Future<void> _runAutoStraightenAI() async {
@@ -2243,7 +2537,11 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
     _cachedBasePreviewRgba.remove(_curPageIndex);
     final oldImg = _renderedPreviewImages.remove(_curPageIndex);
     if (mounted) {
-      setState(() { _workingPaths[_curPageIndex] = rotatedPath; _isSaving = false; });
+      setState(() {
+        _workingPaths[_curPageIndex] = rotatedPath;
+        _pageEraserStrokes[_curPageIndex] = [];
+        _isSaving = false;
+      });
       _disposeOldPreviewSafely(oldImg);
       _renderCurrentPagePreview();
     }
@@ -2260,7 +2558,16 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
       final double tilt = _pageDeskewAngles[i] ?? 0.0;
       if (tilt.abs() > 0.5) sourceImg = await AIDeskewEngine.rotateAndDeskewImage(sourceImg, tilt);
       final outPath = '${scansDir.path}/pro_${DateTime.now().millisecondsSinceEpoch}_p$i.jpg';
-      enhancedPaths.add(await ProDocImageProcessor.processAndSaveHighRes(sourcePath: sourceImg, filterId: _pageFilterSelections[i] ?? 'auto_pro', intensity: _pageFilterIntensities[i] ?? 0.55, outputPath: outPath));
+      enhancedPaths.add(await ProDocImageProcessor.processAndSaveHighRes(
+        sourcePath: sourceImg,
+        filterId: _pageFilterSelections[i] ?? 'magic_pro',
+        intensity: _pageFilterIntensities[i] ?? 0.62,
+        outputPath: outPath,
+        brightness: _pageBrightness[i] ?? 0.0,
+        contrast: _pageContrast[i] ?? 1.0,
+        sharpness: _pageSharpness[i] ?? 0.60,
+        eraserStrokes: _pageEraserStrokes[i],
+      ));
     }
     if (mounted) {
       setState(() => _isSaving = false);
@@ -2274,6 +2581,7 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
     final activePreset = _currentPreset;
     final curImg = File(_workingPaths[_curPageIndex]);
     final previewUiImg = _renderedPreviewImages[_curPageIndex];
+    final wh = _cachedBasePreviewWH[_curPageIndex];
 
     return Scaffold(
       backgroundColor: const Color(0xFF14161B),
@@ -2288,19 +2596,23 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
         ],
       ),
       body: _isSaving
-          ? const Center(child: Column(mainAxisSize: MainAxisSize.min, children: [CircularProgressIndicator(color: Colors.greenAccent), SizedBox(height: 12), Text('Saving High-Clarity Document...', style: TextStyle(color: Colors.white70, fontSize: 13))]))
+          ? const Center(child: Column(mainAxisSize: MainAxisSize.min, children: [CircularProgressIndicator(color: Colors.greenAccent), SizedBox(height: 12), Text('Saving Ultra-Clarity Document...', style: TextStyle(color: Colors.white70, fontSize: 13))]))
           : Column(
               children: [
-                Padding(
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                   child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       _buildTopPill('Straighten AI', Icons.auto_awesome, _activeTopTab == 0, () { setState(() => _activeTopTab = 0); _runAutoStraightenAI(); }),
                       const SizedBox(width: 8),
                       _buildTopPill('Pro Filters', Icons.auto_fix_high_rounded, _activeTopTab == 1, () => setState(() => _activeTopTab = 1)),
                       const SizedBox(width: 8),
-                      _buildTopPill('Tilt & Rotate', Icons.crop_rotate_rounded, _activeTopTab == 2, () => setState(() => _activeTopTab = 2)),
+                      _buildTopPill('Adjust', Icons.tune_rounded, _activeTopTab == 2, () => setState(() => _activeTopTab = 2)),
+                      const SizedBox(width: 8),
+                      _buildTopPill('Eraser', Icons.cleaning_services_rounded, _activeTopTab == 3, () => setState(() => _activeTopTab = 3)),
+                      const SizedBox(width: 8),
+                      _buildTopPill('Tilt & Rotate', Icons.crop_rotate_rounded, _activeTopTab == 4, () => setState(() => _activeTopTab = 4)),
                     ],
                   ),
                 ),
@@ -2312,14 +2624,89 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
                         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                         child: Transform.rotate(
                           angle: _currentTiltAngle * pi / 180,
-                          child: ClipRRect(borderRadius: BorderRadius.circular(10), child: (_showOriginalHold || activePreset.id == 'original' || previewUiImg == null) ? Image.file(curImg, fit: BoxFit.contain) : RawImage(image: previewUiImg, fit: BoxFit.contain)),
+                          child: LayoutBuilder(
+                            builder: (ctx, box) {
+                              final double aspect = (wh != null && wh[1] > 0) ? (wh[0] / wh[1]) : 0.72;
+                              double dispW = box.maxWidth;
+                              double dispH = dispW / aspect;
+                              if (dispH > box.maxHeight) {
+                                dispH = box.maxHeight;
+                                dispW = dispH * aspect;
+                              }
+                              final Widget docImageWidget = ClipRRect(
+                                borderRadius: BorderRadius.circular(10),
+                                child: (_showOriginalHold || (activePreset.id == 'original' && previewUiImg == null) || previewUiImg == null)
+                                    ? Image.file(curImg, fit: BoxFit.contain)
+                                    : RawImage(image: previewUiImg, fit: BoxFit.contain),
+                              );
+
+                              if (_activeTopTab != 3) return docImageWidget;
+
+                              return SizedBox(
+                                width: dispW,
+                                height: dispH,
+                                child: GestureDetector(
+                                  onPanStart: (d) {
+                                    final nx = (d.localPosition.dx / dispW).clamp(0.0, 1.0);
+                                    final ny = (d.localPosition.dy / dispH).clamp(0.0, 1.0);
+                                    setState(() {
+                                      _activeEraserPoints = [[nx, ny]];
+                                    });
+                                  },
+                                  onPanUpdate: (d) {
+                                    if (_activeEraserPoints == null) return;
+                                    final nx = (d.localPosition.dx / dispW).clamp(0.0, 1.0);
+                                    final ny = (d.localPosition.dy / dispH).clamp(0.0, 1.0);
+                                    setState(() {
+                                      _activeEraserPoints!.add([nx, ny]);
+                                    });
+                                  },
+                                  onPanEnd: (_) {
+                                    if (_activeEraserPoints != null && _activeEraserPoints!.isNotEmpty) {
+                                      final list = _pageEraserStrokes[_curPageIndex] ?? [];
+                                      list.add({'points': _activeEraserPoints!, 'radius': _eraserRadiusNorm});
+                                      _pageEraserStrokes[_curPageIndex] = list;
+                                      _activeEraserPoints = null;
+                                      _renderCurrentPagePreview();
+                                    }
+                                  },
+                                  child: Stack(
+                                    fit: StackFit.expand,
+                                    children: [
+                                      docImageWidget,
+                                      if (_activeEraserPoints != null)
+                                        CustomPaint(
+                                          painter: _LiveEraserStrokePainter(points: _activeEraserPoints!, radiusNorm: _eraserRadiusNorm),
+                                        ),
+                                    ],
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
                         ),
                       ),
-                      if (_isRenderingPreview) Positioned(top: 10, right: 18, child: Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5), decoration: BoxDecoration(color: Colors.black87, borderRadius: BorderRadius.circular(20)), child: const Row(mainAxisSize: MainAxisSize.min, children: [SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.greenAccent)), SizedBox(width: 6), Text('Enhancing...', style: TextStyle(color: Colors.white, fontSize: 10))]))),
+                      if (_isRenderingPreview)
+                        Positioned(
+                          top: 10,
+                          right: 18,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                            decoration: BoxDecoration(color: Colors.black87, borderRadius: BorderRadius.circular(20)),
+                            child: const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.greenAccent)),
+                                SizedBox(width: 6),
+                                Text('Enhancing...', style: TextStyle(color: Colors.white, fontSize: 10)),
+                              ],
+                            ),
+                          ),
+                        ),
                     ],
                   ),
                 ),
-                if (_activeTopTab == 2)
+                if (_activeTopTab == 4)
                   Container(
                     color: const Color(0xFF1F2229),
                     padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -2331,6 +2718,91 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
                       ],
                     ),
                   )
+                else if (_activeTopTab == 3)
+                  Container(
+                    color: const Color(0xFF1F2229),
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Row(
+                          children: [
+                            const Icon(Icons.cleaning_services_rounded, color: Colors.greenAccent, size: 18),
+                            const SizedBox(width: 8),
+                            const Expanded(child: Text('Swipe on stains/fingers to erase cleanly', style: TextStyle(color: Colors.white70, fontSize: 11))),
+                            LabeledIconButton(
+                              icon: Icons.undo_rounded,
+                              label: 'Undo',
+                              color: Colors.white,
+                              onPressed: _currentEraserStrokes.isEmpty
+                                  ? null
+                                  : () {
+                                      setState(() => _pageEraserStrokes[_curPageIndex]!.removeLast());
+                                      _renderCurrentPagePreview();
+                                    },
+                            ),
+                            LabeledIconButton(
+                              icon: Icons.delete_sweep_rounded,
+                              label: 'Clear',
+                              color: Colors.redAccent,
+                              onPressed: _currentEraserStrokes.isEmpty
+                                  ? null
+                                  : () {
+                                      setState(() => _pageEraserStrokes[_curPageIndex] = []);
+                                      _renderCurrentPagePreview();
+                                    },
+                            ),
+                          ],
+                        ),
+                        Row(
+                          children: [
+                            const Text('Brush Size:', style: TextStyle(color: Colors.white70, fontSize: 11)),
+                            Expanded(
+                              child: Slider(
+                                value: _eraserRadiusNorm,
+                                min: 0.015,
+                                max: 0.08,
+                                activeColor: const Color(0xFF81C784),
+                                inactiveColor: Colors.grey.shade700,
+                                onChanged: (v) => setState(() => _eraserRadiusNorm = v),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  )
+                else if (_activeTopTab == 2)
+                  Container(
+                    color: const Color(0xFF1F2229),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text('Manual Clarity Tuning', style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
+                            TextButton.icon(
+                              icon: const Icon(Icons.refresh_rounded, size: 15, color: Color(0xFF81C784)),
+                              label: const Text('Reset Adjust', style: TextStyle(color: Color(0xFF81C784), fontSize: 11)),
+                              onPressed: () {
+                                setState(() {
+                                  _pageBrightness[_curPageIndex] = 0.0;
+                                  _pageContrast[_curPageIndex] = 1.0;
+                                  _pageSharpness[_curPageIndex] = 0.60;
+                                });
+                                _renderCurrentPagePreview();
+                              },
+                            ),
+                          ],
+                        ),
+                        _buildAdjustSliderRow('Brightness', _currentBrightness, -0.35, 0.35, '${(_currentBrightness * 100).round()}', (v) => setState(() => _pageBrightness[_curPageIndex] = v)),
+                        _buildAdjustSliderRow('Contrast', _currentContrast, 0.6, 1.8, '${_currentContrast.toStringAsFixed(2)}x', (v) => setState(() => _pageContrast[_curPageIndex] = v)),
+                        _buildAdjustSliderRow('Sharpness', _currentSharpness, 0.0, 1.3, '${(_currentSharpness * 100).round()}%', (v) => setState(() => _pageSharpness[_curPageIndex] = v)),
+                      ],
+                    ),
+                  )
                 else
                   Container(
                     color: const Color(0xFF1F2229),
@@ -2338,7 +2810,7 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Row(children: [const Text('Clarity:', style: TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.bold)), Expanded(child: Slider(value: _currentIntensity, min: 0.0, max: 1.0, divisions: 10, activeColor: const Color(0xFF81C784), inactiveColor: Colors.grey.shade700, onChanged: (val) => setState(() => _pageFilterIntensities[_curPageIndex] = val), onChangeEnd: (_) => _renderCurrentPagePreview())), Text('${(_currentIntensity * 100).toInt()}%', style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold))]),
+                        Row(children: [const Text('Filter Strength:', style: TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.bold)), Expanded(child: Slider(value: _currentIntensity, min: 0.0, max: 1.0, divisions: 10, activeColor: const Color(0xFF81C784), inactiveColor: Colors.grey.shade700, onChanged: (val) => setState(() => _pageFilterIntensities[_curPageIndex] = val), onChangeEnd: (_) => _renderCurrentPagePreview())), Text('${(_currentIntensity * 100).toInt()}%', style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold))]),
                         GridView.builder(
                           shrinkWrap: true,
                           physics: const NeverScrollableScrollPhysics(),
@@ -2388,6 +2860,29 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
     );
   }
 
+  Widget _buildAdjustSliderRow(String label, double val, double minVal, double maxVal, String displayText, ValueChanged<double> onChanged) {
+    return SizedBox(
+      height: 32,
+      child: Row(
+        children: [
+          SizedBox(width: 68, child: Text(label, style: const TextStyle(color: Colors.white70, fontSize: 11))),
+          Expanded(
+            child: Slider(
+              value: val.clamp(minVal, maxVal),
+              min: minVal,
+              max: maxVal,
+              activeColor: const Color(0xFF81C784),
+              inactiveColor: Colors.grey.shade700,
+              onChanged: onChanged,
+              onChangeEnd: (_) => _renderCurrentPagePreview(),
+            ),
+          ),
+          SizedBox(width: 42, child: Text(displayText, textAlign: TextAlign.right, style: const TextStyle(color: Colors.white, fontSize: 10.5, fontWeight: FontWeight.bold))),
+        ],
+      ),
+    );
+  }
+
   Widget _buildTopPill(String title, IconData icon, bool isSelected, VoidCallback onTap) {
     return InkWell(
       borderRadius: BorderRadius.circular(20),
@@ -2395,6 +2890,36 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
       child: Container(padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6), decoration: BoxDecoration(color: isSelected ? const Color(0xFFA5D6A7) : const Color(0xFF26282E), borderRadius: BorderRadius.circular(20)), child: Row(mainAxisSize: MainAxisSize.min, children: [Icon(icon, size: 15, color: isSelected ? const Color(0xFF0A3D14) : Colors.white), const SizedBox(width: 4), Text(title, style: TextStyle(color: isSelected ? const Color(0xFF0A3D14) : Colors.white, fontWeight: isSelected ? FontWeight.bold : FontWeight.normal, fontSize: 11))])),
     );
   }
+}
+
+class _LiveEraserStrokePainter extends CustomPainter {
+  final List<List<double>> points;
+  final double radiusNorm;
+  _LiveEraserStrokePainter({required this.points, required this.radiusNorm});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final double strokeWidth = max(4.0, radiusNorm * min(size.width, size.height) * 2.0);
+    final paint = Paint()
+      ..color = Colors.white.withOpacity(0.95)
+      ..strokeWidth = strokeWidth
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..style = PaintingStyle.stroke;
+
+    if (points.length == 1) {
+      canvas.drawCircle(Offset(points[0][0] * size.width, points[0][1] * size.height), strokeWidth / 2, Paint()..color = Colors.white.withOpacity(0.95));
+      return;
+    }
+    final path = Path()..moveTo(points[0][0] * size.width, points[0][1] * size.height);
+    for (int i = 1; i < points.length; i++) {
+      path.lineTo(points[i][0] * size.width, points[i][1] * size.height);
+    }
+    canvas.drawPath(path, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _LiveEraserStrokePainter oldDelegate) => true;
 }
 
 // 4. DOCUMENT DETAIL SCREEN (MOVE/COPY PAGES BETWEEN DOCS & FOLDERS)
@@ -2636,7 +3161,7 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
       context,
       MaterialPageRoute(
         builder: (_) => ScanFilterReviewScreen(
-          rawImagePaths: indicesToEdit.map((i) => _images[i]).toList(),
+          rawImagePaths: indicesToEdit.map((i) => i < _originalImages.length ? _originalImages[i] : _images[i]).toList(),
           onApplyAndProceed: (retouchedPaths) {
             setState(() { for (int k = 0; k < indicesToEdit.length; k++) _images[indicesToEdit[k]] = retouchedPaths[k]; });
             _syncDocChanges();
@@ -2831,7 +3356,8 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
                                   },
                                   onExtractText: widget.onExtractText,
                                   onReEditPage: (pageIdx) {
-                                    Navigator.push(context, MaterialPageRoute(builder: (_) => ScanFilterReviewScreen(rawImagePaths: [_images[pageIdx]], onApplyAndProceed: (retouched) { setState(() => _images[pageIdx] = retouched.first); _syncDocChanges(); })));
+                                    final srcPath = pageIdx < _originalImages.length ? _originalImages[pageIdx] : _images[pageIdx];
+                                    Navigator.push(context, MaterialPageRoute(builder: (_) => ScanFilterReviewScreen(rawImagePaths: [srcPath], onApplyAndProceed: (retouched) { setState(() => _images[pageIdx] = retouched.first); _syncDocChanges(); })));
                                   },
                                 ),
                               ),
@@ -2987,7 +3513,8 @@ class _FullScreenPhotoViewerState extends State<FullScreenPhotoViewer> {
     );
   }
 }
-
+// ==================== PART 3 END ====================
+// ==================== PART 4 START ====================
 // 6. PASSPORT PHOTO STUDIO
 class PassportPhotoStudioScreen extends StatefulWidget {
   const PassportPhotoStudioScreen({super.key});
@@ -3664,3 +4191,4 @@ class _QrBarcodeStudioScreenState extends State<QrBarcodeStudioScreen> {
     );
   }
 }
+// ==================== PART 4 END ====================
