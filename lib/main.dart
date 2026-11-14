@@ -175,7 +175,6 @@ class ProDocImageProcessor {
         }
       }
 
-      // Single-pass in-memory rotation before filtering (no double JPEG loss)
       if (tiltDegrees.abs() > 0.25) {
         final img.Image rgbaForRot = decoded.convert(numChannels: 4);
         decoded = img.copyRotate(
@@ -190,7 +189,6 @@ class ProDocImageProcessor {
       final int w = rgbaImg.width;
       final int h = rgbaImg.height;
 
-      // Replace empty rotation corners (transparent) with clean white paper
       if (tiltDegrees.abs() > 0.25) {
         final int total = w * h;
         for (int i = 0; i < total; i++) {
@@ -244,12 +242,6 @@ class ProDocImageProcessor {
   }
 }
 
-/// Pro-Grade Document Scanner Engine:
-/// 1. YCbCr Color-Space Separation (kills color sensor noise without blurring text)
-/// 2. Gentle Global Paper White-Balance (keeps blue/red ink vivid & accurate)
-/// 3. Smooth Luminance-Only 2D Illumination Normalization (zero rainbow halos)
-/// 4. Filter-Specific Smooth S-Curve + Multi-Scale B&W / Faint-Ink Boost
-/// 5. Resolution-Independent Edge-Aware Unsharp Mask with Coring
 Uint8List _processRgbaIsolate(
   Uint8List rawSrc,
   int w,
@@ -270,9 +262,7 @@ Uint8List _processRgbaIsolate(
   final double scaleFactor = (min(w, h) / 900.0).clamp(0.85, 3.0);
   final bool isBw = filter == 'super_bw';
 
-  // --------------------------------------------------------------------------
   // STEP 1: YCbCr Decomposition + Edge-Preserving Chroma & Luma Denoise
-  // --------------------------------------------------------------------------
   final Float32List yPlane = Float32List(totalPixels);
   final Float32List cbPlane = isBw ? Float32List(0) : Float32List(totalPixels);
   final Float32List crPlane = isBw ? Float32List(0) : Float32List(totalPixels);
@@ -304,7 +294,6 @@ Uint8List _processRgbaIsolate(
       final int i = row + x;
       final double yc = yPlane[i];
 
-      // Gentle 4-neighbor edge-preserving luma smoothing (keeps fine text sharp)
       double yAcc = yc * 2.0;
       double yW = 2.0;
       final int nUp = i - w;
@@ -330,7 +319,6 @@ Uint8List _processRgbaIsolate(
       }
       smoothY[i] = yAcc / yW;
 
-      // Strong bilateral-like chroma denoising (eliminates camera color grain)
       if (!isBw) {
         double cbAcc = cbPlane[i] * 2.0;
         double crAcc = crPlane[i] * 2.0;
@@ -354,9 +342,7 @@ Uint8List _processRgbaIsolate(
     }
   }
 
-  // --------------------------------------------------------------------------
   // STEP 2: Global Paper White-Balance + Luminance-Only 2D Illumination Field
-  // --------------------------------------------------------------------------
   final Int32List lumHist = Int32List(256);
   final int histStep = totalPixels > 450000 ? 2 : 1;
   int histTotal = 0;
@@ -377,7 +363,6 @@ Uint8List _processRgbaIsolate(
     }
   }
 
-  // Gentle paper tint estimation (only shifts warm/cool cast without breaking blue ink)
   double shiftCb = 0.0;
   double shiftCr = 0.0;
   if (!isBw) {
@@ -407,7 +392,6 @@ Uint8List _processRgbaIsolate(
     }
   }
 
-  // Smooth 2D Luminance Illumination Field (eliminates shadows & folds cleanly)
   final int gridCols = max(20, min(36, w ~/ 48));
   final int gridRows = max(20, min(36, h ~/ 48));
   final double blockW = w / gridCols;
@@ -459,7 +443,6 @@ Uint8List _processRgbaIsolate(
     }
   }
 
-  // Max-biased 3x3 morphological closing on Luminance field (text never darkens bg)
   final Float32List dilL = Float32List(gridRows * gridCols);
   for (int gy = 0; gy < gridRows; gy++) {
     for (int gx = 0; gx < gridCols; gx++) {
@@ -477,7 +460,6 @@ Uint8List _processRgbaIsolate(
     }
   }
 
-  // 2 passes of weighted 3x3 smoothing for seamless shadow transitions
   Float32List smoothGridA = dilL;
   Float32List smoothGridB = Float32List(gridRows * gridCols);
   for (int pass = 0; pass < 2; pass++) {
@@ -505,9 +487,7 @@ Uint8List _processRgbaIsolate(
   }
   final Float32List finalBgL = smoothGridA;
 
-  // --------------------------------------------------------------------------
   // STEP 3: Shadow Normalization
-  // --------------------------------------------------------------------------
   final double maxGain = switch (filter) {
     'super_bw' => 2.70,
     'lighten_pro' => 2.85,
@@ -550,9 +530,7 @@ Uint8List _processRgbaIsolate(
 
   final Uint8List out = Uint8List(totalPixels * 4);
 
-  // --------------------------------------------------------------------------
   // STEP 4A: B&W PRO (Multi-Scale Sauvola + Hollow-Text Fix + Speckle Removal)
-  // --------------------------------------------------------------------------
   if (isBw) {
     final int iw = w + 1;
     final Float64List sumLum = Float64List(iw * (h + 1));
@@ -621,7 +599,6 @@ Uint8List _processRgbaIsolate(
         }
 
         double thresh = mean * (1.0 + kSauvola * ((stdDev / 128.0) - 1.0));
-        // Protect solid bold headers, black boxes & QR codes from turning hollow
         if (mean < 115.0) {
           thresh = max(thresh, mean * 0.88 + 16.0);
         }
@@ -637,7 +614,6 @@ Uint8List _processRgbaIsolate(
       }
     }
 
-    // Isolated 1px speckle noise removal on white background
     for (int y = 1; y < h - 1; y++) {
       final int row = y * w;
       for (int x = 1; x < w - 1; x++) {
@@ -668,11 +644,8 @@ Uint8List _processRgbaIsolate(
     return out;
   }
 
-  // --------------------------------------------------------------------------
   // STEP 4B: COLOR MODES (Optional Local Stroke Boost + Smooth Tone Curve)
-  // --------------------------------------------------------------------------
   if (filter == 'dark_ink') {
-    // Boost faint pencil / faded print strokes via fast integral local mean
     final int iw = w + 1;
     final Float64List sumLum = Float64List(iw * (h + 1));
     for (int y = 0; y < h; y++) {
@@ -780,7 +753,6 @@ Uint8List _processRgbaIsolate(
       sharpAmt = 0.50;
   }
 
-  // Smooth non-clipping S-curve Lookup Table (preserves anti-aliased letter edges)
   final Float32List toneLut = Float32List(256);
   final double span = max(40.0, whitePoint - blackPoint);
   for (int v = 0; v < 256; v++) {
@@ -819,7 +791,6 @@ Uint8List _processRgbaIsolate(
     final double cbRaw = (smoothCb[i] - shiftCb * wbScale) * gainChroma;
     final double crRaw = (smoothCr[i] - shiftCr * wbScale) * gainChroma;
 
-    // Neutralize near-white paper smudges & smoothly fade chroma into pure paper
     final double paperFade = ((255.0 - targetY) / 36.0).clamp(0.0, 1.0);
     double effSat = satBoost * paperFade;
     if (targetY > 205.0 && (cbRaw.abs() + crRaw.abs()) < 14.0) {
@@ -840,15 +811,12 @@ Uint8List _processRgbaIsolate(
     out[idx + 3] = 255;
   }
 
-  // --------------------------------------------------------------------------
   // STEP 5: Resolution-Independent Edge-Aware Unsharp Mask with Coring
-  // --------------------------------------------------------------------------
   final int sharpRad = max(1, (min(w, h) / 900.0).round());
   final int win = 2 * sharpRad + 1;
   final Float32List blurH = Float32List(totalPixels);
   final Float32List blurV = Float32List(totalPixels);
 
-  // Horizontal separable box blur O(N)
   for (int y = 0; y < h; y++) {
     final int row = y * w;
     double sum = 0.0;
@@ -863,7 +831,6 @@ Uint8List _processRgbaIsolate(
     }
   }
 
-  // Vertical separable box blur O(N)
   for (int x = 0; x < w; x++) {
     double sum = 0.0;
     for (int ky = -sharpRad; ky <= sharpRad; ky++) {
@@ -1235,7 +1202,7 @@ class MyApp extends StatelessWidget {
           ),
           iconTheme: IconThemeData(color: Color(0xFF111827)),
         ),
-        cardTheme: CardThemeData(
+        cardTheme: CardTheme(
           color: Colors.white,
           elevation: 0,
           shape: RoundedRectangleBorder(
@@ -1293,8 +1260,10 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
       );
       if (scannedPaths.isEmpty || !mounted) return;
 
-      final String defaultFilter =
-          (_settings['defaultFilter'] as String?) ?? 'magic_pro';
+      final bool autoEnhance = (_settings['autoEnhance'] as bool?) ?? true;
+      final String defaultFilter = autoEnhance
+          ? ((_settings['defaultFilter'] as String?) ?? 'magic_pro')
+          : 'original';
 
       final DocumentModel? newDoc = await Navigator.push<DocumentModel>(
         context,
@@ -1400,7 +1369,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
         selectedIndex: _currentIndex,
         backgroundColor: Colors.white,
         elevation: 8,
-        indicatorColor: const Color(0xFF1E56F0).withValues(alpha: 0.14),
+        indicatorColor: const Color(0xFF1E56F0).withOpacity(0.14),
         onDestinationSelected: (int idx) {
           setState(() => _currentIndex = idx);
         },
@@ -1865,7 +1834,7 @@ class _EmptyHomeView extends StatelessWidget {
             width: 96,
             height: 96,
             decoration: BoxDecoration(
-              color: const Color(0xFF1E56F0).withValues(alpha: 0.10),
+              color: const Color(0xFF1E56F0).withOpacity(0.10),
               shape: BoxShape.circle,
             ),
             child: const Icon(
@@ -2032,7 +2001,7 @@ class _DocumentGridCard extends StatelessWidget {
                         vertical: 4,
                       ),
                       decoration: BoxDecoration(
-                        color: Colors.black.withValues(alpha: 0.65),
+                        color: Colors.black.withOpacity(0.65),
                         borderRadius: BorderRadius.circular(8),
                       ),
                       child: Text(
@@ -2050,7 +2019,7 @@ class _DocumentGridCard extends StatelessWidget {
                     right: 4,
                     child: Container(
                       decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.90),
+                        color: Colors.white.withOpacity(0.90),
                         shape: BoxShape.circle,
                       ),
                       child: PopupMenuButton<String>(
@@ -2149,7 +2118,8 @@ class _DocumentListCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final String thumbPath = doc.imagePaths.first;
-    final String dateStr = DateFormat('dd MMM yyyy, hh:mm a').format(doc.updatedAt);
+    final String dateStr =
+        DateFormat('dd MMM yyyy, hh:mm a').format(doc.updatedAt);
 
     return Card(
       child: ListTile(
@@ -2232,7 +2202,6 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
   late String _docTitle;
   late String _selectedTag;
 
-  // In-memory fast RGBA preview caches for instant slider/filter feedback
   final Map<String, ({Uint8List rgba, int width, int height})>
       _cachedBasePreviewRgba =
       <String, ({Uint8List rgba, int width, int height})>{};
@@ -2432,8 +2401,6 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
         return;
       }
 
-      // Apply angle directly to preview tilt so final export rotates once in-memory
-      // without intermediate JPEG loss.
       final double clamped = angle.clamp(-15.0, 15.0);
       if (mounted) {
         setState(() => _tiltAngles[_currentIndex] = clamped);
@@ -2470,7 +2437,7 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
             ),
             const SizedBox(height: 12),
             DropdownButtonFormField<String>(
-              initialValue: _selectedTag,
+              value: _selectedTag,
               decoration: const InputDecoration(
                 labelText: 'Category Tag',
                 border: OutlineInputBorder(),
@@ -2618,7 +2585,7 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
                 padding:
                     const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                 decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.14),
+                  color: Colors.white.withOpacity(0.14),
                   borderRadius: BorderRadius.circular(14),
                 ),
                 child: Text(
@@ -2656,7 +2623,6 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
       ),
       body: Column(
         children: <Widget>[
-          // MAIN PREVIEW STAGE
           Expanded(
             child: Stack(
               alignment: Alignment.center,
@@ -2681,7 +2647,6 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
                     ),
                   ),
                 ),
-                // Compare Before/After Hold Button
                 Positioned(
                   top: 12,
                   right: 14,
@@ -2700,10 +2665,10 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
                       decoration: BoxDecoration(
                         color: _showOriginalCompare
                             ? const Color(0xFF1E56F0)
-                            : Colors.black.withValues(alpha: 0.60),
+                            : Colors.black.withOpacity(0.60),
                         borderRadius: BorderRadius.circular(20),
                         border: Border.all(
-                          color: Colors.white.withValues(alpha: 0.25),
+                          color: Colors.white.withOpacity(0.25),
                         ),
                       ),
                       child: Row(
@@ -2738,7 +2703,7 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
                         vertical: 6,
                       ),
                       decoration: BoxDecoration(
-                        color: Colors.black.withValues(alpha: 0.68),
+                        color: Colors.black.withOpacity(0.68),
                         borderRadius: BorderRadius.circular(18),
                       ),
                       child: Row(
@@ -2764,7 +2729,6 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
                       ),
                     ),
                   ),
-                // Multi-page prev/next arrows
                 if (_workingPaths.length > 1) ...<Widget>[
                   if (_currentIndex > 0)
                     Positioned(
@@ -2804,8 +2768,6 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
               ],
             ),
           ),
-
-          // BOTTOM CONTROLS PANEL
           Container(
             decoration: const BoxDecoration(
               color: Color(0xFF1E293B),
@@ -2817,7 +2779,6 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: <Widget>[
-                  // Quick Action Bar: Rotate 90, Straighten AI, Tilt Slider, Apply All
                   Row(
                     children: <Widget>[
                       _StudioMiniBtn(
@@ -2880,8 +2841,6 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
                       ),
                     ],
                   ),
-
-                  // Filter Strength Slider
                   if (activeFilter != 'original') ...<Widget>[
                     const SizedBox(height: 2),
                     Row(
@@ -2936,8 +2895,7 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
                                 vertical: 4,
                               ),
                               minimumSize: Size.zero,
-                              backgroundColor:
-                                  Colors.white.withValues(alpha: 0.10),
+                              backgroundColor: Colors.white.withOpacity(0.10),
                               foregroundColor: const Color(0xFF38BDF8),
                             ),
                             child: const Text(
@@ -2952,10 +2910,7 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
                       ],
                     ),
                   ],
-
                   const SizedBox(height: 8),
-
-                  // Filter Chips Carousel
                   SizedBox(
                     height: 76,
                     child: ListView.separated(
@@ -2977,12 +2932,12 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
                             decoration: BoxDecoration(
                               color: isSelected
                                   ? const Color(0xFF1E56F0)
-                                  : Colors.white.withValues(alpha: 0.08),
+                                  : Colors.white.withOpacity(0.08),
                               borderRadius: BorderRadius.circular(14),
                               border: Border.all(
                                 color: isSelected
                                     ? const Color(0xFF60A5FA)
-                                    : Colors.white.withValues(alpha: 0.12),
+                                    : Colors.white.withOpacity(0.12),
                                 width: isSelected ? 1.6 : 1,
                               ),
                             ),
@@ -3044,7 +2999,7 @@ class _StudioMiniBtn extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
         decoration: BoxDecoration(
-          color: Colors.white.withValues(alpha: 0.09),
+          color: Colors.white.withOpacity(0.09),
           borderRadius: BorderRadius.circular(10),
         ),
         child: Row(
@@ -3201,7 +3156,8 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
     if (_doc.imagePaths.length <= 1) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Document must have at least 1 page. Delete doc from Home instead.'),
+          content: Text(
+              'Document must have at least 1 page. Delete doc from Home instead.'),
         ),
       );
       return;
@@ -3374,7 +3330,7 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
                                   vertical: 3,
                                 ),
                                 decoration: BoxDecoration(
-                                  color: Colors.black.withValues(alpha: 0.65),
+                                  color: Colors.black.withOpacity(0.65),
                                   borderRadius: BorderRadius.circular(8),
                                 ),
                                 child: Text(
@@ -3552,6 +3508,7 @@ class _FullScreenPhotoViewerState extends State<FullScreenPhotoViewer> {
     );
   }
 }
+
 // ============================================================================
 // 9. PDF STUDIO & MERGER SCREEN
 // ============================================================================
@@ -4102,7 +4059,7 @@ class SettingsScreen extends StatelessWidget {
                     'Apply YCbCr shadow wipe & crisp ink automatically',
                   ),
                   value: autoEnhance,
-                  activeThumbColor: const Color(0xFF1E56F0),
+                  activeColor: const Color(0xFF1E56F0),
                   onChanged: (bool v) async {
                     final Map<String, dynamic> updated =
                         Map<String, dynamic>.from(settings);
