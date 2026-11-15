@@ -5,6 +5,7 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
+import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -122,7 +123,7 @@ class DocFilterPreset {
   const DocFilterPreset({required this.id, required this.title, required this.icon, required this.badgeColor});
 }
 
-// PRO DOC SCANNER PRESET FILTERS
+// PRO DOC SCANNER PRESET FILTERS (CamScanner / Oken Grade)
 final List<DocFilterPreset> kDocFilters = [
   const DocFilterPreset(id: 'original', title: 'Original', icon: Icons.image_outlined, badgeColor: Colors.blueGrey),
   const DocFilterPreset(id: 'magic_pro', title: 'Magic Color', icon: Icons.auto_awesome_rounded, badgeColor: Color(0xFF00B4D8)),
@@ -134,8 +135,53 @@ final List<DocFilterPreset> kDocFilters = [
   const DocFilterPreset(id: 'vivid_color', title: 'Vivid Color', icon: Icons.color_lens_outlined, badgeColor: Colors.pink),
 ];
 
+class PrecomputedBgMap {
+  final Float32List bgR;
+  final Float32List bgG;
+  final Float32List bgB;
+  final int gridCols;
+  final int gridRows;
+  final int lowClip;
+  final int highClip;
+  const PrecomputedBgMap({
+    required this.bgR,
+    required this.bgG,
+    required this.bgB,
+    required this.gridCols,
+    required this.gridRows,
+    required this.lowClip,
+    required this.highClip,
+  });
+}
+
+Future<void> cleanupOrphanScanFiles(List<Map<String, dynamic>> activeDocs) async {
+  try {
+    final appDir = await getApplicationDocumentsDirectory();
+    final scansDir = Directory('${appDir.path}/scans');
+    if (!await scansDir.exists()) return;
+    final Set<String> activePaths = {};
+    for (final doc in activeDocs) {
+      for (final p in (doc['images'] as List? ?? const [])) {
+        activePaths.add(p.toString());
+      }
+      for (final p in (doc['originalImages'] as List? ?? const [])) {
+        activePaths.add(p.toString());
+      }
+    }
+    await for (final entity in scansDir.list()) {
+      if (entity is File && !activePaths.contains(entity.path)) {
+        try {
+          await entity.delete();
+        } catch (_) {}
+      }
+    }
+  } catch (e) {
+    debugPrint("Cleanup orphan err: $e");
+  }
+}
+
 // ============================================================================
-// ULTRA-CLARITY PRO IMAGE PROCESSOR (WHITE BALANCE + DENOISE + SAUVOLA + LUT)
+// ULTRA-CLARITY PRO IMAGE PROCESSOR (CAMSCANNER / OKEN GRADE + CACHED PREVIEW)
 // ============================================================================
 class ProDocImageProcessor {
   static List<int>? _readDimensionsFast(Uint8List rawBytes) {
@@ -145,6 +191,23 @@ class ProDocImageProcessor {
       if (info != null && info.width > 0 && info.height > 0) return [info.width, info.height];
     } catch (_) {}
     return null;
+  }
+
+  static Future<List<int>?> readImageDimensions(String path) async {
+    try {
+      final file = File(path);
+      if (!await file.exists()) return null;
+      final rawBytes = await file.readAsBytes();
+      final ui.Codec codec = await ui.instantiateImageCodec(rawBytes);
+      final frame = await codec.getNextFrame();
+      final im = frame.image;
+      final wh = [im.width, im.height];
+      im.dispose();
+      codec.dispose();
+      return wh;
+    } catch (_) {
+      return null;
+    }
   }
 
   static Future<Uint8List?> decodeImageToRgba(String path, {int? maxDimension, required List<int> outWidthHeight}) async {
@@ -183,6 +246,10 @@ class ProDocImageProcessor {
     }
   }
 
+  static Future<PrecomputedBgMap> computeBgMap(Uint8List rgba, int width, int height) {
+    return compute(_buildBgMapIsolate, {'rgba': rgba, 'w': width, 'h': height});
+  }
+
   static Future<Uint8List> applyProFilterToRgba({
     required Uint8List rgba,
     required int width,
@@ -191,10 +258,14 @@ class ProDocImageProcessor {
     required double intensity,
     double brightness = 0.0,
     double contrast = 1.0,
-    double sharpness = 0.5,
+    double sharpness = 0.6,
     List<Map<String, dynamic>>? eraserStrokes,
+    PrecomputedBgMap? cachedBg,
   }) async {
-    final bool hasAdjustments = brightness.abs() > 0.01 || (contrast - 1.0).abs() > 0.01 || (eraserStrokes != null && eraserStrokes.isNotEmpty);
+    final bool hasAdjustments = brightness.abs() > 0.01 ||
+        (contrast - 1.0).abs() > 0.01 ||
+        (sharpness - 0.6).abs() > 0.02 ||
+        (eraserStrokes != null && eraserStrokes.isNotEmpty);
     if (filterId == 'original' && !hasAdjustments) return rgba;
     return compute(_processRgbaIsolate, {
       'rgba': rgba,
@@ -206,6 +277,13 @@ class ProDocImageProcessor {
       'contrast': contrast,
       'sharpness': sharpness,
       'eraserStrokes': eraserStrokes ?? const <Map<String, dynamic>>[],
+      'bgR': cachedBg?.bgR,
+      'bgG': cachedBg?.bgG,
+      'bgB': cachedBg?.bgB,
+      'gridCols': cachedBg?.gridCols,
+      'gridRows': cachedBg?.gridRows,
+      'lowClip': cachedBg?.lowClip,
+      'highClip': cachedBg?.highClip,
     });
   }
 
@@ -222,16 +300,19 @@ class ProDocImageProcessor {
     required String outputPath,
     double brightness = 0.0,
     double contrast = 1.0,
-    double sharpness = 0.5,
+    double sharpness = 0.6,
     List<Map<String, dynamic>>? eraserStrokes,
   }) async {
-    final bool hasAdjustments = brightness.abs() > 0.01 || (contrast - 1.0).abs() > 0.01 || (eraserStrokes != null && eraserStrokes.isNotEmpty);
+    final bool hasAdjustments = brightness.abs() > 0.01 ||
+        (contrast - 1.0).abs() > 0.01 ||
+        (sharpness - 0.6).abs() > 0.02 ||
+        (eraserStrokes != null && eraserStrokes.isNotEmpty);
     if (filterId == 'original' && !hasAdjustments) {
       await File(sourcePath).copy(outputPath);
       return outputPath;
     }
     final wh = [0, 0];
-    final rgba = await decodeImageToRgba(sourcePath, maxDimension: 2400, outWidthHeight: wh);
+    final rgba = await decodeImageToRgba(sourcePath, maxDimension: 2200, outWidthHeight: wh);
     if (rgba == null) return sourcePath;
     final enhanced = await applyProFilterToRgba(
       rgba: rgba,
@@ -262,6 +343,23 @@ class ProDocImageProcessor {
     }
     return sourcePath;
   }
+
+  static Future<String> perspectiveCropImage(String sourcePath, List<Offset> normCorners, String outputPath) async {
+    try {
+      final wh = [0, 0];
+      final rgba = await decodeImageToRgba(sourcePath, maxDimension: 2200, outWidthHeight: wh);
+      if (rgba == null) return sourcePath;
+      final pts = normCorners.map((o) => [o.dx, o.dy]).toList();
+      final jpgBytes = await compute(_perspectiveCropIsolate, {'rgba': rgba, 'w': wh[0], 'h': wh[1], 'pts': pts});
+      if (jpgBytes != null) {
+        await File(outputPath).writeAsBytes(jpgBytes);
+        return outputPath;
+      }
+    } catch (e) {
+      debugPrint("Perspective crop err: $e");
+    }
+    return sourcePath;
+  }
 }
 
 Uint8List? _rotate90Isolate(Uint8List rawBytes) {
@@ -278,157 +376,207 @@ Uint8List _encodeRgbaToJpgIsolate(Map<String, dynamic> params) {
   return Uint8List.fromList(img.encodeJpg(im, quality: params['quality']));
 }
 
-Uint8List _processRgbaIsolate(Map<String, dynamic> params) {
-  final Uint8List rawSrc = params['rgba'];
+Uint8List? _perspectiveCropIsolate(Map<String, dynamic> params) {
+  final Uint8List src = params['rgba'];
   final int w = params['w'];
   final int h = params['h'];
-  final String filter = params['filter'];
-  final double intensity = (params['intensity'] as double).clamp(0.0, 1.0);
-  final double brightness = (params['brightness'] as double).clamp(-0.5, 0.5);
-  final double contrast = (params['contrast'] as double).clamp(0.5, 2.0);
-  final double userSharpness = (params['sharpness'] as double).clamp(0.0, 1.5);
-  final List eraserStrokes = params['eraserStrokes'] as List? ?? const [];
+  final List pts = params['pts'];
+  if (pts.length != 4 || w < 10 || h < 10) return null;
 
-  final int total = w * h;
-  final Uint8List out = Uint8List.fromList(rawSrc);
-  if (total == 0) return out;
+  final double x0 = (pts[0][0] as num).toDouble() * w, y0 = (pts[0][1] as num).toDouble() * h;
+  final double x1 = (pts[1][0] as num).toDouble() * w, y1 = (pts[1][1] as num).toDouble() * h;
+  final double x2 = (pts[2][0] as num).toDouble() * w, y2 = (pts[2][1] as num).toDouble() * h;
+  final double x3 = (pts[3][0] as num).toDouble() * w, y3 = (pts[3][1] as num).toDouble() * h;
 
-  // STEP 1: Fast Edge-Preserving Noise Removal
-  Uint8List src = rawSrc;
-  if (filter != 'original' && filter != 'vivid_color' && w > 4 && h > 4) {
-    final Uint8List denoised = Uint8List.fromList(rawSrc);
-    final int noiseThresh = (filter == 'super_bw' || filter == 'dark_ink') ? 22 : 16;
-    for (int y = 1; y < h - 1; y++) {
-      final int rb = y * w;
-      for (int x = 1; x < w - 1; x++) {
-        final int p = (rb + x) * 4;
-        final int cR = rawSrc[p], cG = rawSrc[p + 1], cB = rawSrc[p + 2];
-        final int cL = (77 * cR + 150 * cG + 29 * cB) >> 8;
+  final double wTop = sqrt((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0));
+  final double wBot = sqrt((x2 - x3) * (x2 - x3) + (y2 - y3) * (y2 - y3));
+  final double hLeft = sqrt((x3 - x0) * (x3 - x0) + (y3 - y0) * (y3 - y0));
+  final double hRight = sqrt((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1));
 
-        int sumR = cR, sumG = cG, sumB = cB, cnt = 1;
-        final int n1 = (rb + x - 1) * 4;
-        if ((((77 * rawSrc[n1] + 150 * rawSrc[n1 + 1] + 29 * rawSrc[n1 + 2]) >> 8) - cL).abs() <= noiseThresh) {
-          sumR += rawSrc[n1];
-          sumG += rawSrc[n1 + 1];
-          sumB += rawSrc[n1 + 2];
-          cnt++;
-        }
-        final int n2 = (rb + x + 1) * 4;
-        if ((((77 * rawSrc[n2] + 150 * rawSrc[n2 + 1] + 29 * rawSrc[n2 + 2]) >> 8) - cL).abs() <= noiseThresh) {
-          sumR += rawSrc[n2];
-          sumG += rawSrc[n2 + 1];
-          sumB += rawSrc[n2 + 2];
-          cnt++;
-        }
-        final int n3 = ((y - 1) * w + x) * 4;
-        if ((((77 * rawSrc[n3] + 150 * rawSrc[n3 + 1] + 29 * rawSrc[n3 + 2]) >> 8) - cL).abs() <= noiseThresh) {
-          sumR += rawSrc[n3];
-          sumG += rawSrc[n3 + 1];
-          sumB += rawSrc[n3 + 2];
-          cnt++;
-        }
-        final int n4 = ((y + 1) * w + x) * 4;
-        if ((((77 * rawSrc[n4] + 150 * rawSrc[n4 + 1] + 29 * rawSrc[n4 + 2]) >> 8) - cL).abs() <= noiseThresh) {
-          sumR += rawSrc[n4];
-          sumG += rawSrc[n4 + 1];
-          sumB += rawSrc[n4 + 2];
-          cnt++;
-        }
-        if (cnt > 1) {
-          denoised[p] = sumR ~/ cnt;
-          denoised[p + 1] = sumG ~/ cnt;
-          denoised[p + 2] = sumB ~/ cnt;
-        }
-      }
-    }
-    src = denoised;
+  final int outW = max(20, max(wTop, wBot).round());
+  final int outH = max(20, max(hLeft, hRight).round());
+
+  // Solve 8-DOF homography mapping unit square (u,v) -> quad (x0..x3, y0..y3)
+  final List<List<double>> a = List.generate(8, (_) => List.filled(9, 0.0));
+  final List<double> sxList = [x0, x1, x2, x3];
+  final List<double> syList = [y0, y1, y2, y3];
+  const List<double> uList = [0.0, 1.0, 1.0, 0.0];
+  const List<double> vList = [0.0, 0.0, 1.0, 1.0];
+
+  for (int i = 0; i < 4; i++) {
+    final double u = uList[i], v = vList[i], sx = sxList[i], sy = syList[i];
+    final int r1 = i * 2, r2 = r1 + 1;
+    a[r1][0] = u; a[r1][1] = v; a[r1][2] = 1; a[r1][6] = -u * sx; a[r1][7] = -v * sx; a[r1][8] = sx;
+    a[r2][3] = u; a[r2][4] = v; a[r2][5] = 1; a[r2][6] = -u * sy; a[r2][7] = -v * sy; a[r2][8] = sy;
   }
+  for (int col = 0; col < 8; col++) {
+    int piv = col;
+    for (int r = col + 1; r < 8; r++) {
+      if (a[r][col].abs() > a[piv][col].abs()) piv = r;
+    }
+    final tmp = a[col]; a[col] = a[piv]; a[piv] = tmp;
+    final double div = a[col][col].abs() < 1e-9 ? 1e-9 : a[col][col];
+    for (int j = col; j <= 8; j++) a[col][j] /= div;
+    for (int r = 0; r < 8; r++) {
+      if (r == col) continue;
+      final double f = a[r][col];
+      for (int j = col; j <= 8; j++) a[r][j] -= f * a[col][j];
+    }
+  }
+  final double h0 = a[0][8], h1 = a[1][8], h2 = a[2][8];
+  final double h3 = a[3][8], h4 = a[4][8], h5 = a[5][8];
+  final double h6 = a[6][8], h7 = a[7][8];
 
-  // STEP 2: 3-Channel (R, G, B) Illumination & White-Balance Grid Estimation
-  const int gridCols = 24;
-  const int gridRows = 24;
+  final Uint8List out = Uint8List(outW * outH * 4);
+  for (int oy = 0; oy < outH; oy++) {
+    final double v = oy / max(1, outH - 1);
+    final double bx = h1 * v + h2;
+    final double by = h4 * v + h5;
+    final double bd = h7 * v + 1.0;
+    for (int ox = 0; ox < outW; ox++) {
+      final double u = ox / max(1, outW - 1);
+      final double denom = h6 * u + bd;
+      final double px = ((h0 * u + bx) / denom).clamp(0.0, (w - 1).toDouble());
+      final double py = ((h3 * u + by) / denom).clamp(0.0, (h - 1).toDouble());
+
+      final int ix = px.floor().clamp(0, w - 2);
+      final int iy = py.floor().clamp(0, h - 2);
+      final double fx = px - ix, fy = py - iy;
+      final int p00 = (iy * w + ix) * 4, p10 = p00 + 4, p01 = p00 + w * 4, p11 = p01 + 4;
+      final int dst = (oy * outW + ox) * 4;
+      for (int c = 0; c < 3; c++) {
+        final double top = src[p00 + c] + (src[p10 + c] - src[p00 + c]) * fx;
+        final double bot = src[p01 + c] + (src[p11 + c] - src[p01 + c]) * fx;
+        out[dst + c] = (top + (bot - top) * fy).round().clamp(0, 255);
+      }
+      out[dst + 3] = 255;
+    }
+  }
+  final im = img.Image.fromBytes(width: outW, height: outH, bytes: out.buffer, numChannels: 4, order: img.ChannelOrder.rgba);
+  return Uint8List.fromList(img.encodeJpg(im, quality: 93));
+}
+
+PrecomputedBgMap _buildBgMapIsolate(Map<String, dynamic> params) {
+  final Uint8List src = params['rgba'];
+  final int w = params['w'];
+  final int h = params['h'];
+  return _computeFineBgMap(src, w, h);
+}
+
+PrecomputedBgMap _computeFineBgMap(Uint8List src, int w, int h) {
+  final int total = w * h;
+  const int gridCols = 64;
+  const int gridRows = 64;
   const int gridCount = gridCols * gridRows;
   final Float32List bgRGrid = Float32List(gridCount);
   final Float32List bgGGrid = Float32List(gridCount);
   final Float32List bgBGrid = Float32List(gridCount);
 
-  if (filter != 'original' && filter != 'vivid_color') {
-    final Int32List gHistR = Int32List(256), gHistG = Int32List(256), gHistB = Int32List(256);
-    int gSamples = 0;
-    final int gStep = max(1, total ~/ 25000);
-    for (int i = 0; i < total; i += gStep) {
-      final int p = i * 4;
-      gHistR[src[p]]++;
-      gHistG[src[p + 1]]++;
-      gHistB[src[p + 2]]++;
-      gSamples++;
+  final Int32List gHistR = Int32List(256), gHistG = Int32List(256), gHistB = Int32List(256), lumHist = Int32List(256);
+  int gSamples = 0;
+  final int gStep = max(1, total ~/ 20000);
+  for (int i = 0; i < total; i += gStep) {
+    final int p = i * 4;
+    final int r = src[p], g = src[p + 1], b = src[p + 2];
+    gHistR[r]++;
+    gHistG[g]++;
+    gHistB[b]++;
+    lumHist[((77 * r + 150 * g + 29 * b) >> 8).clamp(0, 255)]++;
+    gSamples++;
+  }
+
+  double percentileHigh(Int32List hist, double topFrac) {
+    int acc = 0;
+    final int target = max(1, (gSamples * topFrac).round());
+    for (int b = 255; b >= 0; b--) {
+      acc += hist[b];
+      if (acc >= target) return b.toDouble();
     }
-    double percentile85(Int32List hist) {
-      int acc = 0;
-      final int target = max(1, (gSamples * 0.15).round());
-      for (int b = 255; b >= 0; b--) {
-        acc += hist[b];
-        if (acc >= target) return b.toDouble();
+    return 205.0;
+  }
+
+  int lowClip = 6, highClip = 249;
+  int acc = 0;
+  for (int b = 0; b < 256; b++) {
+    acc += lumHist[b];
+    if (acc >= gSamples * 0.015) {
+      lowClip = b;
+      break;
+    }
+  }
+  acc = 0;
+  for (int b = 255; b >= 0; b--) {
+    acc += lumHist[b];
+    if (acc >= gSamples * 0.015) {
+      highClip = b;
+      break;
+    }
+  }
+  if (highClip - lowClip < 40) {
+    lowClip = 5;
+    highClip = 250;
+  }
+
+  // Lower floor allows true shadow removal in dim/night photos while blocking pure black ink patches
+  final double minFloorR = max(36.0, percentileHigh(gHistR, 0.15) * 0.30);
+  final double minFloorG = max(36.0, percentileHigh(gHistG, 0.15) * 0.30);
+  final double minFloorB = max(36.0, percentileHigh(gHistB, 0.15) * 0.30);
+
+  final Int32List blkHist = Int32List(256);
+  final Int32List blkSumR = Int32List(256), blkSumG = Int32List(256), blkSumB = Int32List(256);
+  final int step = (w > 1000 || h > 1000) ? 2 : 1;
+
+  for (int gy = 0; gy < gridRows; gy++) {
+    final int y0 = (gy * h) ~/ gridRows, y1 = max(y0 + 1, ((gy + 1) * h) ~/ gridRows);
+    for (int gx = 0; gx < gridCols; gx++) {
+      final int x0 = (gx * w) ~/ gridCols, x1 = max(x0 + 1, ((gx + 1) * w) ~/ gridCols);
+      blkHist.fillRange(0, 256, 0);
+      blkSumR.fillRange(0, 256, 0);
+      blkSumG.fillRange(0, 256, 0);
+      blkSumB.fillRange(0, 256, 0);
+      int samples = 0;
+      for (int y = y0; y < y1; y += step) {
+        final int rb = y * w;
+        for (int x = x0; x < x1; x += step) {
+          final int p = (rb + x) * 4;
+          final int r = src[p], g = src[p + 1], b = src[p + 2];
+          final int l = ((77 * r + 150 * g + 29 * b) >> 8).clamp(0, 255);
+          blkHist[l]++;
+          blkSumR[l] += r;
+          blkSumG[l] += g;
+          blkSumB[l] += b;
+          samples++;
+        }
       }
-      return 210.0;
-    }
-
-    final double minFloorR = max(75.0, percentile85(gHistR) * 0.55);
-    final double minFloorG = max(75.0, percentile85(gHistG) * 0.55);
-    final double minFloorB = max(75.0, percentile85(gHistB) * 0.55);
-
-    final Int32List blkHist = Int32List(256);
-    final Int32List blkSumR = Int32List(256), blkSumG = Int32List(256), blkSumB = Int32List(256);
-    final int step = (w > 1000 || h > 1000) ? 2 : 1;
-
-    for (int gy = 0; gy < gridRows; gy++) {
-      final int y0 = (gy * h) ~/ gridRows, y1 = ((gy + 1) * h) ~/ gridRows;
-      for (int gx = 0; gx < gridCols; gx++) {
-        final int x0 = (gx * w) ~/ gridCols, x1 = ((gx + 1) * w) ~/ gridCols;
-        blkHist.fillRange(0, 256, 0);
-        blkSumR.fillRange(0, 256, 0);
-        blkSumG.fillRange(0, 256, 0);
-        blkSumB.fillRange(0, 256, 0);
-        int samples = 0;
-        for (int y = y0; y < y1; y += step) {
-          final int rb = y * w;
-          for (int x = x0; x < x1; x += step) {
-            final int p = (rb + x) * 4;
-            final int r = src[p], g = src[p + 1], b = src[p + 2];
-            final int l = ((77 * r + 150 * g + 29 * b) >> 8).clamp(0, 255);
-            blkHist[l]++;
-            blkSumR[l] += r;
-            blkSumG[l] += g;
-            blkSumB[l] += b;
-            samples++;
-          }
-        }
-        final int gIdx = gy * gridCols + gx;
-        if (samples == 0) {
-          bgRGrid[gIdx] = 255.0;
-          bgGGrid[gIdx] = 255.0;
-          bgBGrid[gIdx] = 255.0;
-          continue;
-        }
-        final int target = max(1, (samples * 0.12).round());
-        int acc = 0, sR = 0, sG = 0, sB = 0;
-        for (int bin = 255; bin >= 0; bin--) {
-          final int c = blkHist[bin];
-          if (c > 0) {
-            acc += c;
-            sR += blkSumR[bin];
-            sG += blkSumG[bin];
-            sB += blkSumB[bin];
-            if (acc >= target) break;
-          }
-        }
-        bgRGrid[gIdx] = max(sR / acc, minFloorR).clamp(48.0, 255.0);
-        bgGGrid[gIdx] = max(sG / acc, minFloorG).clamp(48.0, 255.0);
-        bgBGrid[gIdx] = max(sB / acc, minFloorB).clamp(48.0, 255.0);
+      final int gIdx = gy * gridCols + gx;
+      if (samples == 0) {
+        bgRGrid[gIdx] = 255.0;
+        bgGGrid[gIdx] = 255.0;
+        bgBGrid[gIdx] = 255.0;
+        continue;
       }
+      // Top 15% brightest pixels inside each fine cell cleanly ignore dark text ink
+      final int target = max(1, (samples * 0.15).round());
+      int bAcc = 0, sR = 0, sG = 0, sB = 0;
+      for (int bin = 255; bin >= 0; bin--) {
+        final int c = blkHist[bin];
+        if (c > 0) {
+          bAcc += c;
+          sR += blkSumR[bin];
+          sG += blkSumG[bin];
+          sB += blkSumB[bin];
+          if (bAcc >= target) break;
+        }
+      }
+      bgRGrid[gIdx] = max(sR / bAcc, minFloorR).clamp(32.0, 255.0);
+      bgGGrid[gIdx] = max(sG / bAcc, minFloorG).clamp(32.0, 255.0);
+      bgBGrid[gIdx] = max(sB / bAcc, minFloorB).clamp(32.0, 255.0);
     }
+  }
 
-    final Float32List tmpR = Float32List(gridCount), tmpG = Float32List(gridCount), tmpB = Float32List(gridCount);
+  // Morphological Closing (2 passes max-dilation + 2 passes box smoothing)
+  final Float32List tmpR = Float32List(gridCount), tmpG = Float32List(gridCount), tmpB = Float32List(gridCount);
+  for (int dPass = 0; dPass < 2; dPass++) {
     for (int gy = 0; gy < gridRows; gy++) {
       for (int gx = 0; gx < gridCols; gx++) {
         final int idx = gy * gridCols + gx;
@@ -443,42 +591,91 @@ Uint8List _processRgbaIsolate(Map<String, dynamic> params) {
             if (bgBGrid[nIdx] > mB) mB = bgBGrid[nIdx];
           }
         }
-        tmpR[idx] = bgRGrid[idx] * 0.55 + mR * 0.45;
-        tmpG[idx] = bgGGrid[idx] * 0.55 + mG * 0.45;
-        tmpB[idx] = bgBGrid[idx] * 0.55 + mB * 0.45;
+        final double wCur = dPass == 0 ? 0.35 : 0.50;
+        tmpR[idx] = bgRGrid[idx] * wCur + mR * (1.0 - wCur);
+        tmpG[idx] = bgGGrid[idx] * wCur + mG * (1.0 - wCur);
+        tmpB[idx] = bgBGrid[idx] * wCur + mB * (1.0 - wCur);
       }
     }
     bgRGrid.setAll(0, tmpR);
     bgGGrid.setAll(0, tmpG);
     bgBGrid.setAll(0, tmpB);
+  }
 
-    for (int pass = 0; pass < 2; pass++) {
-      for (int gy = 0; gy < gridRows; gy++) {
-        for (int gx = 0; gx < gridCols; gx++) {
-          double sR = 0, sG = 0, sB = 0;
-          int cnt = 0;
-          for (int dy = -1; dy <= 1; dy++) {
-            final int ny = (gy + dy).clamp(0, gridRows - 1);
-            for (int dx = -1; dx <= 1; dx++) {
-              final int nx = (gx + dx).clamp(0, gridCols - 1);
-              final int nIdx = ny * gridCols + nx;
-              sR += bgRGrid[nIdx];
-              sG += bgGGrid[nIdx];
-              sB += bgBGrid[nIdx];
-              cnt++;
-            }
+  for (int pass = 0; pass < 2; pass++) {
+    for (int gy = 0; gy < gridRows; gy++) {
+      for (int gx = 0; gx < gridCols; gx++) {
+        double sR = 0, sG = 0, sB = 0;
+        int cnt = 0;
+        for (int dy = -1; dy <= 1; dy++) {
+          final int ny = (gy + dy).clamp(0, gridRows - 1);
+          for (int dx = -1; dx <= 1; dx++) {
+            final int nx = (gx + dx).clamp(0, gridCols - 1);
+            final int nIdx = ny * gridCols + nx;
+            sR += bgRGrid[nIdx];
+            sG += bgGGrid[nIdx];
+            sB += bgBGrid[nIdx];
+            cnt++;
           }
-          final int idx = gy * gridCols + gx;
-          tmpR[idx] = sR / cnt;
-          tmpG[idx] = sG / cnt;
-          tmpB[idx] = sB / cnt;
         }
+        final int idx = gy * gridCols + gx;
+        tmpR[idx] = sR / cnt;
+        tmpG[idx] = sG / cnt;
+        tmpB[idx] = sB / cnt;
       }
-      bgRGrid.setAll(0, tmpR);
-      bgGGrid.setAll(0, tmpG);
-      bgBGrid.setAll(0, tmpB);
+    }
+    bgRGrid.setAll(0, tmpR);
+    bgGGrid.setAll(0, tmpG);
+    bgBGrid.setAll(0, tmpB);
+  }
+
+  return PrecomputedBgMap(
+    bgR: bgRGrid,
+    bgG: bgGGrid,
+    bgB: bgBGrid,
+    gridCols: gridCols,
+    gridRows: gridRows,
+    lowClip: lowClip,
+    highClip: highClip,
+  );
+}
+
+Uint8List _processRgbaIsolate(Map<String, dynamic> params) {
+  final Uint8List src = params['rgba'];
+  final int w = params['w'];
+  final int h = params['h'];
+  final String filter = params['filter'];
+  final double intensity = (params['intensity'] as double).clamp(0.0, 1.0);
+  final double brightness = (params['brightness'] as double).clamp(-0.5, 0.5);
+  final double contrast = (params['contrast'] as double).clamp(0.5, 2.0);
+  final double userSharpness = (params['sharpness'] as double).clamp(0.0, 1.5);
+  final List eraserStrokes = params['eraserStrokes'] as List? ?? const [];
+
+  final int total = w * h;
+  final Uint8List out = Uint8List.fromList(src);
+  if (total == 0) return out;
+
+  PrecomputedBgMap? bgMap;
+  if (filter != 'original') {
+    if (params['bgR'] != null && params['bgG'] != null && params['bgB'] != null) {
+      bgMap = PrecomputedBgMap(
+        bgR: params['bgR'],
+        bgG: params['bgG'],
+        bgB: params['bgB'],
+        gridCols: params['gridCols'] ?? 64,
+        gridRows: params['gridRows'] ?? 64,
+        lowClip: params['lowClip'] ?? 6,
+        highClip: params['highClip'] ?? 249,
+      );
+    } else {
+      bgMap = _computeFineBgMap(src, w, h);
     }
   }
+
+  final int gridCols = bgMap?.gridCols ?? 64;
+  final int gridRows = bgMap?.gridRows ?? 64;
+  final double cellW = w / gridCols, cellH = h / gridRows;
+  final bool hasManualTone = brightness.abs() > 0.005 || (contrast - 1.0).abs() > 0.005;
 
   double sampleGrid(Float32List grid, double gx, double gy) {
     final int x0 = gx.floor().clamp(0, gridCols - 1);
@@ -491,11 +688,10 @@ Uint8List _processRgbaIsolate(Map<String, dynamic> params) {
     return top + (bot - top) * fy;
   }
 
-  final double cellW = w / gridCols, cellH = h / gridRows;
-  final bool hasManualTone = brightness.abs() > 0.005 || (contrast - 1.0).abs() > 0.005;
+  final Uint8List lumCache = Uint8List(total);
 
-  // STEP 3A: TRUE SAUVOLA ADAPTIVE THRESHOLDING (B&W Pro)
-  if (filter == 'super_bw') {
+  // STEP 3A: BACKGROUND-NORMALIZED SAUVOLA LASER B&W (B&W Pro)
+  if (filter == 'super_bw' && bgMap != null) {
     final Uint8List normLum = Uint8List(total);
     final int iw = w + 1;
     final Int64List intSum = Int64List(iw * (h + 1));
@@ -508,9 +704,9 @@ Uint8List _processRgbaIsolate(Map<String, dynamic> params) {
       for (int x = 0; x < w; x++) {
         final double gx = ((x + 0.5) / cellW - 0.5).clamp(0.0, gridCols - 1.0001);
         final int p = (rb + x) * 4;
-        final double gR = min(252.0 / max(sampleGrid(bgRGrid, gx, gy), 45.0), 2.8);
-        final double gG = min(252.0 / max(sampleGrid(bgGGrid, gx, gy), 45.0), 2.8);
-        final double gB = min(252.0 / max(sampleGrid(bgBGrid, gx, gy), 45.0), 2.8);
+        final double gR = min(254.0 / max(sampleGrid(bgMap.bgR, gx, gy), 32.0), 3.6);
+        final double gG = min(254.0 / max(sampleGrid(bgMap.bgG, gx, gy), 32.0), 3.6);
+        final double gB = min(254.0 / max(sampleGrid(bgMap.bgB, gx, gy), 32.0), 3.6);
         final int nL = (0.299 * src[p] * gR + 0.587 * src[p + 1] * gG + 0.114 * src[p + 2] * gB).round().clamp(0, 255);
         normLum[rb + x] = nL;
         rowSum += nL;
@@ -520,9 +716,9 @@ Uint8List _processRgbaIsolate(Map<String, dynamic> params) {
       }
     }
 
-    final int rad = max(14, min(w, h) ~/ 28);
-    final double kSauvola = 0.14 + 0.24 * (1.0 - intensity);
-    const double band = 14.0;
+    final int rad = max(12, min(w, h) ~/ 30);
+    final double kSauvola = 0.16 + 0.24 * (1.0 - intensity);
+    const double band = 12.0;
 
     for (int y = 0; y < h; y++) {
       final int y1 = max(0, y - rad), y2 = min(h - 1, y + rad), rowOff = y * w;
@@ -533,19 +729,18 @@ Uint8List _processRgbaIsolate(Map<String, dynamic> params) {
         final int sqSum = intSq[(y2 + 1) * iw + (x2 + 1)] - intSq[y1 * iw + (x2 + 1)] - intSq[(y2 + 1) * iw + x1] + intSq[y1 * iw + x1];
 
         final double mean = sum / count;
-        final double variance = max(0.0, (sqSum / count) - mean * mean);
-        final double stdDev = sqrt(variance);
+        final double stdDev = sqrt(max(0.0, (sqSum / count) - mean * mean));
         final int cur = normLum[rowOff + x];
 
         int bw;
-        if (cur > 230 && stdDev < 18.0) {
+        if (cur > 224 && stdDev < 22.0) {
           bw = 255;
-        } else if (mean < 28.0 && stdDev < 12.0) {
-          bw = 10;
+        } else if (mean < 32.0 && stdDev < 14.0) {
+          bw = 6;
         } else {
           final double thresh = mean * (1.0 + kSauvola * (stdDev / 128.0 - 1.0));
           final double t = ((cur - (thresh - band)) / (2.0 * band)).clamp(0.0, 1.0);
-          bw = (8 + (t * t * (3.0 - 2.0 * t)) * 247).round().clamp(0, 255);
+          bw = (4 + (t * t * (3.0 - 2.0 * t)) * 251).round().clamp(0, 255);
         }
         if (hasManualTone) {
           bw = ((bw - 128.0) * contrast + 128.0 + brightness * 255.0).round().clamp(0, 255);
@@ -555,182 +750,157 @@ Uint8List _processRgbaIsolate(Map<String, dynamic> params) {
         out[p + 1] = bw;
         out[p + 2] = bw;
         out[p + 3] = 255;
+        lumCache[rowOff + x] = bw;
       }
-    }
-    _paintEraserStrokes(out, w, h, eraserStrokes);
-    return out;
-  }
-
-  // STEP 3B: PRO TONE CURVE LUT
-  final Float32List toneLut = Float32List(256);
-  if (filter == 'magic_pro' || filter == 'auto_pro' || filter == 'dark_ink' || filter == 'ocv_crisp') {
-    final double paperSnap = filter == 'dark_ink'
-        ? (202.0 - 30.0 * intensity)
-        : filter == 'magic_pro'
-            ? (208.0 - 30.0 * intensity)
-            : filter == 'ocv_crisp'
-                ? (205.0 - 28.0 * intensity)
-                : (220.0 - 22.0 * intensity);
-    final double inkGamma = filter == 'dark_ink'
-        ? (1.42 + 0.52 * intensity)
-        : filter == 'magic_pro'
-            ? (1.22 + 0.36 * intensity)
-            : filter == 'ocv_crisp'
-                ? (1.28 + 0.35 * intensity)
-                : (1.12 + 0.22 * intensity);
-    final double blackFloor = (filter == 'dark_ink') ? 22.0 : 12.0;
-
-    for (int v = 0; v < 256; v++) {
-      final double dv = v.toDouble();
-      if (dv <= blackFloor) {
-        toneLut[v] = dv * 0.55;
-      } else {
-        final double normalized = ((dv - blackFloor) / max(1.0, paperSnap - blackFloor)).clamp(0.0, 1.0);
-        final double inkVal = pow(normalized, inkGamma) * paperSnap;
-        final double kneeStart = paperSnap - 34.0;
-        final double kneeEnd = min(253.0, paperSnap + 16.0);
-        final double t = ((dv - kneeStart) / max(1.0, kneeEnd - kneeStart)).clamp(0.0, 1.0);
-        final double smoothWhite = t * t * (3.0 - 2.0 * t);
-        toneLut[v] = (inkVal + (255.0 - inkVal) * smoothWhite).clamp(0.0, 255.0);
-      }
-    }
-  } else if (filter == 'lighten_pro') {
-    final double liftGamma = 0.86 - 0.20 * intensity;
-    for (int v = 0; v < 256; v++) {
-      toneLut[v] = (pow(v / 255.0, liftGamma) * 255.0).clamp(0.0, 255.0);
     }
   } else {
-    for (int v = 0; v < 256; v++) {
-      toneLut[v] = v.toDouble();
-    }
-  }
+    // STEP 3B: CAMSCANNER / OKEN GRADE TONE CURVE LUT
+    final Float32List toneLut = Float32List(256);
+    if (filter == 'magic_pro' || filter == 'auto_pro' || filter == 'dark_ink' || filter == 'ocv_crisp') {
+      final double paperSnap = filter == 'dark_ink'
+          ? (204.0 - 30.0 * intensity)
+          : filter == 'magic_pro'
+              ? (216.0 - 34.0 * intensity)
+              : filter == 'ocv_crisp'
+                  ? (212.0 - 30.0 * intensity)
+                  : (224.0 - 24.0 * intensity);
+      final double inkGamma = filter == 'dark_ink'
+          ? (1.45 + 0.55 * intensity)
+          : filter == 'magic_pro'
+              ? (1.28 + 0.42 * intensity)
+              : filter == 'ocv_crisp'
+                  ? (1.30 + 0.38 * intensity)
+                  : (1.14 + 0.25 * intensity);
+      final double blackFloor = (filter == 'dark_ink' || filter == 'magic_pro') ? 26.0 : 14.0;
 
-  int lowClip = 6, highClip = 249;
-  if (filter == 'vivid_color') {
-    final Int32List lumHist = Int32List(256);
-    int sampleCount = 0;
-    for (int i = 0; i < total; i += 4) {
-      final int p = i * 4;
-      lumHist[((77 * src[p] + 150 * src[p + 1] + 29 * src[p + 2]) >> 8).clamp(0, 255)]++;
-      sampleCount++;
-    }
-    int acc = 0;
-    for (int b = 0; b < 256; b++) {
-      acc += lumHist[b];
-      if (acc >= sampleCount * 0.015) {
-        lowClip = b;
-        break;
-      }
-    }
-    acc = 0;
-    for (int b = 255; b >= 0; b--) {
-      acc += lumHist[b];
-      if (acc >= sampleCount * 0.015) {
-        highClip = b;
-        break;
-      }
-    }
-    if (highClip - lowClip < 40) {
-      lowClip = 5;
-      highClip = 250;
-    }
-  }
-
-  // STEP 4: WHITE BALANCE + TONE MAPPING + BRIGHTNESS/CONTRAST
-  final Uint8List lumCache = Uint8List(total);
-  final double maxGain = (filter == 'dark_ink' || filter == 'magic_pro') ? 2.80 : 2.45;
-  final double satBoost = filter == 'magic_pro'
-      ? (1.22 + 0.22 * intensity)
-      : filter == 'auto_pro'
-          ? (1.12 + 0.12 * intensity)
-          : filter == 'vivid_color'
-              ? (1.28 + 0.35 * intensity)
-              : 1.06;
-
-  for (int y = 0; y < h; y++) {
-    final double gy = ((y + 0.5) / cellH - 0.5).clamp(0.0, gridRows - 1.0001);
-    final int rowOff = y * w;
-    for (int x = 0; x < w; x++) {
-      final double gx = ((x + 0.5) / cellW - 0.5).clamp(0.0, gridCols - 1.0001);
-      final int p = (rowOff + x) * 4;
-      double nr = src[p].toDouble(), ng = src[p + 1].toDouble(), nb = src[p + 2].toDouble();
-
-      if (filter == 'vivid_color') {
-        final double scale = 255.0 / (highClip - lowClip);
-        nr = ((nr - lowClip) * scale).clamp(0.0, 255.0);
-        ng = ((ng - lowClip) * scale).clamp(0.0, 255.0);
-        nb = ((nb - lowClip) * scale).clamp(0.0, 255.0);
-        final double lum = 0.299 * nr + 0.587 * ng + 0.114 * nb;
-        nr = (lum + (nr - lum) * satBoost).clamp(0.0, 255.0);
-        ng = (lum + (ng - lum) * satBoost).clamp(0.0, 255.0);
-        nb = (lum + (nb - lum) * satBoost).clamp(0.0, 255.0);
-      } else if (filter != 'original') {
-        final double gR = min(253.0 / max(sampleGrid(bgRGrid, gx, gy), 45.0), maxGain);
-        final double gG = min(253.0 / max(sampleGrid(bgGGrid, gx, gy), 45.0), maxGain);
-        final double gB = min(253.0 / max(sampleGrid(bgBGrid, gx, gy), 45.0), maxGain);
-
-        final double wbR = (nr * gR).clamp(0.0, 255.0);
-        final double wbG = (ng * gG).clamp(0.0, 255.0);
-        final double wbB = (nb * gB).clamp(0.0, 255.0);
-        final double wbLum = (0.299 * wbR + 0.587 * wbG + 0.114 * wbB).clamp(0.0, 255.0);
-
-        if (filter == 'ocv_crisp') {
-          final double targetL = toneLut[wbLum.round().clamp(0, 255)];
-          nr = targetL;
-          ng = targetL;
-          nb = targetL;
-        } else if (filter == 'lighten_pro') {
-          final double blend = 0.60 + 0.35 * intensity;
-          final double lR = nr + (wbR - nr) * blend;
-          final double lG = ng + (wbG - ng) * blend;
-          final double lB = nb + (wbB - nb) * blend;
-          nr = toneLut[lR.round().clamp(0, 255)];
-          ng = toneLut[lG.round().clamp(0, 255)];
-          nb = toneLut[lB.round().clamp(0, 255)];
+      for (int v = 0; v < 256; v++) {
+        final double dv = v.toDouble();
+        if (dv <= blackFloor) {
+          toneLut[v] = dv * 0.42;
         } else {
-          final double targetL = toneLut[wbLum.round().clamp(0, 255)];
-          final double ratio = wbLum > 1.5 ? (targetL / wbLum) : 1.0;
-          final double sr = (wbR * ratio).clamp(0.0, 255.0);
-          final double sg = (wbG * ratio).clamp(0.0, 255.0);
-          final double sb = (wbB * ratio).clamp(0.0, 255.0);
-          final double paperFade = ((255.0 - targetL) / 56.0).clamp(0.0, 1.0);
-          final double effSat = 1.0 + (satBoost - 1.0) * paperFade;
-          final double satFactor = paperFade < 0.25 ? paperFade * 4.0 : effSat;
-          nr = (targetL + (sr - targetL) * satFactor).clamp(0.0, 255.0);
-          ng = (targetL + (sg - targetL) * satFactor).clamp(0.0, 255.0);
-          nb = (targetL + (sb - targetL) * satFactor).clamp(0.0, 255.0);
+          final double normalized = ((dv - blackFloor) / max(1.0, paperSnap - blackFloor)).clamp(0.0, 1.0);
+          final double inkVal = pow(normalized, inkGamma) * paperSnap;
+          final double kneeStart = paperSnap - 32.0;
+          final double kneeEnd = min(253.0, paperSnap + 12.0);
+          final double t = ((dv - kneeStart) / max(1.0, kneeEnd - kneeStart)).clamp(0.0, 1.0);
+          final double smoothWhite = t * t * (3.0 - 2.0 * t);
+          toneLut[v] = (inkVal + (255.0 - inkVal) * smoothWhite).clamp(0.0, 255.0);
         }
       }
-
-      if (hasManualTone) {
-        nr = ((nr - 128.0) * contrast + 128.0 + brightness * 255.0).clamp(0.0, 255.0);
-        ng = ((ng - 128.0) * contrast + 128.0 + brightness * 255.0).clamp(0.0, 255.0);
-        nb = ((nb - 128.0) * contrast + 128.0 + brightness * 255.0).clamp(0.0, 255.0);
+    } else if (filter == 'lighten_pro') {
+      final double liftGamma = 0.84 - 0.22 * intensity;
+      for (int v = 0; v < 256; v++) {
+        final double val = pow(v / 255.0, liftGamma) * 255.0;
+        toneLut[v] = (val > 236 ? 255.0 : val).clamp(0.0, 255.0);
       }
+    } else {
+      for (int v = 0; v < 256; v++) {
+        toneLut[v] = v.toDouble();
+      }
+    }
 
-      final int ri = nr.round().clamp(0, 255), gi = ng.round().clamp(0, 255), bi = nb.round().clamp(0, 255);
-      out[p] = ri;
-      out[p + 1] = gi;
-      out[p + 2] = bi;
-      out[p + 3] = 255;
-      lumCache[rowOff + x] = ((77 * ri + 150 * gi + 29 * bi) >> 8).clamp(0, 255);
+    final int lowClip = bgMap?.lowClip ?? 6;
+    final int highClip = bgMap?.highClip ?? 249;
+    final double maxGain = (filter == 'magic_pro' || filter == 'dark_ink') ? 3.55 : 3.05;
+    final double satBoost = filter == 'magic_pro'
+        ? (1.28 + 0.26 * intensity)
+        : filter == 'auto_pro'
+            ? (1.15 + 0.14 * intensity)
+            : filter == 'vivid_color'
+                ? (1.30 + 0.35 * intensity)
+                : 1.08;
+
+    for (int y = 0; y < h; y++) {
+      final double gy = ((y + 0.5) / cellH - 0.5).clamp(0.0, gridRows - 1.0001);
+      final int rowOff = y * w;
+      for (int x = 0; x < w; x++) {
+        final double gx = ((x + 0.5) / cellW - 0.5).clamp(0.0, gridCols - 1.0001);
+        final int p = (rowOff + x) * 4;
+        double nr = src[p].toDouble(), ng = src[p + 1].toDouble(), nb = src[p + 2].toDouble();
+
+        if (filter == 'vivid_color') {
+          final double scale = 255.0 / (highClip - lowClip);
+          nr = ((nr - lowClip) * scale).clamp(0.0, 255.0);
+          ng = ((ng - lowClip) * scale).clamp(0.0, 255.0);
+          nb = ((nb - lowClip) * scale).clamp(0.0, 255.0);
+          final double lum = 0.299 * nr + 0.587 * ng + 0.114 * nb;
+          nr = (lum + (nr - lum) * satBoost).clamp(0.0, 255.0);
+          ng = (lum + (ng - lum) * satBoost).clamp(0.0, 255.0);
+          nb = (lum + (nb - lum) * satBoost).clamp(0.0, 255.0);
+        } else if (filter != 'original' && bgMap != null) {
+          final double gR = min(254.0 / max(sampleGrid(bgMap.bgR, gx, gy), 32.0), maxGain);
+          final double gG = min(254.0 / max(sampleGrid(bgMap.bgG, gx, gy), 32.0), maxGain);
+          final double gB = min(254.0 / max(sampleGrid(bgMap.bgB, gx, gy), 32.0), maxGain);
+
+          final double wbR = (nr * gR).clamp(0.0, 255.0);
+          final double wbG = (ng * gG).clamp(0.0, 255.0);
+          final double wbB = (nb * gB).clamp(0.0, 255.0);
+          final double wbLum = (0.299 * wbR + 0.587 * wbG + 0.114 * wbB).clamp(0.0, 255.0);
+
+          if (filter == 'ocv_crisp') {
+            final double targetL = toneLut[wbLum.round().clamp(0, 255)];
+            nr = targetL;
+            ng = targetL;
+            nb = targetL;
+          } else if (filter == 'lighten_pro') {
+            final double blend = 0.65 + 0.35 * intensity;
+            final double lR = nr + (wbR - nr) * blend;
+            final double lG = ng + (wbG - ng) * blend;
+            final double lB = nb + (wbB - nb) * blend;
+            nr = toneLut[lR.round().clamp(0, 255)];
+            ng = toneLut[lG.round().clamp(0, 255)];
+            nb = toneLut[lB.round().clamp(0, 255)];
+          } else {
+            final double targetL = toneLut[wbLum.round().clamp(0, 255)];
+            final double ratio = wbLum > 1.5 ? (targetL / wbLum) : 1.0;
+            final double sr = (wbR * ratio).clamp(0.0, 255.0);
+            final double sg = (wbG * ratio).clamp(0.0, 255.0);
+            final double sb = (wbB * ratio).clamp(0.0, 255.0);
+
+            // Preserve bold vibrant colors (blue ink / red stamps) while keeping paper pure white
+            final double chroma = max(sr, max(sg, sb)) - min(sr, min(sg, sb));
+            final double colorWeight = ((chroma - 14.0) / 36.0).clamp(0.0, 1.0);
+            final double paperFade = ((255.0 - targetL) / 48.0).clamp(0.0, 1.0);
+            final double effSat = 1.0 + (satBoost - 1.0) * colorWeight * paperFade;
+            final double satFactor = paperFade < 0.22 ? paperFade * 4.5 : effSat;
+
+            nr = (targetL + (sr - targetL) * satFactor).clamp(0.0, 255.0);
+            ng = (targetL + (sg - targetL) * satFactor).clamp(0.0, 255.0);
+            nb = (targetL + (sb - targetL) * satFactor).clamp(0.0, 255.0);
+          }
+        }
+
+        if (hasManualTone) {
+          nr = ((nr - 128.0) * contrast + 128.0 + brightness * 255.0).clamp(0.0, 255.0);
+          ng = ((ng - 128.0) * contrast + 128.0 + brightness * 255.0).clamp(0.0, 255.0);
+          nb = ((nb - 128.0) * contrast + 128.0 + brightness * 255.0).clamp(0.0, 255.0);
+        }
+
+        final int ri = nr.round().clamp(0, 255), gi = ng.round().clamp(0, 255), bi = nb.round().clamp(0, 255);
+        out[p] = ri;
+        out[p + 1] = gi;
+        out[p + 2] = bi;
+        out[p + 3] = 255;
+        lumCache[rowOff + x] = ((77 * ri + 150 * gi + 29 * bi) >> 8).clamp(0, 255);
+      }
     }
   }
 
-  // STEP 5: HALO-FREE GAUSSIAN CORING UNSHARP MASK
+  // STEP 5: HALO-FREE CRISP UNSHARP MASK (NOW WORKS ON ALL FILTERS INCLUDING ORIGINAL & B&W PRO)
   final double baseSharp = filter == 'dark_ink'
-      ? (0.48 + 0.40 * intensity)
-      : (filter == 'magic_pro' || filter == 'auto_pro' || filter == 'ocv_crisp')
-          ? (0.35 + 0.35 * intensity)
-          : (filter == 'original' ? 0.0 : 0.24);
-  final double sharpAmt = (baseSharp * (0.4 + userSharpness * 1.2)).clamp(0.0, 1.35);
+      ? (0.55 + 0.45 * intensity)
+      : (filter == 'magic_pro' || filter == 'auto_pro' || filter == 'ocv_crisp' || filter == 'super_bw')
+          ? (0.45 + 0.40 * intensity)
+          : (filter == 'original' ? 0.45 : 0.30);
+  final double effectiveUser = filter == 'original' ? max(0.0, (userSharpness - 0.6) * 1.8) : (0.35 + userSharpness * 1.25);
+  final double sharpAmt = (baseSharp * effectiveUser).clamp(0.0, 1.45);
 
   if (sharpAmt > 0.05 && w > 3 && h > 3) {
     for (int y = 1; y < h - 1; y++) {
       final int r0 = (y - 1) * w, r1 = y * w, r2 = (y + 1) * w;
       for (int x = 1; x < w - 1; x++) {
         final int center = lumCache[r1 + x];
-        if (center >= 250) continue;
+        if (center >= 246) continue;
         final int blur = (lumCache[r0 + x - 1] +
                 2 * lumCache[r0 + x] +
                 lumCache[r0 + x + 1] +
@@ -742,8 +912,8 @@ Uint8List _processRgbaIsolate(Map<String, dynamic> params) {
                 lumCache[r2 + x + 1]) >>
             4;
         final int diff = center - blur;
-        if (diff.abs() > 5) {
-          final int delta = (diff * sharpAmt).round().clamp(-45, 45);
+        if (diff.abs() > 4) {
+          final int delta = (diff * sharpAmt).round().clamp(-55, 55);
           final int p = (r1 + x) * 4;
           out[p] = (out[p] + delta).clamp(0, 255);
           out[p + 1] = (out[p + 1] + delta).clamp(0, 255);
@@ -805,7 +975,7 @@ void _paintEraserStrokes(Uint8List out, int w, int h, List eraserStrokes) {
   }
 }
 
-// AI DESKEW ENGINE
+// AI DESKEW ENGINE (WITH WHITE PAPER CORNER FILL)
 class AIDeskewEngine {
   static Future<double> detectSkewAngle(String imagePath) async {
     final textRecognizer = TextRecognizer();
@@ -858,8 +1028,50 @@ Uint8List? _rotateArbitraryIsolate(Map<String, dynamic> params) {
   final decoded = img.decodeImage(params['bytes']);
   if (decoded == null) return null;
   final oriented = img.bakeOrientation(decoded);
-  final rotated = img.copyRotate(oriented, angle: params['angle']);
-  return Uint8List.fromList(img.encodeJpg(rotated, quality: 93));
+  final double angleDeg = (params['angle'] as num).toDouble();
+  if (angleDeg.abs() < 0.05) return Uint8List.fromList(img.encodeJpg(oriented, quality: 93));
+
+  final int w = oriented.width;
+  final int h = oriented.height;
+  final double rad = angleDeg * pi / 180.0;
+  final double cosA = cos(rad);
+  final double sinA = sin(rad);
+  final int outW = (w * cosA.abs() + h * sinA.abs()).ceil();
+  final int outH = (w * sinA.abs() + h * cosA.abs()).ceil();
+  final double cx = w / 2.0, cy = h / 2.0;
+  final double ocx = outW / 2.0, ocy = outH / 2.0;
+
+  final Uint8List srcBytes = oriented.getBytes(order: img.ChannelOrder.rgb);
+  final Uint8List outBytes = Uint8List(outW * outH * 3)..fillRange(0, outW * outH * 3, 255);
+
+  for (int oy = 0; oy < outH; oy++) {
+    final double dy = oy - ocy;
+    final double bx = cx + dy * sinA;
+    final double by = cy + dy * cosA;
+    for (int ox = 0; ox < outW; ox++) {
+      final double dx = ox - ocx;
+      final double sx = bx + dx * cosA;
+      final double sy = by - dx * sinA;
+      if (sx < 0 || sx >= w - 1 || sy < 0 || sy >= h - 1) continue;
+
+      final int ix = sx.floor();
+      final int iy = sy.floor();
+      final double fx = sx - ix, fy = sy - iy;
+      final int p00 = (iy * w + ix) * 3;
+      final int p10 = p00 + 3;
+      final int p01 = p00 + w * 3;
+      final int p11 = p01 + 3;
+      final int dst = (oy * outW + ox) * 3;
+
+      for (int c = 0; c < 3; c++) {
+        final double top = srcBytes[p00 + c] + (srcBytes[p10 + c] - srcBytes[p00 + c]) * fx;
+        final double bot = srcBytes[p01 + c] + (srcBytes[p11 + c] - srcBytes[p01 + c]) * fx;
+        outBytes[dst + c] = (top + (bot - top) * fy).round().clamp(0, 255);
+      }
+    }
+  }
+  final outIm = img.Image.fromBytes(width: outW, height: outH, bytes: outBytes.buffer, numChannels: 3, order: img.ChannelOrder.rgb);
+  return Uint8List.fromList(img.encodeJpg(outIm, quality: 93));
 }
 // ==================== PART 1 END ====================
 // ==================== PART 2 START ====================
@@ -945,12 +1157,14 @@ Uint8List _compressSingleImageIsolate(Map<String, dynamic> params) {
   final oriented = img.bakeOrientation(decoded);
 
   int maxDim = 1650;
-  if (targetBytes < 30 * 1024) {
-    maxDim = 600;
-  } else if (targetBytes < 80 * 1024) {
-    maxDim = 960;
-  } else if (targetBytes < 220 * 1024) {
-    maxDim = 1320;
+  if (targetBytes < 20 * 1024) {
+    maxDim = 480;
+  } else if (targetBytes < 45 * 1024) {
+    maxDim = 680;
+  } else if (targetBytes < 100 * 1024) {
+    maxDim = 980;
+  } else if (targetBytes < 240 * 1024) {
+    maxDim = 1350;
   }
 
   img.Image working = oriented;
@@ -958,21 +1172,29 @@ Uint8List _compressSingleImageIsolate(Map<String, dynamic> params) {
     working = oriented.width >= oriented.height ? img.copyResize(oriented, width: maxDim) : img.copyResize(oriented, height: maxDim);
   }
 
-  int lo = 12, hi = 92;
-  Uint8List best = Uint8List.fromList(img.encodeJpg(working, quality: 50));
-  for (int iter = 0; iter < 5; iter++) {
-    final int mid = (lo + hi) ~/ 2;
-    final candidate = Uint8List.fromList(img.encodeJpg(working, quality: mid));
-    best = candidate;
-    if (candidate.length > targetBytes) {
-      hi = mid - 1;
-    } else {
-      lo = mid + 1;
+  Uint8List binarySearchJpg(img.Image im) {
+    int lo = 10, hi = 92;
+    Uint8List best = Uint8List.fromList(img.encodeJpg(im, quality: 45));
+    for (int iter = 0; iter < 6; iter++) {
+      final int mid = (lo + hi) ~/ 2;
+      final candidate = Uint8List.fromList(img.encodeJpg(im, quality: mid));
+      if (candidate.length <= targetBytes) {
+        best = candidate;
+        lo = mid + 1;
+      } else {
+        if (best.length > targetBytes) best = candidate;
+        hi = mid - 1;
+      }
     }
+    return best;
   }
-  if (best.length > targetBytes && working.width > 320) {
-    final scaled = img.copyResize(working, width: (working.width * 0.65).round());
-    best = Uint8List.fromList(img.encodeJpg(scaled, quality: 28));
+
+  Uint8List best = binarySearchJpg(working);
+  int downscaleTry = 0;
+  while (best.length > targetBytes && working.width > 220 && working.height > 220 && downscaleTry < 3) {
+    working = img.copyResize(working, width: (working.width * 0.72).round());
+    best = binarySearchJpg(working);
+    downscaleTry++;
   }
   return best;
 }
@@ -983,7 +1205,7 @@ class ProCompressionEngine {
     final safeName = docTitle.replaceAll(RegExp(r'[^\w\s\-]'), '_').trim();
     final tempDir = await getTemporaryDirectory();
     final int totalTargetBytes = max(10 * 1024, targetKb * 1024);
-    final int perPageTargetBytes = max(8 * 1024, (totalTargetBytes * 0.90) ~/ orderedImagePaths.length);
+    final int perPageTargetBytes = max(4 * 1024, (totalTargetBytes * 0.88) ~/ orderedImagePaths.length);
 
     final pdf = pw.Document();
     final List<File> jpgFiles = [];
@@ -1248,6 +1470,467 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
   }
 }
 
+// ============================================================================
+// NIGHT PRO CAMERA SCANNER (BACK/FRONT SWITCH + FLASH AUTO/ON/OFF/TORCH)
+// ============================================================================
+class ProCameraScannerScreen extends StatefulWidget {
+  final int pageLimit;
+  final VoidCallback? onSwitchToMlKitAutoScan;
+
+  const ProCameraScannerScreen({super.key, this.pageLimit = 50, this.onSwitchToMlKitAutoScan});
+  @override
+  State<ProCameraScannerScreen> createState() => _ProCameraScannerScreenState();
+}
+
+class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with WidgetsBindingObserver {
+  List<CameraDescription> _cameras = [];
+  CameraController? _controller;
+  bool _isFrontCamera = false;
+  bool _isInitializing = true;
+  bool _isCapturing = false;
+  bool _showGrid = true;
+  bool _showNightScreenFlash = false;
+  String? _cameraError;
+
+  // Flash modes cycle: Auto -> On -> Torch (Night Light) -> Off
+  final List<FlashMode> _flashCycle = const [FlashMode.auto, FlashMode.always, FlashMode.torch, FlashMode.off];
+  int _flashIndex = 0;
+
+  double _exposureOffset = 0.0;
+  double _minExposure = -2.0;
+  double _maxExposure = 2.0;
+  bool _showNightBoostSlider = false;
+  Offset? _focusPoint;
+
+  final List<String> _capturedPaths = [];
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _initCameras();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _controller?.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final camCtrl = _controller;
+    if (camCtrl == null || !camCtrl.value.isInitialized) return;
+    if (state == AppLifecycleState.inactive) {
+      camCtrl.dispose();
+    } else if (state == AppLifecycleState.resumed) {
+      _startSelectedCamera();
+    }
+  }
+
+  Future<void> _initCameras() async {
+    try {
+      _cameras = await availableCameras();
+      if (_cameras.isEmpty) {
+        if (mounted) setState(() { _cameraError = 'No camera found on this device.'; _isInitializing = false; });
+        return;
+      }
+      await _startSelectedCamera();
+    } catch (e) {
+      if (mounted) setState(() { _cameraError = 'Camera Error: $e'; _isInitializing = false; });
+    }
+  }
+
+  Future<void> _startSelectedCamera() async {
+    if (_cameras.isEmpty) return;
+    if (mounted) setState(() { _isInitializing = true; _cameraError = null; });
+
+    final desired = _isFrontCamera ? CameraLensDirection.front : CameraLensDirection.back;
+    final CameraDescription chosen = _cameras.firstWhere(
+      (c) => c.lensDirection == desired,
+      orElse: () => _cameras.first,
+    );
+
+    final oldCtrl = _controller;
+    _controller = null;
+    if (oldCtrl != null) {
+      await oldCtrl.dispose();
+    }
+
+    final ctrl = CameraController(chosen, ResolutionPreset.high, enableAudio: false, imageFormatGroup: ImageFormatGroup.jpeg);
+    try {
+      await ctrl.initialize();
+      try {
+        await ctrl.setFlashMode(_flashCycle[_flashIndex]);
+      } catch (_) {}
+      try {
+        _minExposure = await ctrl.getMinExposureOffset();
+        _maxExposure = await ctrl.getMaxExposureOffset();
+        _exposureOffset = _exposureOffset.clamp(_minExposure, _maxExposure);
+        await ctrl.setExposureOffset(_exposureOffset);
+      } catch (_) {}
+      if (mounted) {
+        setState(() {
+          _controller = ctrl;
+          _isInitializing = false;
+        });
+      } else {
+        await ctrl.dispose();
+      }
+    } catch (e) {
+      await ctrl.dispose();
+      if (mounted) setState(() { _cameraError = 'Failed to open camera: $e'; _isInitializing = false; });
+    }
+  }
+
+  Future<void> _toggleFrontBackCamera() async {
+    if (_isInitializing || _isCapturing) return;
+    final hasOther = _cameras.any((c) => c.lensDirection == (_isFrontCamera ? CameraLensDirection.back : CameraLensDirection.front));
+    if (!hasOther) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Only one camera available on this device.')));
+      return;
+    }
+    _isFrontCamera = !_isFrontCamera;
+    await _startSelectedCamera();
+  }
+
+  Future<void> _cycleFlashMode() async {
+    _flashIndex = (_flashIndex + 1) % _flashCycle.length;
+    final mode = _flashCycle[_flashIndex];
+    try {
+      await _controller?.setFlashMode(mode);
+    } catch (_) {}
+    if (mounted) setState(() {});
+  }
+
+  String get _flashLabel {
+    switch (_flashCycle[_flashIndex]) {
+      case FlashMode.auto:
+        return 'Auto';
+      case FlashMode.always:
+        return 'Flash On';
+      case FlashMode.torch:
+        return 'Night Torch';
+      case FlashMode.off:
+        return 'Flash Off';
+    }
+  }
+
+  IconData get _flashIcon {
+    switch (_flashCycle[_flashIndex]) {
+      case FlashMode.auto:
+        return Icons.flash_auto_rounded;
+      case FlashMode.always:
+        return Icons.flash_on_rounded;
+      case FlashMode.torch:
+        return Icons.flashlight_on_rounded;
+      case FlashMode.off:
+        return Icons.flash_off_rounded;
+    }
+  }
+
+  Future<void> _capturePhoto() async {
+    final ctrl = _controller;
+    if (ctrl == null || !ctrl.value.isInitialized || _isCapturing) return;
+    if (_capturedPaths.length >= widget.pageLimit) {
+      _finishCapture();
+      return;
+    }
+
+    setState(() => _isCapturing = true);
+    try {
+      final mode = _flashCycle[_flashIndex];
+      final bool useFrontScreenFlash = _isFrontCamera && (mode == FlashMode.always || mode == FlashMode.torch || mode == FlashMode.auto);
+      if (useFrontScreenFlash && mounted) {
+        setState(() => _showNightScreenFlash = true);
+        await Future.delayed(const Duration(milliseconds: 220));
+      }
+
+      if (!_isFrontCamera) {
+        try {
+          await ctrl.setFlashMode(mode);
+        } catch (_) {}
+      }
+
+      final XFile shot = await ctrl.takePicture();
+      if (useFrontScreenFlash && mounted) {
+        setState(() => _showNightScreenFlash = false);
+      }
+
+      final appDir = await getApplicationDocumentsDirectory();
+      final scansDir = Directory('${appDir.path}/scans');
+      if (!await scansDir.exists()) await scansDir.create(recursive: true);
+      final destPath = '${scansDir.path}/cam_${DateTime.now().millisecondsSinceEpoch}_${_capturedPaths.length}.jpg';
+      await File(shot.path).copy(destPath);
+
+      if (mounted) {
+        setState(() => _capturedPaths.add(destPath));
+        if (_capturedPaths.length >= widget.pageLimit) {
+          _finishCapture();
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _showNightScreenFlash = false);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Capture Error: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => _isCapturing = false);
+    }
+  }
+
+  Future<void> _pickFromGalleryInsideCamera() async {
+    final picked = await ImagePicker().pickMultiImage();
+    if (!mounted || picked.isEmpty) return;
+    final appDir = await getApplicationDocumentsDirectory();
+    final scansDir = Directory('${appDir.path}/scans');
+    if (!await scansDir.exists()) await scansDir.create(recursive: true);
+    for (int i = 0; i < picked.length; i++) {
+      if (_capturedPaths.length >= widget.pageLimit) break;
+      final f = File(picked[i].path);
+      if (await f.exists()) {
+        final dest = '${scansDir.path}/camgal_${DateTime.now().millisecondsSinceEpoch}_$i.jpg';
+        await f.copy(dest);
+        _capturedPaths.add(dest);
+      }
+    }
+    if (mounted) setState(() {});
+  }
+
+  void _finishCapture() {
+    if (_capturedPaths.isEmpty) return;
+    Navigator.pop(context, List<String>.from(_capturedPaths));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final ctrl = _controller;
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: SafeArea(
+        child: Stack(
+          children: [
+            // Camera Preview Area
+            Column(
+              children: [
+                // Top Control Bar (Close, Flash Auto/On/Torch/Off, Night Boost, Grid, Front/Back Switch)
+                Container(
+                  color: Colors.black87,
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      LabeledIconButton(icon: Icons.close_rounded, label: 'Close', color: Colors.white, onPressed: () => Navigator.pop(context)),
+                      LabeledIconButton(
+                        icon: _flashIcon,
+                        label: _flashLabel,
+                        color: _flashCycle[_flashIndex] == FlashMode.off ? Colors.white60 : Colors.amberAccent,
+                        onPressed: _cycleFlashMode,
+                      ),
+                      LabeledIconButton(
+                        icon: Icons.nightlight_round,
+                        label: 'Night+',
+                        color: _showNightBoostSlider ? Colors.amberAccent : Colors.white,
+                        onPressed: () => setState(() => _showNightBoostSlider = !_showNightBoostSlider),
+                      ),
+                      LabeledIconButton(
+                        icon: _showGrid ? Icons.grid_on_rounded : Icons.grid_off_rounded,
+                        label: 'Grid',
+                        color: _showGrid ? Colors.greenAccent : Colors.white60,
+                        onPressed: () => setState(() => _showGrid = !_showGrid),
+                      ),
+                      LabeledIconButton(
+                        icon: Icons.cameraswitch_rounded,
+                        label: _isFrontCamera ? 'Front' : 'Back',
+                        color: Colors.lightBlueAccent,
+                        onPressed: _toggleFrontBackCamera,
+                      ),
+                    ],
+                  ),
+                ),
+
+                // Optional Night Brightness Exposure Slider
+                if (_showNightBoostSlider)
+                  Container(
+                    color: Colors.black87,
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.brightness_6_rounded, color: Colors.amberAccent, size: 18),
+                        const SizedBox(width: 8),
+                        const Text('Night Light:', style: TextStyle(color: Colors.white70, fontSize: 11)),
+                        Expanded(
+                          child: Slider(
+                            value: _exposureOffset.clamp(_minExposure, _maxExposure),
+                            min: _minExposure,
+                            max: _maxExposure,
+                            activeColor: Colors.amberAccent,
+                            inactiveColor: Colors.white24,
+                            onChanged: (v) async {
+                              setState(() => _exposureOffset = v);
+                              try {
+                                await _controller?.setExposureOffset(v);
+                              } catch (_) {}
+                            },
+                          ),
+                        ),
+                        Text(_exposureOffset.toStringAsFixed(1), style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
+                      ],
+                    ),
+                  ),
+
+                // Live Preview
+                Expanded(
+                  child: _isInitializing
+                      ? const Center(child: CircularProgressIndicator(color: Colors.greenAccent))
+                      : (_cameraError != null || ctrl == null || !ctrl.value.isInitialized)
+                          ? Center(
+                              child: Padding(
+                                padding: const EdgeInsets.all(24),
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Icon(Icons.videocam_off_rounded, color: Colors.redAccent, size: 48),
+                                    const SizedBox(height: 12),
+                                    Text(_cameraError ?? 'Camera unavailable', textAlign: TextAlign.center, style: const TextStyle(color: Colors.white70, fontSize: 13)),
+                                    const SizedBox(height: 16),
+                                    ElevatedButton.icon(icon: const Icon(Icons.refresh), label: const Text('Retry Camera'), onPressed: _initCameras),
+                                  ],
+                                ),
+                              ),
+                            )
+                          : LayoutBuilder(
+                              builder: (ctx, box) => GestureDetector(
+                                onTapDown: (details) async {
+                                  final nx = (details.localPosition.dx / box.maxWidth).clamp(0.0, 1.0);
+                                  final ny = (details.localPosition.dy / box.maxHeight).clamp(0.0, 1.0);
+                                  setState(() => _focusPoint = details.localPosition);
+                                  try {
+                                    await ctrl.setFocusPoint(Offset(nx, ny));
+                                  } catch (_) {}
+                                  Future.delayed(const Duration(milliseconds: 900), () {
+                                    if (mounted) setState(() => _focusPoint = null);
+                                  });
+                                },
+                                child: Stack(
+                                  fit: StackFit.expand,
+                                  children: [
+                                    Center(child: CameraPreview(ctrl)),
+                                    if (_showGrid) CustomPaint(painter: _CameraGridPainter()),
+                                    if (_focusPoint != null)
+                                      Positioned(
+                                        left: _focusPoint!.dx - 24,
+                                        top: _focusPoint!.dy - 24,
+                                        child: Container(width: 48, height: 48, decoration: BoxDecoration(border: Border.all(color: Colors.amberAccent, width: 2), borderRadius: BorderRadius.circular(8))),
+                                      ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                ),
+
+                // Captured Pages Thumbnail Strip
+                if (_capturedPaths.isNotEmpty)
+                  Container(
+                    height: 70,
+                    color: const Color(0xFF14161B),
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    child: ListView.builder(
+                      scrollDirection: Axis.horizontal,
+                      itemCount: _capturedPaths.length,
+                      itemBuilder: (ctx, i) => Container(
+                        width: 48,
+                        margin: const EdgeInsets.only(right: 8),
+                        child: Stack(
+                          children: [
+                            Positioned.fill(child: ClipRRect(borderRadius: BorderRadius.circular(6), child: Image.file(File(_capturedPaths[i]), fit: BoxFit.cover, cacheWidth: 140))),
+                            Positioned(
+                              top: 1,
+                              right: 1,
+                              child: GestureDetector(
+                                onTap: () => setState(() => _capturedPaths.removeAt(i)),
+                                child: const CircleAvatar(radius: 9, backgroundColor: Colors.red, child: Icon(Icons.close, size: 11, color: Colors.white)),
+                              ),
+                            ),
+                            Positioned(
+                              bottom: 2,
+                              left: 2,
+                              child: Container(padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1), color: Colors.black87, child: Text('${i + 1}', style: const TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold))),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+
+                // Bottom Shutter & Action Bar
+                Container(
+                  color: Colors.black,
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      LabeledIconButton(icon: Icons.photo_library_rounded, label: 'Gallery', color: Colors.white, iconSize: 25, onPressed: _pickFromGalleryInsideCamera),
+                      if (widget.onSwitchToMlKitAutoScan != null)
+                        LabeledIconButton(
+                          icon: Icons.document_scanner_rounded,
+                          label: 'Auto Scan',
+                          color: Colors.greenAccent,
+                          iconSize: 24,
+                          onPressed: () {
+                            Navigator.pop(context);
+                            widget.onSwitchToMlKitAutoScan!();
+                          },
+                        ),
+                      GestureDetector(
+                        onTap: _capturePhoto,
+                        child: Container(
+                          width: 68,
+                          height: 68,
+                          decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: Colors.white, width: 4)),
+                          padding: const EdgeInsets.all(5),
+                          child: Container(
+                            decoration: BoxDecoration(color: _isCapturing ? Colors.grey : Colors.white, shape: BoxShape.circle),
+                            child: _isCapturing ? const Padding(padding: EdgeInsets.all(14), child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.black)) : null,
+                          ),
+                        ),
+                      ),
+                      ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(backgroundColor: _capturedPaths.isEmpty ? Colors.grey.shade800 : appPrimaryColor.value, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10)),
+                        icon: const Icon(Icons.check_rounded, size: 18),
+                        label: Text('Next (${_capturedPaths.length})', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                        onPressed: _capturedPaths.isEmpty ? null : _finishCapture,
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+
+            // Front Camera Night Screen-Flash Overlay
+            if (_showNightScreenFlash)
+              Positioned.fill(child: Container(color: Colors.white)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CameraGridPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final p = Paint()..color = Colors.white24..strokeWidth = 1.0;
+    canvas.drawLine(Offset(size.width / 3, 0), Offset(size.width / 3, size.height), p);
+    canvas.drawLine(Offset(size.width * 2 / 3, 0), Offset(size.width * 2 / 3, size.height), p);
+    canvas.drawLine(Offset(0, size.height / 3), Offset(size.width, size.height / 3), p);
+    canvas.drawLine(Offset(0, size.height * 2 / 3), Offset(size.width, size.height * 2 / 3), p);
+  }
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
 // 2. MAIN DASHBOARD SCREEN
 class MainDashboardScreen extends StatefulWidget {
   const MainDashboardScreen({super.key});
@@ -1342,6 +2025,12 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
         final matchesCat = _selectedCategory == 'All' || (_selectedCategory == 'Starred' ? (doc['isFavorite'] == true) : (doc['category'] ?? 'General') == _selectedCategory);
         return matchesSearch && matchesCat;
       }).toList();
+
+      if (_isDocSelectionMode) {
+        final visibleIds = _filteredDocs.map((d) => d['id'].toString()).toSet();
+        _selectedDocIdsOrder.removeWhere((id) => !visibleIds.contains(id));
+        if (_selectedDocIdsOrder.isEmpty) _isDocSelectionMode = false;
+      }
     });
   }
 
@@ -1471,6 +2160,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       _filterDocs();
     });
     await _commitDocsToPrefs();
+    unawaited(cleanupOrphanScanFiles(_savedDocs));
   }
 
   void _combineSelectedDocsIntoOne() {
@@ -1550,28 +2240,27 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
         }
       }
       if (!mounted || persistentRawPaths.isEmpty) return;
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) => ScanFilterReviewScreen(
-            rawImagePaths: persistentRawPaths,
-            initialFilterId: 'magic_pro',
-            onApplyAndProceed: (filteredImages) {
-              if (category == 'Personal' && prefix.contains('ID_Card') && filteredImages.length >= 2) {
-                _processIdCardCollage(filteredImages.sublist(0, 2), persistentRawPaths);
-              } else {
-                _promptSaveDoc(filteredImages, persistentRawPaths, prefix, category);
-              }
-            },
-          ),
-        ),
-      );
+      _openFilterReview(persistentRawPaths, category: category, prefix: prefix, defaultFilter: 'magic_pro');
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Gallery Error: $e')));
     }
   }
 
-  Future<void> _startDocScan({int limit = 50, String category = 'General', String prefix = 'Doc', String defaultFilter = 'magic_pro'}) async {
+  Future<void> _startDocScan({int limit = 50, String category = 'General', String prefix = 'Doc', String defaultFilter = 'magic_pro', bool runOcrAfter = false}) async {
+    final List<String>? captured = await Navigator.push<List<String>>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ProCameraScannerScreen(
+          pageLimit: limit,
+          onSwitchToMlKitAutoScan: () => _startMlKitDocScan(limit: limit, category: category, prefix: prefix, defaultFilter: defaultFilter, runOcrAfter: runOcrAfter),
+        ),
+      ),
+    );
+    if (!mounted || captured == null || captured.isEmpty) return;
+    _openFilterReview(captured, category: category, prefix: prefix, defaultFilter: defaultFilter, runOcrAfter: runOcrAfter);
+  }
+
+  Future<void> _startMlKitDocScan({int limit = 50, String category = 'General', String prefix = 'Doc', String defaultFilter = 'magic_pro', bool runOcrAfter = false}) async {
     final scanner = DocumentScanner(options: DocumentScannerOptions(documentFormat: DocumentFormat.jpeg, mode: ScannerMode.base, isGalleryImport: true, pageLimit: limit));
     try {
       final result = await scanner.scanDocument();
@@ -1589,25 +2278,47 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
         }
       }
       if (!mounted || persistentRawPaths.isEmpty) return;
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) => ScanFilterReviewScreen(
-            rawImagePaths: persistentRawPaths,
-            initialFilterId: defaultFilter,
-            onApplyAndProceed: (filteredImages) {
-              if (category == 'Personal' && prefix.contains('ID_Card') && filteredImages.length >= 2) {
-                _processIdCardCollage(filteredImages.sublist(0, 2), persistentRawPaths);
-              } else {
-                _promptSaveDoc(filteredImages, persistentRawPaths, prefix, category);
-              }
-            },
-          ),
-        ),
-      );
+      _openFilterReview(persistentRawPaths, category: category, prefix: prefix, defaultFilter: defaultFilter, runOcrAfter: runOcrAfter);
     } catch (e) {
       debugPrint("Scan Err: $e");
+    } finally {
+      await scanner.close();
     }
+  }
+
+  void _openFilterReview(List<String> rawPaths, {required String category, required String prefix, required String defaultFilter, bool runOcrAfter = false}) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ScanFilterReviewScreen(
+          rawImagePaths: rawPaths,
+          initialFilterId: defaultFilter,
+          onApplyAndProceed: (filteredImages) {
+            if (runOcrAfter && filteredImages.isNotEmpty) {
+              _extractTextOCR(filteredImages.first);
+            } else if (category == 'Personal' && prefix.contains('ID_Card') && filteredImages.length >= 2) {
+              _processIdCardCollage(filteredImages.sublist(0, 2), rawPaths);
+            } else {
+              _promptSaveDoc(filteredImages, rawPaths, prefix, category);
+            }
+          },
+        ),
+      ),
+    );
+  }
+
+  Rect _fittedRect(Size srcSize, Rect dstRect) {
+    final double srcAspect = srcSize.width / max(1.0, srcSize.height);
+    final double dstAspect = dstRect.width / max(1.0, dstRect.height);
+    double w = dstRect.width, h = dstRect.height;
+    if (srcAspect > dstAspect) {
+      h = w / srcAspect;
+    } else {
+      w = h * srcAspect;
+    }
+    final double left = dstRect.left + (dstRect.width - w) / 2.0;
+    final double top = dstRect.top + (dstRect.height - h) / 2.0;
+    return Rect.fromLTWH(left, top, w, h);
   }
 
   Future<void> _processIdCardCollage(List<String> frontAndBack, List<String> rawImages) async {
@@ -1626,21 +2337,31 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       canvas.drawRect(const Rect.fromLTWH(0, 0, a4Width, a4Height), Paint()..color = Colors.white);
       final borderPaint = Paint()..color = const Color(0xFFCFD8DC)..style = PaintingStyle.stroke..strokeWidth = 2.0;
 
-      const rect1 = Rect.fromLTWH(left, 200.0, cardW, cardH);
-      canvas.drawImageRect(frontImg, Rect.fromLTWH(0, 0, frontImg.width.toDouble(), frontImg.height.toDouble()), rect1, Paint());
-      canvas.drawRect(rect1, borderPaint);
+      const box1 = Rect.fromLTWH(left, 200.0, cardW, cardH);
+      final fit1 = _fittedRect(Size(frontImg.width.toDouble(), frontImg.height.toDouble()), box1);
+      canvas.drawImageRect(frontImg, Rect.fromLTWH(0, 0, frontImg.width.toDouble(), frontImg.height.toDouble()), fit1, Paint()..filterQuality = FilterQuality.high);
+      canvas.drawRect(fit1, borderPaint);
 
-      const rect2 = Rect.fromLTWH(left, 820.0, cardW, cardH);
-      canvas.drawImageRect(backImg, Rect.fromLTWH(0, 0, backImg.width.toDouble(), backImg.height.toDouble()), rect2, Paint());
-      canvas.drawRect(rect2, borderPaint);
+      const box2 = Rect.fromLTWH(left, 820.0, cardW, cardH);
+      final fit2 = _fittedRect(Size(backImg.width.toDouble(), backImg.height.toDouble()), box2);
+      canvas.drawImageRect(backImg, Rect.fromLTWH(0, 0, backImg.width.toDouble(), backImg.height.toDouble()), fit2, Paint()..filterQuality = FilterQuality.high);
+      canvas.drawRect(fit2, borderPaint);
 
       picture = recorder.endRecording();
       a4CollageImg = await picture.toImage(a4Width.toInt(), a4Height.toInt());
-      final byteData = await a4CollageImg.toByteData(format: ui.ImageByteFormat.png);
+      final byteData = await a4CollageImg.toByteData(format: ui.ImageByteFormat.rawRgba);
       if (byteData != null) {
+        final jpgBytes = await compute(_encodeRgbaToJpgIsolate, {
+          'rgba': byteData.buffer.asUint8List(),
+          'w': a4Width.toInt(),
+          'h': a4Height.toInt(),
+          'quality': 93,
+        });
         final appDir = await getApplicationDocumentsDirectory();
-        final collageFile = File('${appDir.path}/id_a4_${DateTime.now().millisecondsSinceEpoch}.jpg');
-        await collageFile.writeAsBytes(byteData.buffer.asUint8List());
+        final scansDir = Directory('${appDir.path}/scans');
+        if (!await scansDir.exists()) await scansDir.create(recursive: true);
+        final collageFile = File('${scansDir.path}/id_a4_${DateTime.now().millisecondsSinceEpoch}.jpg');
+        await collageFile.writeAsBytes(jpgBytes);
         if (mounted) {
           setState(() {
             _savedDocs.insert(0, {'id': DateTime.now().millisecondsSinceEpoch.toString(), 'title': 'ID_Card_${DateFormat('ddMMM_HHmm').format(DateTime.now())}', 'category': 'Personal', 'isFavorite': false, 'date': DateFormat('dd MMM yyyy, hh:mm a').format(DateTime.now()), 'images': [collageFile.path], 'originalImages': frontAndBack, 'pages': 1});
@@ -1799,6 +2520,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                 _filterDocs();
               });
               _commitDocsToPrefs();
+              unawaited(cleanupOrphanScanFiles(_savedDocs));
             },
           ),
         ],
@@ -1902,6 +2624,39 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     } finally {
       await textRecognizer.close();
     }
+  }
+
+  void _pickDocForTool({required String title, required void Function(Map<String, dynamic> doc) onPicked}) {
+    if (_savedDocs.length == 1) {
+      onPicked(_savedDocs.first);
+      return;
+    }
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: 280,
+          child: ListView.builder(
+            itemCount: _savedDocs.length,
+            itemBuilder: (_, i) {
+              final d = _savedDocs[i];
+              return ListTile(
+                leading: Icon(Icons.description_rounded, color: appPrimaryColor.value),
+                title: Text(d['title'] ?? 'Document', maxLines: 1, overflow: TextOverflow.ellipsis),
+                subtitle: Text('${d['pages']} pages • ${d['category'] ?? 'General'}'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  onPicked(d);
+                },
+              );
+            },
+          ),
+        ),
+        actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: Text(AppLang.tr('cancel')))],
+      ),
+    );
   }
 
   @override
@@ -2041,48 +2796,67 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
 
   Widget _buildDocsTab() {
     int totalPages = _savedDocs.fold(0, (sum, item) => sum + (item['pages'] as int? ?? 1));
-    return ListView(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-      children: [
-        Container(
-          padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 14),
-          decoration: BoxDecoration(borderRadius: BorderRadius.circular(14), color: Theme.of(context).cardColor, border: Border.all(color: Colors.grey.withOpacity(0.2))),
-          child: Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [_buildStat(AppLang.tr('total_files'), '${_savedDocs.length}', Icons.insert_drive_file_rounded), Container(width: 1, height: 24, color: Colors.grey.shade300), _buildStat(AppLang.tr('scanned_pages'), '$totalPages', Icons.pages_rounded)]),
-        ),
-        const SizedBox(height: 10),
-        SizedBox(
-          height: 38,
-          child: ListView(
-            scrollDirection: Axis.horizontal,
-            children: [
-              ..._userFolders.map((cat) {
-                final isSel = _selectedCategory == cat;
-                final label = cat == 'All' ? AppLang.tr('all') : (cat == 'Starred' ? AppLang.tr('starred') : cat);
-                return Padding(
-                  padding: const EdgeInsets.only(right: 6.0),
-                  child: ChoiceChip(label: Text(label), selected: isSel, selectedColor: appPrimaryColor.value, labelStyle: TextStyle(color: isSel ? Colors.white : null, fontSize: 11), onSelected: (_) => setState(() { _selectedCategory = cat; _filterDocs(); })),
-                );
-              }),
-              ActionChip(label: Text(AppLang.tr('new_folder'), style: const TextStyle(fontSize: 11)), onPressed: _createNewFolderDialog),
-            ],
+    return CustomScrollView(
+      slivers: [
+        SliverPadding(
+          padding: const EdgeInsets.fromLTRB(14, 8, 14, 4),
+          sliver: SliverToBoxAdapter(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 14),
+                  decoration: BoxDecoration(borderRadius: BorderRadius.circular(14), color: Theme.of(context).cardColor, border: Border.all(color: Colors.grey.withOpacity(0.2))),
+                  child: Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [_buildStat(AppLang.tr('total_files'), '${_savedDocs.length}', Icons.insert_drive_file_rounded), Container(width: 1, height: 24, color: Colors.grey.shade300), _buildStat(AppLang.tr('scanned_pages'), '$totalPages', Icons.pages_rounded)]),
+                ),
+                const SizedBox(height: 10),
+                SizedBox(
+                  height: 38,
+                  child: ListView(
+                    scrollDirection: Axis.horizontal,
+                    children: [
+                      ..._userFolders.map((cat) {
+                        final isSel = _selectedCategory == cat;
+                        final label = cat == 'All' ? AppLang.tr('all') : (cat == 'Starred' ? AppLang.tr('starred') : cat);
+                        return Padding(
+                          padding: const EdgeInsets.only(right: 6.0),
+                          child: ChoiceChip(label: Text(label), selected: isSel, selectedColor: appPrimaryColor.value, labelStyle: TextStyle(color: isSel ? Colors.white : null, fontSize: 11), onSelected: (_) => setState(() { _selectedCategory = cat; _filterDocs(); })),
+                        );
+                      }),
+                      ActionChip(label: Text(AppLang.tr('new_folder'), style: const TextStyle(fontSize: 11)), onPressed: _createNewFolderDialog),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text('${AppLang.tr('docs')} (${_filteredDocs.length})', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)), const Text('Long press to select in order or move folder', style: TextStyle(fontSize: 10, color: Colors.grey))])),
+                    LabeledIconButton(icon: _isGridView ? Icons.view_list_rounded : Icons.grid_view_rounded, label: _isGridView ? 'List View' : 'Grid View', iconSize: 20, onPressed: () => setState(() => _isGridView = !_isGridView)),
+                  ],
+                ),
+              ],
+            ),
           ),
         ),
-        const SizedBox(height: 10),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text('${AppLang.tr('docs')} (${_filteredDocs.length})', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)), const Text('Long press to select in order or move folder', style: TextStyle(fontSize: 10, color: Colors.grey))])),
-            LabeledIconButton(icon: _isGridView ? Icons.view_list_rounded : Icons.grid_view_rounded, label: _isGridView ? 'List View' : 'Grid View', iconSize: 20, onPressed: () => setState(() => _isGridView = !_isGridView)),
-          ],
-        ),
-        const SizedBox(height: 4),
         if (_filteredDocs.isEmpty)
-          Padding(padding: const EdgeInsets.only(top: 80), child: Center(child: Text(AppLang.tr('no_docs'), textAlign: TextAlign.center)))
+          SliverToBoxAdapter(child: Padding(padding: const EdgeInsets.only(top: 80, left: 20, right: 20), child: Center(child: Text(AppLang.tr('no_docs'), textAlign: TextAlign.center))))
         else if (_isGridView)
-          GridView.builder(shrinkWrap: true, physics: const NeverScrollableScrollPhysics(), itemCount: _filteredDocs.length, gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 2, crossAxisSpacing: 10, mainAxisSpacing: 10, childAspectRatio: 0.72), itemBuilder: (ctx, i) => _buildDocGridCard(_filteredDocs[i]))
+          SliverPadding(
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            sliver: SliverGrid(
+              delegate: SliverChildBuilderDelegate((ctx, i) => _buildDocGridCard(_filteredDocs[i]), childCount: _filteredDocs.length),
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 2, crossAxisSpacing: 10, mainAxisSpacing: 10, childAspectRatio: 0.72),
+            ),
+          )
         else
-          ListView.builder(shrinkWrap: true, physics: const NeverScrollableScrollPhysics(), itemCount: _filteredDocs.length, itemBuilder: (ctx, i) => _buildDocListTile(_filteredDocs[i])),
-        const SizedBox(height: 95),
+          SliverPadding(
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            sliver: SliverList(
+              delegate: SliverChildBuilderDelegate((ctx, i) => _buildDocListTile(_filteredDocs[i]), childCount: _filteredDocs.length),
+            ),
+          ),
+        const SliverToBoxAdapter(child: SizedBox(height: 95)),
       ],
     );
   }
@@ -2153,6 +2927,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
         } else if (val == 'delete') {
           setState(() { _savedDocs.removeWhere((d) => d['id'] == doc['id']); _filterDocs(); });
           _commitDocsToPrefs();
+          unawaited(cleanupOrphanScanFiles(_savedDocs));
         }
       },
       itemBuilder: (_) => [
@@ -2166,7 +2941,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
 
   Widget _buildDocListTile(Map<String, dynamic> doc) {
     final List imgs = doc['images'] ?? [];
-    final bool hasImage = imgs.isNotEmpty && File(imgs.first).existsSync();
     final String docId = doc['id'].toString();
     final int orderIdx = _selectedDocIdsOrder.indexOf(docId);
     final bool isSelected = orderIdx != -1;
@@ -2178,7 +2952,12 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       child: ListTile(
         leading: Stack(
           children: [
-            ClipRRect(borderRadius: BorderRadius.circular(6), child: hasImage ? Image.file(File(imgs.first), width: 50, height: 60, fit: BoxFit.cover, cacheWidth: 160) : Container(width: 50, height: 60, color: Colors.grey.shade200)),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: imgs.isNotEmpty
+                  ? Image.file(File(imgs.first), width: 50, height: 60, fit: BoxFit.cover, cacheWidth: 160, errorBuilder: (_, __, ___) => Container(width: 50, height: 60, color: Colors.grey.shade200))
+                  : Container(width: 50, height: 60, color: Colors.grey.shade200),
+            ),
             if (isSelected) Positioned(top: 2, left: 2, child: CircleAvatar(radius: 10, backgroundColor: appPrimaryColor.value, child: Text('${orderIdx + 1}', style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)))),
           ],
         ),
@@ -2193,7 +2972,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
 
   Widget _buildDocGridCard(Map<String, dynamic> doc) {
     final List imgs = doc['images'] ?? [];
-    final bool hasImg = imgs.isNotEmpty && File(imgs.first).existsSync();
     final String docId = doc['id'].toString();
     final int orderIdx = _selectedDocIdsOrder.indexOf(docId);
     final bool isSelected = orderIdx != -1;
@@ -2208,7 +2986,14 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Expanded(child: ClipRRect(borderRadius: const BorderRadius.vertical(top: Radius.circular(11)), child: hasImg ? Image.file(File(imgs.first), fit: BoxFit.cover, width: double.infinity, cacheWidth: 260) : Container(color: Colors.grey.shade200))),
+                Expanded(
+                  child: ClipRRect(
+                    borderRadius: const BorderRadius.vertical(top: Radius.circular(11)),
+                    child: imgs.isNotEmpty
+                        ? Image.file(File(imgs.first), fit: BoxFit.cover, width: double.infinity, cacheWidth: 260, errorBuilder: (_, __, ___) => Container(color: Colors.grey.shade200))
+                        : Container(color: Colors.grey.shade200),
+                  ),
+                ),
                 Padding(
                   padding: const EdgeInsets.fromLTRB(8, 6, 2, 6),
                   child: Row(
@@ -2244,11 +3029,13 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
               _filterDocs();
             });
             _commitDocsToPrefs();
+            unawaited(cleanupOrphanScanFiles(_savedDocs));
           },
           onTransferPages: _transferPagesBetweenDocs,
           onDelete: () {
             setState(() { _savedDocs.removeWhere((d) => d['id'] == doc['id']); _filterDocs(); });
             _commitDocsToPrefs();
+            unawaited(cleanupOrphanScanFiles(_savedDocs));
           },
           onExtractText: _extractTextOCR,
         ),
@@ -2272,16 +3059,22 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
             _buildToolCard('ID Card Mode', 'Front & Back', Icons.badge_outlined, Colors.blue, () => _startDocScan(limit: 2, category: 'Personal', prefix: 'ID_Card')),
             _buildToolCard('Book Scan', 'Dark Ink AI', Icons.menu_book_rounded, Colors.green, () => _startDocScan(prefix: 'Book_Page', defaultFilter: 'dark_ink')),
             _buildToolCard('AI OCR Text', 'Extract Text', Icons.auto_awesome, Colors.purple, () {
-              if (_savedDocs.isNotEmpty && (_savedDocs.first['images'] as List).isNotEmpty) {
-                _extractTextOCR(_savedDocs.first['images'][0]);
+              if (_savedDocs.isNotEmpty) {
+                _pickDocForTool(
+                  title: 'Choose Document for OCR',
+                  onPicked: (d) {
+                    final imgs = d['images'] as List? ?? const [];
+                    if (imgs.isNotEmpty) _extractTextOCR(imgs.first.toString());
+                  },
+                );
               } else {
-                _startDocScan();
+                _startDocScan(limit: 1, runOcrAfter: true);
               }
             }),
             _buildToolCard('From Gallery', 'Phone Photos', Icons.photo_library_outlined, const Color(0xFFD81B60), () => _importFromGalleryDirectly(prefix: 'Gallery')),
             _buildToolCard('Target Compress', '10KB - 5MB', Icons.compress_rounded, Colors.teal, () {
               if (_savedDocs.isNotEmpty) {
-                _openDocDetail(_savedDocs.first);
+                _pickDocForTool(title: 'Choose Document to Compress', onPicked: _openDocDetail);
               } else {
                 ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please scan or create a document first!')));
               }
@@ -2345,7 +3138,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
 // ==================== PART 2 END ====================
 // ==================== PART 3 START ====================
 // ============================================================================
-// 3. PRO SCAN FILTER, MANUAL ADJUST & ERASER SCREEN
+// 3. PRO SCAN FILTER, CROP, MANUAL ADJUST & ERASER SCREEN
 // ============================================================================
 class ScanFilterReviewScreen extends StatefulWidget {
   final List<String> rawImagePaths;
@@ -2362,7 +3155,7 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
   bool _isSaving = false;
   bool _isRenderingPreview = false;
   bool _showOriginalHold = false;
-  // Tabs: 0 = Straighten AI, 1 = Pro Filters, 2 = Adjust (B/C/S), 3 = Eraser, 4 = Tilt & Rotate
+  // Tabs: 0 = Straighten AI, 1 = Pro Filters, 2 = Adjust (B/C/S), 3 = Eraser, 4 = Tilt & Rotate, 5 = Crop
   int _activeTopTab = 1;
 
   late List<String> _workingPaths;
@@ -2377,8 +3170,18 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
   double _eraserRadiusNorm = 0.035;
   List<List<double>>? _activeEraserPoints;
 
+  // 4-Corner Manual Perspective Crop state (topLeft, topRight, bottomRight, bottomLeft)
+  List<Offset> _cropCorners = [
+    const Offset(0.05, 0.05),
+    const Offset(0.95, 0.05),
+    const Offset(0.95, 0.95),
+    const Offset(0.05, 0.95),
+  ];
+  int? _draggingCornerIndex;
+
   final Map<int, Uint8List> _cachedBasePreviewRgba = {};
   final Map<int, List<int>> _cachedBasePreviewWH = {};
+  final Map<int, PrecomputedBgMap> _cachedBgMaps = {};
   final Map<int, ui.Image> _renderedPreviewImages = {};
   int _renderRequestToken = 0;
 
@@ -2387,7 +3190,7 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
     super.initState();
     _workingPaths = List<String>.from(widget.rawImagePaths);
     _pageFilterSelections = {for (var i = 0; i < widget.rawImagePaths.length; i++) i: widget.initialFilterId};
-    _pageFilterIntensities = {for (var i = 0; i < widget.rawImagePaths.length; i++) i: 0.62};
+    _pageFilterIntensities = {for (var i = 0; i < widget.rawImagePaths.length; i++) i: 0.65};
     _pageBrightness = {for (var i = 0; i < widget.rawImagePaths.length; i++) i: 0.0};
     _pageContrast = {for (var i = 0; i < widget.rawImagePaths.length; i++) i: 1.0};
     _pageSharpness = {for (var i = 0; i < widget.rawImagePaths.length; i++) i: 0.60};
@@ -2403,11 +3206,12 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
     }
     _renderedPreviewImages.clear();
     _cachedBasePreviewRgba.clear();
+    _cachedBgMaps.clear();
     super.dispose();
   }
 
   DocFilterPreset get _currentPreset => kDocFilters.firstWhere((f) => f.id == (_pageFilterSelections[_curPageIndex] ?? 'magic_pro'), orElse: () => kDocFilters[1]);
-  double get _currentIntensity => _pageFilterIntensities[_curPageIndex] ?? 0.62;
+  double get _currentIntensity => _pageFilterIntensities[_curPageIndex] ?? 0.65;
   double get _currentBrightness => _pageBrightness[_curPageIndex] ?? 0.0;
   double get _currentContrast => _pageContrast[_curPageIndex] ?? 1.0;
   double get _currentSharpness => _pageSharpness[_curPageIndex] ?? 0.60;
@@ -2419,31 +3223,45 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) => oldImg.dispose());
   }
 
+  Future<void> _ensureBaseDimensionsLoaded(int pageIdx) async {
+    if (_cachedBasePreviewWH.containsKey(pageIdx)) return;
+    final dims = await ProDocImageProcessor.readImageDimensions(_workingPaths[pageIdx]);
+    if (dims != null && mounted) {
+      setState(() => _cachedBasePreviewWH[pageIdx] = dims);
+    }
+  }
+
   Future<void> _renderCurrentPagePreview() async {
     final int pageIdx = _curPageIndex;
     final int token = ++_renderRequestToken;
     final String filterId = _pageFilterSelections[pageIdx] ?? 'magic_pro';
-    final double intensity = _pageFilterIntensities[pageIdx] ?? 0.62;
+    final double intensity = _pageFilterIntensities[pageIdx] ?? 0.65;
     final double brightness = _pageBrightness[pageIdx] ?? 0.0;
     final double contrast = _pageContrast[pageIdx] ?? 1.0;
     final double sharpness = _pageSharpness[pageIdx] ?? 0.60;
     final List<Map<String, dynamic>> strokes = _pageEraserStrokes[pageIdx] ?? const [];
 
-    final bool hasAdjustments = brightness.abs() > 0.01 || (contrast - 1.0).abs() > 0.01 || strokes.isNotEmpty;
+    final bool hasAdjustments = brightness.abs() > 0.01 ||
+        (contrast - 1.0).abs() > 0.01 ||
+        (sharpness - 0.60).abs() > 0.02 ||
+        strokes.isNotEmpty;
+
     if (filterId == 'original' && !hasAdjustments) {
       final oldImg = _renderedPreviewImages.remove(pageIdx);
       if (mounted) setState(() => _isRenderingPreview = false);
       _disposeOldPreviewSafely(oldImg);
+      await _ensureBaseDimensionsLoaded(pageIdx);
       return;
     }
     if (mounted) setState(() => _isRenderingPreview = true);
 
     if (!_cachedBasePreviewRgba.containsKey(pageIdx)) {
       final wh = [0, 0];
-      final rgba = await ProDocImageProcessor.decodeImageToRgba(_workingPaths[pageIdx], maxDimension: 900, outWidthHeight: wh);
+      final rgba = await ProDocImageProcessor.decodeImageToRgba(_workingPaths[pageIdx], maxDimension: 650, outWidthHeight: wh);
       if (rgba != null) {
         _cachedBasePreviewRgba[pageIdx] = rgba;
         _cachedBasePreviewWH[pageIdx] = wh;
+        _cachedBgMaps[pageIdx] = await ProDocImageProcessor.computeBgMap(rgba, wh[0], wh[1]);
       }
     }
     final baseRgba = _cachedBasePreviewRgba[pageIdx];
@@ -2463,6 +3281,7 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
       contrast: contrast,
       sharpness: sharpness,
       eraserStrokes: strokes,
+      cachedBg: _cachedBgMaps[pageIdx],
     );
     if (!mounted || token != _renderRequestToken) return;
 
@@ -2513,10 +3332,13 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
     if (detectedAngle.abs() > 0.4) {
       final straightened = await AIDeskewEngine.rotateAndDeskewImage(curImg, -detectedAngle);
       _cachedBasePreviewRgba.remove(_curPageIndex);
+      _cachedBasePreviewWH.remove(_curPageIndex);
+      _cachedBgMaps.remove(_curPageIndex);
       final oldImg = _renderedPreviewImages.remove(_curPageIndex);
       setState(() {
         _workingPaths[_curPageIndex] = straightened;
         _pageDeskewAngles[_curPageIndex] = 0.0;
+        _pageEraserStrokes[_curPageIndex] = [];
         _isSaving = false;
       });
       _disposeOldPreviewSafely(oldImg);
@@ -2535,11 +3357,45 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
     if (!await scansDir.exists()) await scansDir.create(recursive: true);
     final rotatedPath = await ProDocImageProcessor.rotateImage90Fast(_workingPaths[_curPageIndex], '${scansDir.path}/rot_${DateTime.now().millisecondsSinceEpoch}.jpg');
     _cachedBasePreviewRgba.remove(_curPageIndex);
+    _cachedBasePreviewWH.remove(_curPageIndex);
+    _cachedBgMaps.remove(_curPageIndex);
     final oldImg = _renderedPreviewImages.remove(_curPageIndex);
     if (mounted) {
       setState(() {
         _workingPaths[_curPageIndex] = rotatedPath;
         _pageEraserStrokes[_curPageIndex] = [];
+        _isSaving = false;
+      });
+      _disposeOldPreviewSafely(oldImg);
+      _renderCurrentPagePreview();
+    }
+  }
+
+  Future<void> _applyManualPerspectiveCrop() async {
+    setState(() => _isSaving = true);
+    final appDir = await getApplicationDocumentsDirectory();
+    final scansDir = Directory('${appDir.path}/scans');
+    if (!await scansDir.exists()) await scansDir.create(recursive: true);
+    final croppedPath = await ProDocImageProcessor.perspectiveCropImage(
+      _workingPaths[_curPageIndex],
+      _cropCorners,
+      '${scansDir.path}/crop_${DateTime.now().millisecondsSinceEpoch}.jpg',
+    );
+    _cachedBasePreviewRgba.remove(_curPageIndex);
+    _cachedBasePreviewWH.remove(_curPageIndex);
+    _cachedBgMaps.remove(_curPageIndex);
+    final oldImg = _renderedPreviewImages.remove(_curPageIndex);
+    if (mounted) {
+      setState(() {
+        _workingPaths[_curPageIndex] = croppedPath;
+        _pageEraserStrokes[_curPageIndex] = [];
+        _cropCorners = [
+          const Offset(0.05, 0.05),
+          const Offset(0.95, 0.05),
+          const Offset(0.95, 0.95),
+          const Offset(0.05, 0.95),
+        ];
+        _activeTopTab = 1;
         _isSaving = false;
       });
       _disposeOldPreviewSafely(oldImg);
@@ -2561,7 +3417,7 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
       enhancedPaths.add(await ProDocImageProcessor.processAndSaveHighRes(
         sourcePath: sourceImg,
         filterId: _pageFilterSelections[i] ?? 'magic_pro',
-        intensity: _pageFilterIntensities[i] ?? 0.62,
+        intensity: _pageFilterIntensities[i] ?? 0.65,
         outputPath: outPath,
         brightness: _pageBrightness[i] ?? 0.0,
         contrast: _pageContrast[i] ?? 1.0,
@@ -2608,9 +3464,11 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
                       const SizedBox(width: 8),
                       _buildTopPill('Pro Filters', Icons.auto_fix_high_rounded, _activeTopTab == 1, () => setState(() => _activeTopTab = 1)),
                       const SizedBox(width: 8),
+                      _buildTopPill('Crop', Icons.crop_rounded, _activeTopTab == 5, () async { await _ensureBaseDimensionsLoaded(_curPageIndex); setState(() => _activeTopTab = 5); }),
+                      const SizedBox(width: 8),
                       _buildTopPill('Adjust', Icons.tune_rounded, _activeTopTab == 2, () => setState(() => _activeTopTab = 2)),
                       const SizedBox(width: 8),
-                      _buildTopPill('Eraser', Icons.cleaning_services_rounded, _activeTopTab == 3, () => setState(() => _activeTopTab = 3)),
+                      _buildTopPill('Eraser', Icons.cleaning_services_rounded, _activeTopTab == 3, () async { await _ensureBaseDimensionsLoaded(_curPageIndex); setState(() => _activeTopTab = 3); }),
                       const SizedBox(width: 8),
                       _buildTopPill('Tilt & Rotate', Icons.crop_rotate_rounded, _activeTopTab == 4, () => setState(() => _activeTopTab = 4)),
                     ],
@@ -2623,7 +3481,7 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
                       Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                         child: Transform.rotate(
-                          angle: _currentTiltAngle * pi / 180,
+                          angle: _activeTopTab == 5 ? 0.0 : (_currentTiltAngle * pi / 180),
                           child: LayoutBuilder(
                             builder: (ctx, box) {
                               final double aspect = (wh != null && wh[1] > 0) ? (wh[0] / wh[1]) : 0.72;
@@ -2635,10 +3493,48 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
                               }
                               final Widget docImageWidget = ClipRRect(
                                 borderRadius: BorderRadius.circular(10),
-                                child: (_showOriginalHold || (activePreset.id == 'original' && previewUiImg == null) || previewUiImg == null)
+                                child: (_activeTopTab == 5 || _showOriginalHold || (activePreset.id == 'original' && previewUiImg == null) || previewUiImg == null)
                                     ? Image.file(curImg, fit: BoxFit.contain)
                                     : RawImage(image: previewUiImg, fit: BoxFit.contain),
                               );
+
+                              if (_activeTopTab == 5) {
+                                return SizedBox(
+                                  width: dispW,
+                                  height: dispH,
+                                  child: GestureDetector(
+                                    onPanStart: (d) {
+                                      final pos = d.localPosition;
+                                      int? bestIdx;
+                                      double bestDist = 42.0;
+                                      for (int i = 0; i < 4; i++) {
+                                        final pt = Offset(_cropCorners[i].dx * dispW, _cropCorners[i].dy * dispH);
+                                        final dist = (pt - pos).distance;
+                                        if (dist < bestDist) {
+                                          bestDist = dist;
+                                          bestIdx = i;
+                                        }
+                                      }
+                                      setState(() => _draggingCornerIndex = bestIdx);
+                                    },
+                                    onPanUpdate: (d) {
+                                      final idx = _draggingCornerIndex;
+                                      if (idx == null) return;
+                                      final nx = (d.localPosition.dx / dispW).clamp(0.0, 1.0);
+                                      final ny = (d.localPosition.dy / dispH).clamp(0.0, 1.0);
+                                      setState(() => _cropCorners[idx] = Offset(nx, ny));
+                                    },
+                                    onPanEnd: (_) => setState(() => _draggingCornerIndex = null),
+                                    child: Stack(
+                                      fit: StackFit.expand,
+                                      children: [
+                                        docImageWidget,
+                                        CustomPaint(painter: _CropQuadPainter(corners: _cropCorners)),
+                                      ],
+                                    ),
+                                  ),
+                                );
+                              }
 
                               if (_activeTopTab != 3) return docImageWidget;
 
@@ -2649,17 +3545,13 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
                                   onPanStart: (d) {
                                     final nx = (d.localPosition.dx / dispW).clamp(0.0, 1.0);
                                     final ny = (d.localPosition.dy / dispH).clamp(0.0, 1.0);
-                                    setState(() {
-                                      _activeEraserPoints = [[nx, ny]];
-                                    });
+                                    setState(() => _activeEraserPoints = [[nx, ny]]);
                                   },
                                   onPanUpdate: (d) {
                                     if (_activeEraserPoints == null) return;
                                     final nx = (d.localPosition.dx / dispW).clamp(0.0, 1.0);
                                     final ny = (d.localPosition.dy / dispH).clamp(0.0, 1.0);
-                                    setState(() {
-                                      _activeEraserPoints!.add([nx, ny]);
-                                    });
+                                    setState(() => _activeEraserPoints!.add([nx, ny]));
                                   },
                                   onPanEnd: (_) {
                                     if (_activeEraserPoints != null && _activeEraserPoints!.isNotEmpty) {
@@ -2706,7 +3598,37 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
                     ],
                   ),
                 ),
-                if (_activeTopTab == 4)
+                if (_activeTopTab == 5)
+                  Container(
+                    color: const Color(0xFF1F2229),
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Expanded(child: Text('Drag 4 green corners to document edges', style: TextStyle(color: Colors.white70, fontSize: 11))),
+                        TextButton.icon(
+                          icon: const Icon(Icons.refresh_rounded, size: 16, color: Colors.white70),
+                          label: const Text('Reset', style: TextStyle(color: Colors.white70, fontSize: 12)),
+                          onPressed: () => setState(() {
+                            _cropCorners = [
+                              const Offset(0.05, 0.05),
+                              const Offset(0.95, 0.05),
+                              const Offset(0.95, 0.95),
+                              const Offset(0.05, 0.95),
+                            ];
+                          }),
+                        ),
+                        const SizedBox(width: 8),
+                        ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF2E7D32), foregroundColor: Colors.white),
+                          icon: const Icon(Icons.check_rounded, size: 17),
+                          label: const Text('Apply Crop', style: TextStyle(fontSize: 12)),
+                          onPressed: _applyManualPerspectiveCrop,
+                        ),
+                      ],
+                    ),
+                  )
+                else if (_activeTopTab == 4)
                   Container(
                     color: const Color(0xFF1F2229),
                     padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -2844,7 +3766,7 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
                       itemBuilder: (ctx, idx) {
                         final isSelectedPage = _curPageIndex == idx;
                         return GestureDetector(
-                          onTap: () { setState(() { _curPageIndex = idx; _showOriginalHold = false; }); _renderCurrentPagePreview(); },
+                          onTap: () { setState(() { _curPageIndex = idx; _showOriginalHold = false; _activeEraserPoints = null; }); _renderCurrentPagePreview(); },
                           child: Container(
                             width: 50,
                             margin: const EdgeInsets.only(right: 10),
@@ -2890,6 +3812,39 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
       child: Container(padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6), decoration: BoxDecoration(color: isSelected ? const Color(0xFFA5D6A7) : const Color(0xFF26282E), borderRadius: BorderRadius.circular(20)), child: Row(mainAxisSize: MainAxisSize.min, children: [Icon(icon, size: 15, color: isSelected ? const Color(0xFF0A3D14) : Colors.white), const SizedBox(width: 4), Text(title, style: TextStyle(color: isSelected ? const Color(0xFF0A3D14) : Colors.white, fontWeight: isSelected ? FontWeight.bold : FontWeight.normal, fontSize: 11))])),
     );
   }
+}
+
+class _CropQuadPainter extends CustomPainter {
+  final List<Offset> corners;
+  _CropQuadPainter({required this.corners});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (corners.length != 4) return;
+    final pts = corners.map((c) => Offset(c.dx * size.width, c.dy * size.height)).toList();
+    final path = Path()
+      ..moveTo(pts[0].dx, pts[0].dy)
+      ..lineTo(pts[1].dx, pts[1].dy)
+      ..lineTo(pts[2].dx, pts[2].dy)
+      ..lineTo(pts[3].dx, pts[3].dy)
+      ..close();
+
+    final linePaint = Paint()
+      ..color = Colors.greenAccent
+      ..strokeWidth = 2.5
+      ..style = PaintingStyle.stroke;
+    canvas.drawPath(path, linePaint);
+
+    final fillPaint = Paint()..color = Colors.greenAccent;
+    final borderPaint = Paint()..color = Colors.white..strokeWidth = 2.0..style = PaintingStyle.stroke;
+    for (final pt in pts) {
+      canvas.drawCircle(pt, 10, fillPaint);
+      canvas.drawCircle(pt, 10, borderPaint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _CropQuadPainter oldDelegate) => true;
 }
 
 class _LiveEraserStrokePainter extends CustomPainter {
@@ -2943,6 +3898,7 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
   late List<String> _originalImages;
   late String _title;
   late String _folder;
+  late List<String> _localFolders;
   bool _isSelectionMode = false;
   final List<int> _selectedIndicesOrder = [];
 
@@ -2953,6 +3909,8 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
     _originalImages = List<String>.from(widget.doc['originalImages'] ?? widget.doc['images'] ?? []);
     _title = widget.doc['title'] ?? 'Document';
     _folder = widget.doc['category'] ?? 'General';
+    _localFolders = List<String>.from(widget.userFolders);
+    if (!_localFolders.contains(_folder)) _localFolders.add(_folder);
   }
 
   void _syncDocChanges() {
@@ -2994,8 +3952,6 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
   }
 
   void _changeFolderDialog() {
-    final List<String> folders = List<String>.from(widget.userFolders);
-    if (!folders.contains(_folder)) folders.add(_folder);
     String chosen = _folder;
     final newFolderCtrl = TextEditingController();
 
@@ -3008,9 +3964,9 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              DropdownButtonFormField<String>(value: chosen, decoration: const InputDecoration(labelText: 'Select Folder', border: OutlineInputBorder()), items: folders.map((f) => DropdownMenuItem(value: f, child: Text(f))).toList(), onChanged: (v) { if (v != null) setDState(() => chosen = v); }),
+              DropdownButtonFormField<String>(value: chosen, decoration: const InputDecoration(labelText: 'Select Folder', border: OutlineInputBorder()), items: _localFolders.map((f) => DropdownMenuItem(value: f, child: Text(f))).toList(), onChanged: (v) { if (v != null) setDState(() => chosen = v); }),
               const SizedBox(height: 10),
-              Row(children: [Expanded(child: TextField(controller: newFolderCtrl, decoration: const InputDecoration(labelText: 'Or New Folder', border: OutlineInputBorder(), isDense: true))), const SizedBox(width: 8), ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white), onPressed: () async { final created = await widget.onCreateFolder(newFolderCtrl.text); if (created != null) setDState(() { if (!folders.contains(created)) folders.add(created); chosen = created; newFolderCtrl.clear(); }); }, child: const Text('Add'))]),
+              Row(children: [Expanded(child: TextField(controller: newFolderCtrl, decoration: const InputDecoration(labelText: 'Or New Folder', border: OutlineInputBorder(), isDense: true))), const SizedBox(width: 8), ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white), onPressed: () async { final created = await widget.onCreateFolder(newFolderCtrl.text); if (created != null) setDState(() { if (!_localFolders.contains(created)) _localFolders.add(created); chosen = created; newFolderCtrl.clear(); }); }, child: const Text('Add'))]),
             ],
           ),
           actions: [
@@ -3102,7 +4058,7 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
 
   void _sendPagesToNewDocInFolderDialog(List<int> indices) {
     final nameCtrl = TextEditingController(text: '${_title}_Part_${DateFormat('HHmm').format(DateTime.now())}');
-    String targetFolder = widget.userFolders.isNotEmpty ? widget.userFolders.first : 'General';
+    String targetFolder = _localFolders.isNotEmpty ? _localFolders.first : 'General';
     bool removeFromSource = true;
 
     showDialog(
@@ -3116,7 +4072,7 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
             children: [
               TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'New Document Name', border: OutlineInputBorder())),
               const SizedBox(height: 10),
-              DropdownButtonFormField<String>(value: targetFolder, decoration: const InputDecoration(labelText: 'Target Folder', border: OutlineInputBorder()), items: widget.userFolders.map((f) => DropdownMenuItem(value: f, child: Text(f))).toList(), onChanged: (v) { if (v != null) targetFolder = v; }),
+              DropdownButtonFormField<String>(value: targetFolder, decoration: const InputDecoration(labelText: 'Target Folder', border: OutlineInputBorder()), items: _localFolders.map((f) => DropdownMenuItem(value: f, child: Text(f))).toList(), onChanged: (v) { if (v != null) targetFolder = v; }),
               CheckboxListTile(contentPadding: EdgeInsets.zero, title: const Text('Remove from current document (Move)', style: TextStyle(fontSize: 12)), value: removeFromSource, onChanged: (v) => setDState(() => removeFromSource = v ?? true)),
             ],
           ),
@@ -3172,6 +4128,20 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
     );
   }
 
+  Future<void> _scanWithMlKitAndAppend() async {
+    final scanner = DocumentScanner(options: DocumentScannerOptions(documentFormat: DocumentFormat.jpeg, mode: ScannerMode.base, isGalleryImport: true, pageLimit: 20));
+    try {
+      final res = await scanner.scanDocument();
+      if (mounted && res.images.isNotEmpty) {
+        await _appendNewImagesThroughFilter(res.images);
+      }
+    } catch (e) {
+      debugPrint("Add page err: $e");
+    } finally {
+      await scanner.close();
+    }
+  }
+
   Future<void> _addMorePagesSheet() async {
     showModalBottomSheet(
       context: context,
@@ -3184,8 +4154,33 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
             children: [
               const Text('Add More Pages', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
               const SizedBox(height: 12),
-              ListTile(leading: const CircleAvatar(backgroundColor: Color(0xFFE0F7FA), child: Icon(Icons.photo_library_rounded, color: Color(0xFF00B4D8))), title: const Text('Import from Gallery'), subtitle: const Text('Open phone gallery directly'), onTap: () async { Navigator.pop(ctx); final picked = await ImagePicker().pickMultiImage(); if (picked.isNotEmpty) _appendNewImagesThroughFilter(picked.map((x) => x.path).toList()); }),
-              ListTile(leading: const CircleAvatar(backgroundColor: Color(0xFFE8F5E9), child: Icon(Icons.camera_alt_rounded, color: Color(0xFF2E7D32))), title: const Text('Scan from Camera'), subtitle: const Text('Capture new pages'), onTap: () async { Navigator.pop(ctx); try { final res = await DocumentScanner(options: DocumentScannerOptions(documentFormat: DocumentFormat.jpeg, mode: ScannerMode.base, isGalleryImport: true, pageLimit: 20)).scanDocument(); if (res.images.isNotEmpty) _appendNewImagesThroughFilter(res.images); } catch (e) { debugPrint("Add page err: $e"); } }),
+              ListTile(
+                leading: const CircleAvatar(backgroundColor: Color(0xFFE0F7FA), child: Icon(Icons.photo_library_rounded, color: Color(0xFF00B4D8))),
+                title: const Text('Import from Gallery'),
+                subtitle: const Text('Open phone gallery directly'),
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  final picked = await ImagePicker().pickMultiImage();
+                  if (mounted && picked.isNotEmpty) {
+                    await _appendNewImagesThroughFilter(picked.map((x) => x.path).toList());
+                  }
+                },
+              ),
+              ListTile(
+                leading: const CircleAvatar(backgroundColor: Color(0xFFE8F5E9), child: Icon(Icons.camera_alt_rounded, color: Color(0xFF2E7D32))),
+                title: const Text('Scan from Camera'),
+                subtitle: const Text('Capture new pages (Flash & Front/Back)'),
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  final captured = await Navigator.push<List<String>>(
+                    context,
+                    MaterialPageRoute(builder: (_) => ProCameraScannerScreen(pageLimit: 20, onSwitchToMlKitAutoScan: _scanWithMlKitAndAppend)),
+                  );
+                  if (mounted && captured != null && captured.isNotEmpty) {
+                    await _appendNewImagesThroughFilter(captured);
+                  }
+                },
+              ),
             ],
           ),
         ),
@@ -3368,7 +4363,12 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
                           decoration: BoxDecoration(borderRadius: BorderRadius.circular(10), border: Border.all(color: isSelected ? appPrimaryColor.value : Colors.grey.shade300, width: isSelected ? 3 : 1)),
                           child: Stack(
                             children: [
-                              Positioned.fill(child: ClipRRect(borderRadius: BorderRadius.circular(8), child: file.existsSync() ? Image.file(file, fit: BoxFit.cover, cacheWidth: 260) : Container(color: Colors.grey.shade200))),
+                              Positioned.fill(
+                                child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(8),
+                                  child: Image.file(file, fit: BoxFit.cover, cacheWidth: 260, errorBuilder: (_, __, ___) => Container(color: Colors.grey.shade200)),
+                                ),
+                              ),
                               Positioned(top: 4, left: 4, child: Container(padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2), decoration: BoxDecoration(color: Colors.black.withOpacity(0.7), borderRadius: BorderRadius.circular(4)), child: Text('P${idx + 1}', style: const TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold)))),
                               if (_isSelectionMode) Positioned(top: 4, right: 4, child: isSelected ? CircleAvatar(radius: 12, backgroundColor: appPrimaryColor.value, child: Text('#${orderPos + 1}', style: const TextStyle(color: Colors.white, fontSize: 9.5, fontWeight: FontWeight.bold))) : const Icon(Icons.circle_outlined, color: Colors.white, size: 24)),
                             ],
@@ -3489,7 +4489,18 @@ class _FullScreenPhotoViewerState extends State<FullScreenPhotoViewer> {
             onPageChanged: (i) => setState(() => _curPage = i),
             itemBuilder: (ctx, i) {
               final file = File(_localImages[i]);
-              return InteractiveViewer(panEnabled: true, minScale: 0.8, maxScale: 5.0, child: Center(child: file.existsSync() ? Image.file(file, fit: BoxFit.contain) : const Text('Image file not found', style: TextStyle(color: Colors.white))));
+              return InteractiveViewer(
+                panEnabled: true,
+                minScale: 0.8,
+                maxScale: 5.0,
+                child: Center(
+                  child: Image.file(
+                    file,
+                    fit: BoxFit.contain,
+                    errorBuilder: (_, __, ___) => const Text('Image file not found', style: TextStyle(color: Colors.white)),
+                  ),
+                ),
+              );
             },
           ),
           if (_isRotating) const Center(child: CircularProgressIndicator(color: Colors.greenAccent)),
@@ -3515,6 +4526,84 @@ class _FullScreenPhotoViewerState extends State<FullScreenPhotoViewer> {
 }
 // ==================== PART 3 END ====================
 // ==================== PART 4 START ====================
+// HELPER FOR HINDI / UNICODE / RUPEE SYMBOL PDF RENDERING (NO EXTRA FONT ASSET NEEDED)
+class _UnicodePdfHelper {
+  static bool hasNonAscii(String s) => s.runes.any((r) => r > 127);
+
+  static Future<Uint8List> renderLinesToA4Png({
+    required List<Map<String, dynamic>> blocks,
+    bool landscape = false,
+  }) async {
+    final double pageW = landscape ? 1754.0 : 1240.0;
+    final double pageH = landscape ? 1240.0 : 1754.0;
+    const double pad = 80.0;
+
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder, Rect.fromLTWH(0, 0, pageW, pageH));
+    canvas.drawRect(Rect.fromLTWH(0, 0, pageW, pageH), Paint()..color = Colors.white);
+
+    double y = pad;
+    for (final b in blocks) {
+      if (b['divider'] == true) {
+        y += 8;
+        canvas.drawLine(Offset(pad, y), Offset(pageW - pad, y), Paint()..color = const Color(0xFF2E7D32)..strokeWidth = 3);
+        y += 18;
+        continue;
+      }
+      final String text = (b['text'] ?? '').toString();
+      if (text.isEmpty) continue;
+      final double fontSize = (b['size'] as num?)?.toDouble() ?? 26.0;
+      final bool bold = b['bold'] == true;
+      final Color color = (b['color'] as Color?) ?? Colors.black87;
+
+      final tp = TextPainter(
+        text: TextSpan(
+          text: text,
+          style: TextStyle(fontSize: fontSize, fontWeight: bold ? FontWeight.bold : FontWeight.normal, color: color, height: 1.4),
+        ),
+        textDirection: ui.TextDirection.ltr,
+      )..layout(maxWidth: pageW - pad * 2);
+
+      if (y + tp.height > pageH - pad) break;
+      tp.paint(canvas, Offset(pad, y));
+      y += tp.height + ((b['space'] as num?)?.toDouble() ?? 14.0);
+    }
+
+    final pic = recorder.endRecording();
+    final imgUi = await pic.toImage(pageW.toInt(), pageH.toInt());
+    final data = await imgUi.toByteData(format: ui.ImageByteFormat.png);
+    imgUi.dispose();
+    pic.dispose();
+    return data!.buffer.asUint8List();
+  }
+
+  static Future<Uint8List> renderRotatedWatermarkPng(String text) async {
+    const double size = 900.0;
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder, const Rect.fromLTWH(0, 0, size, size));
+    canvas.save();
+    canvas.translate(size / 2, size / 2);
+    canvas.rotate(-0.6);
+    final tp = TextPainter(
+      text: TextSpan(
+        text: text,
+        style: TextStyle(fontSize: 82, fontWeight: FontWeight.bold, color: Colors.black.withOpacity(0.22)),
+      ),
+      textAlign: TextAlign.center,
+      textDirection: ui.TextDirection.ltr,
+    )..layout(maxWidth: size * 0.9);
+    tp.paint(canvas, Offset(-tp.width / 2, -tp.height / 2));
+    canvas.restore();
+
+    final pic = recorder.endRecording();
+    final imgUi = await pic.toImage(size.toInt(), size.toInt());
+    final data = await imgUi.toByteData(format: ui.ImageByteFormat.png);
+    imgUi.dispose();
+    pic.dispose();
+    return data!.buffer.asUint8List();
+  }
+}
+
 // 6. PASSPORT PHOTO STUDIO
 class PassportPhotoStudioScreen extends StatefulWidget {
   const PassportPhotoStudioScreen({super.key});
@@ -3533,9 +4622,24 @@ class _PassportPhotoStudioScreenState extends State<PassportPhotoStudioScreen> {
     if (x != null && mounted) setState(() => _photoPath = x.path);
   }
 
+  Future<void> _scanPhotoMlKit() async {
+    final scanner = DocumentScanner(options: DocumentScannerOptions(documentFormat: DocumentFormat.jpeg, mode: ScannerMode.base, isGalleryImport: true, pageLimit: 1));
+    try {
+      final res = await scanner.scanDocument();
+      if (res.images.isNotEmpty && mounted) setState(() => _photoPath = res.images.first);
+    } finally {
+      await scanner.close();
+    }
+  }
+
   Future<void> _scanPhotoCamera() async {
-    final res = await DocumentScanner(options: DocumentScannerOptions(documentFormat: DocumentFormat.jpeg, mode: ScannerMode.base, isGalleryImport: true, pageLimit: 1)).scanDocument();
-    if (res.images.isNotEmpty && mounted) setState(() => _photoPath = res.images.first);
+    final captured = await Navigator.push<List<String>>(
+      context,
+      MaterialPageRoute(builder: (_) => ProCameraScannerScreen(pageLimit: 1, onSwitchToMlKitAutoScan: _scanPhotoMlKit)),
+    );
+    if (captured != null && captured.isNotEmpty && mounted) {
+      setState(() => _photoPath = captured.first);
+    }
   }
 
   Future<void> _exportPassportSheet() async {
@@ -3548,7 +4652,31 @@ class _PassportPhotoStudioScreenState extends State<PassportPhotoStudioScreen> {
     if (_bgChoice == 'Studio Blue') bgColor = PdfColor.fromInt(0xFFBBDEFB);
     if (_bgChoice == 'Light Grey') bgColor = PdfColor.fromInt(0xFFECEFF1);
 
-    pdf.addPage(pw.Page(pageFormat: PdfPageFormat.a4, build: (_) => pw.Container(padding: const pw.EdgeInsets.all(24), child: pw.Wrap(spacing: 16, runSpacing: 20, children: List.generate(_copies, (_) => pw.Container(width: w, height: h, color: bgColor, padding: const pw.EdgeInsets.all(2), child: pw.Container(decoration: pw.BoxDecoration(border: pw.Border.all(color: PdfColors.grey400, width: 1)), child: pw.Image(passImg, fit: pw.BoxFit.cover))))))));
+    pdf.addPage(
+      pw.Page(
+        pageFormat: PdfPageFormat.a4,
+        build: (_) => pw.Container(
+          padding: const pw.EdgeInsets.all(24),
+          child: pw.Wrap(
+            spacing: 16,
+            runSpacing: 20,
+            children: List.generate(
+              _copies,
+              (_) => pw.Container(
+                width: w,
+                height: h,
+                color: bgColor,
+                padding: const pw.EdgeInsets.all(2),
+                child: pw.Container(
+                  decoration: pw.BoxDecoration(border: pw.Border.all(color: PdfColors.grey400, width: 1)),
+                  child: pw.ClipRect(child: pw.Image(passImg, fit: pw.BoxFit.cover)),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
     final file = File("${(await getTemporaryDirectory()).path}/Passport_Sheet_${_copies}_Prints.pdf");
     await file.writeAsBytes(await pdf.save());
     await Share.shareXFiles([XFile(file.path)], text: 'Passport Photos Print Sheet');
@@ -3656,7 +4784,24 @@ class _DigitalSignatureScreenState extends State<DigitalSignatureScreen> {
               ],
             ),
           ),
-          Expanded(child: GestureDetector(onPanStart: (d) => setState(() => _strokes.add([d.localPosition])), onPanUpdate: (d) => setState(() => _strokes.last.add(d.localPosition)), child: CustomPaint(painter: _SignPainter(_strokes, _inkColor, _strokeWidth), size: Size.infinite))),
+          Expanded(
+            child: Container(
+              margin: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.grey.shade300),
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: GestureDetector(
+                  onPanStart: (d) => setState(() => _strokes.add([d.localPosition])),
+                  onPanUpdate: (d) => setState(() => _strokes.last.add(d.localPosition)),
+                  child: CustomPaint(painter: _SignPainter(_strokes, _inkColor, _strokeWidth), size: Size.infinite),
+                ),
+              ),
+            ),
+          ),
           Padding(padding: const EdgeInsets.all(16), child: SizedBox(width: double.infinity, height: 48, child: ElevatedButton.icon(style: ElevatedButton.styleFrom(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white), icon: const Icon(Icons.download_rounded), label: const Text('Export Transparent PNG Sign'), onPressed: _strokes.isEmpty ? null : _exportSignaturePng))),
         ],
       ),
@@ -3715,29 +4860,51 @@ class _InvoiceMakerProScreenState extends State<InvoiceMakerProScreen> {
     double subtotal = _items.fold(0.0, (s, i) => s + ((i['price'] as double) * (i['qty'] as int)));
     double gstAmount = subtotal * _gstRate;
     double grandTotal = subtotal + gstAmount;
-    pdf.addPage(
-      pw.Page(
-        pageFormat: PdfPageFormat.a4,
-        build: (_) => pw.Padding(
-          padding: const pw.EdgeInsets.all(28),
-          child: pw.Column(
-            crossAxisAlignment: pw.CrossAxisAlignment.start,
-            children: [
-              pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [pw.Text('TAX INVOICE', style: pw.TextStyle(fontSize: 22, fontWeight: pw.FontWeight.bold, color: PdfColors.green800)), pw.Text('Invoice #: ${_invNumCtrl.text}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold))]),
-              pw.SizedBox(height: 6),
-              pw.Text('Seller: ${_sellerCtrl.text}'),
-              pw.Text('Billed To: ${_clientCtrl.text}'),
-              pw.Text('Date: ${DateFormat('dd MMM yyyy').format(DateTime.now())}'),
-              pw.Divider(thickness: 1.5, color: PdfColors.green800),
-              pw.SizedBox(height: 10),
-              pw.TableHelper.fromTextArray(headers: ['Item / Service', 'Qty', 'Rate (INR)', 'Total (INR)'], data: _items.map((it) => [it['name'], '${it['qty']}', '${it['price']}', '${(it['price'] * it['qty']).toStringAsFixed(2)}']).toList()),
-              pw.SizedBox(height: 16),
-              pw.Align(alignment: pw.Alignment.centerRight, child: pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.end, children: [pw.Text('Subtotal: INR ${subtotal.toStringAsFixed(2)}'), pw.Text('GST (${(_gstRate * 100).toInt()}%): INR ${gstAmount.toStringAsFixed(2)}'), pw.Divider(), pw.Text('Grand Total: INR ${grandTotal.toStringAsFixed(2)}', style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold, color: PdfColors.green800))])),
-            ],
+    final String allText = '${_sellerCtrl.text} ${_clientCtrl.text} ${_invNumCtrl.text} ${_items.map((e) => e['name']).join(' ')}';
+
+    if (_UnicodePdfHelper.hasNonAscii(allText)) {
+      final blocks = <Map<String, dynamic>>[
+        {'text': 'TAX INVOICE (${_invNumCtrl.text})', 'size': 40.0, 'bold': true, 'color': const Color(0xFF2E7D32), 'space': 16.0},
+        {'text': 'Seller: ${_sellerCtrl.text}', 'size': 26.0},
+        {'text': 'Billed To: ${_clientCtrl.text}', 'size': 26.0},
+        {'text': 'Date: ${DateFormat('dd MMM yyyy').format(DateTime.now())}', 'size': 24.0, 'color': Colors.grey.shade700},
+        {'divider': true},
+        ..._items.map((it) => {
+          'text': '• ${it['name']}  |  Qty: ${it['qty']} × ₹${it['price']}  =  ₹${(it['price'] * it['qty']).toStringAsFixed(2)}',
+          'size': 25.0,
+        }),
+        {'divider': true},
+        {'text': 'Subtotal: ₹${subtotal.toStringAsFixed(2)}', 'size': 26.0},
+        {'text': 'GST (${(_gstRate * 100).toInt()}%): ₹${gstAmount.toStringAsFixed(2)}', 'size': 26.0},
+        {'text': 'Grand Total: ₹${grandTotal.toStringAsFixed(2)}', 'size': 32.0, 'bold': true, 'color': const Color(0xFF2E7D32)},
+      ];
+      final pngBytes = await _UnicodePdfHelper.renderLinesToA4Png(blocks: blocks);
+      pdf.addPage(pw.Page(pageFormat: PdfPageFormat.a4, margin: pw.EdgeInsets.zero, build: (_) => pw.Image(pw.MemoryImage(pngBytes), fit: pw.BoxFit.contain)));
+    } else {
+      pdf.addPage(
+        pw.Page(
+          pageFormat: PdfPageFormat.a4,
+          build: (_) => pw.Padding(
+            padding: const pw.EdgeInsets.all(28),
+            child: pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [pw.Text('TAX INVOICE', style: pw.TextStyle(fontSize: 22, fontWeight: pw.FontWeight.bold, color: PdfColors.green800)), pw.Text('Invoice #: ${_invNumCtrl.text}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold))]),
+                pw.SizedBox(height: 6),
+                pw.Text('Seller: ${_sellerCtrl.text}'),
+                pw.Text('Billed To: ${_clientCtrl.text}'),
+                pw.Text('Date: ${DateFormat('dd MMM yyyy').format(DateTime.now())}'),
+                pw.Divider(thickness: 1.5, color: PdfColors.green800),
+                pw.SizedBox(height: 10),
+                pw.TableHelper.fromTextArray(headers: ['Item / Service', 'Qty', 'Rate (INR)', 'Total (INR)'], data: _items.map((it) => [it['name'], '${it['qty']}', '${it['price']}', '${(it['price'] * it['qty']).toStringAsFixed(2)}']).toList()),
+                pw.SizedBox(height: 16),
+                pw.Align(alignment: pw.Alignment.centerRight, child: pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.end, children: [pw.Text('Subtotal: INR ${subtotal.toStringAsFixed(2)}'), pw.Text('GST (${(_gstRate * 100).toInt()}%): INR ${gstAmount.toStringAsFixed(2)}'), pw.Divider(), pw.Text('Grand Total: INR ${grandTotal.toStringAsFixed(2)}', style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold, color: PdfColors.green800))])),
+              ],
+            ),
           ),
         ),
-      ),
-    );
+      );
+    }
     final file = File("${(await getTemporaryDirectory()).path}/Tax_Invoice.pdf");
     await file.writeAsBytes(await pdf.save());
     await Share.shareXFiles([XFile(file.path)], text: 'Tax Invoice PDF');
@@ -3770,7 +4937,23 @@ class _InvoiceMakerProScreenState extends State<InvoiceMakerProScreen> {
             const SizedBox(height: 12),
             Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('GST Slab Rate:'), DropdownButton<double>(value: _gstRate, items: const [DropdownMenuItem(value: 0.0, child: Text('0% Exempt')), DropdownMenuItem(value: 0.05, child: Text('5% GST')), DropdownMenuItem(value: 0.12, child: Text('12% GST')), DropdownMenuItem(value: 0.18, child: Text('18% Standard')), DropdownMenuItem(value: 0.28, child: Text('28% Luxury'))], onChanged: (v) { if (v != null) setState(() => _gstRate = v); })]),
             const Divider(),
-            ..._items.map((it) => ListTile(title: Text(it['name']), subtitle: Text('Qty: ${it['qty']} × INR ${it['price']}'), trailing: Text('INR ${(it['qty'] * it['price']).toStringAsFixed(2)}'))),
+            ...List.generate(_items.length, (i) {
+              final it = _items[i];
+              return ListTile(
+                title: Text(it['name']),
+                subtitle: Text('Qty: ${it['qty']} × INR ${it['price']}'),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text('INR ${(it['qty'] * it['price']).toStringAsFixed(2)}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                    IconButton(
+                      icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent, size: 20),
+                      onPressed: () => setState(() => _items.removeAt(i)),
+                    ),
+                  ],
+                ),
+              );
+            }),
             const SizedBox(height: 20),
             ElevatedButton.icon(style: ElevatedButton.styleFrom(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white, minimumSize: const Size.fromHeight(48)), icon: const Icon(Icons.picture_as_pdf), label: const Text('Export Official Tax Invoice PDF'), onPressed: _items.isEmpty ? null : _exportInvoicePdf),
           ],
@@ -3808,7 +4991,25 @@ class _ResumeBuilderScreenState extends State<ResumeBuilderScreen> {
 
   Future<void> _exportCv() async {
     final pdf = pw.Document();
-    pdf.addPage(pw.Page(pageFormat: PdfPageFormat.a4, build: (_) => pw.Padding(padding: const pw.EdgeInsets.all(32), child: pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [pw.Text(_name.text, style: pw.TextStyle(fontSize: 22, fontWeight: pw.FontWeight.bold, color: PdfColors.green800)), pw.Text(_contact.text, style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey700)), pw.Divider(thickness: 1.5, color: PdfColors.green800), pw.SizedBox(height: 8), pw.Text('PROFESSIONAL SUMMARY', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12)), pw.Text(_summary.text, style: const pw.TextStyle(fontSize: 10)), pw.SizedBox(height: 12), pw.Text('WORK EXPERIENCE', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12)), pw.Text(_experience.text, style: const pw.TextStyle(fontSize: 10)), pw.SizedBox(height: 12), pw.Text('EDUCATION', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12)), pw.Text(_education.text, style: const pw.TextStyle(fontSize: 10)), pw.SizedBox(height: 12), pw.Text('KEY SKILLS', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12)), pw.Text(_skills.text, style: const pw.TextStyle(fontSize: 10))]))));
+    final String allText = '${_name.text} ${_contact.text} ${_summary.text} ${_experience.text} ${_education.text} ${_skills.text}';
+    if (_UnicodePdfHelper.hasNonAscii(allText)) {
+      final pngBytes = await _UnicodePdfHelper.renderLinesToA4Png(blocks: [
+        {'text': _name.text, 'size': 44.0, 'bold': true, 'color': const Color(0xFF2E7D32), 'space': 6.0},
+        {'text': _contact.text, 'size': 22.0, 'color': Colors.grey.shade700},
+        {'divider': true},
+        {'text': 'PROFESSIONAL SUMMARY', 'size': 28.0, 'bold': true},
+        {'text': _summary.text, 'size': 24.0, 'space': 22.0},
+        {'text': 'WORK EXPERIENCE', 'size': 28.0, 'bold': true},
+        {'text': _experience.text, 'size': 24.0, 'space': 22.0},
+        {'text': 'EDUCATION', 'size': 28.0, 'bold': true},
+        {'text': _education.text, 'size': 24.0, 'space': 22.0},
+        {'text': 'KEY SKILLS', 'size': 28.0, 'bold': true},
+        {'text': _skills.text, 'size': 24.0},
+      ]);
+      pdf.addPage(pw.Page(pageFormat: PdfPageFormat.a4, margin: pw.EdgeInsets.zero, build: (_) => pw.Image(pw.MemoryImage(pngBytes), fit: pw.BoxFit.contain)));
+    } else {
+      pdf.addPage(pw.Page(pageFormat: PdfPageFormat.a4, build: (_) => pw.Padding(padding: const pw.EdgeInsets.all(32), child: pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [pw.Text(_name.text, style: pw.TextStyle(fontSize: 22, fontWeight: pw.FontWeight.bold, color: PdfColors.green800)), pw.Text(_contact.text, style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey700)), pw.Divider(thickness: 1.5, color: PdfColors.green800), pw.SizedBox(height: 8), pw.Text('PROFESSIONAL SUMMARY', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12)), pw.Text(_summary.text, style: const pw.TextStyle(fontSize: 10)), pw.SizedBox(height: 12), pw.Text('WORK EXPERIENCE', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12)), pw.Text(_experience.text, style: const pw.TextStyle(fontSize: 10)), pw.SizedBox(height: 12), pw.Text('EDUCATION', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12)), pw.Text(_education.text, style: const pw.TextStyle(fontSize: 10)), pw.SizedBox(height: 12), pw.Text('KEY SKILLS', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12)), pw.Text(_skills.text, style: const pw.TextStyle(fontSize: 10))]))));
+    }
     final file = File("${(await getTemporaryDirectory()).path}/Resume_${_name.text.replaceAll(' ', '_')}.pdf");
     await file.writeAsBytes(await pdf.save());
     await Share.shareXFiles([XFile(file.path)], text: 'Professional Resume');
@@ -3859,7 +5060,21 @@ class _PowerPointStudioScreenState extends State<PowerPointStudioScreen> {
     final pdf = pw.Document();
     for (int i = 0; i < _slides.length; i++) {
       final s = _slides[i];
-      pdf.addPage(pw.Page(pageFormat: PdfPageFormat.a4.landscape, build: (_) => pw.Container(padding: const pw.EdgeInsets.all(36), child: pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [pw.Text(s['title'] ?? '', style: pw.TextStyle(fontSize: 26, fontWeight: pw.FontWeight.bold, color: PdfColors.green800)), pw.Text('Slide ${i + 1} of ${_slides.length}', style: const pw.TextStyle(color: PdfColors.grey600))]), pw.Divider(thickness: 2, color: PdfColors.green800), pw.SizedBox(height: 20), pw.Text(s['content'] ?? '', style: const pw.TextStyle(fontSize: 18, lineSpacing: 4))]))));
+      final title = s['title'] ?? '';
+      final content = s['content'] ?? '';
+      if (_UnicodePdfHelper.hasNonAscii('$title $content')) {
+        final pngBytes = await _UnicodePdfHelper.renderLinesToA4Png(
+          landscape: true,
+          blocks: [
+            {'text': '$title   (Slide ${i + 1}/${_slides.length})', 'size': 48.0, 'bold': true, 'color': const Color(0xFF2E7D32)},
+            {'divider': true},
+            {'text': content, 'size': 34.0},
+          ],
+        );
+        pdf.addPage(pw.Page(pageFormat: PdfPageFormat.a4.landscape, margin: pw.EdgeInsets.zero, build: (_) => pw.Image(pw.MemoryImage(pngBytes), fit: pw.BoxFit.contain)));
+      } else {
+        pdf.addPage(pw.Page(pageFormat: PdfPageFormat.a4.landscape, build: (_) => pw.Container(padding: const pw.EdgeInsets.all(36), child: pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [pw.Text(title, style: pw.TextStyle(fontSize: 26, fontWeight: pw.FontWeight.bold, color: PdfColors.green800)), pw.Text('Slide ${i + 1} of ${_slides.length}', style: const pw.TextStyle(color: PdfColors.grey600))]), pw.Divider(thickness: 2, color: PdfColors.green800), pw.SizedBox(height: 20), pw.Text(content, style: const pw.TextStyle(fontSize: 18, lineSpacing: 4))]))));
+      }
     }
     final file = File("${(await getTemporaryDirectory()).path}/Presentation_Slides.pdf");
     await file.writeAsBytes(await pdf.save());
@@ -3870,7 +5085,31 @@ class _PowerPointStudioScreenState extends State<PowerPointStudioScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Slides Maker'), actions: [LabeledIconButton(icon: Icons.share, label: 'Share PDF', onPressed: _exportDeck)]),
-      body: ListView.builder(padding: const EdgeInsets.all(16), itemCount: _slides.length, itemBuilder: (ctx, i) => Card(margin: const EdgeInsets.only(bottom: 12), child: Padding(padding: const EdgeInsets.all(12), child: Column(children: [TextFormField(initialValue: _slides[i]['title'], decoration: const InputDecoration(labelText: 'Slide Title'), onChanged: (v) => _slides[i]['title'] = v), TextFormField(initialValue: _slides[i]['content'], maxLines: 3, decoration: const InputDecoration(labelText: 'Bullets / Points'), onChanged: (v) => _slides[i]['content'] = v)])))),
+      body: ListView.builder(
+        padding: const EdgeInsets.all(16),
+        itemCount: _slides.length,
+        itemBuilder: (ctx, i) => Card(
+          key: ObjectKey(_slides[i]),
+          margin: const EdgeInsets.only(bottom: 12),
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text('Slide ${i + 1}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.grey)),
+                    if (_slides.length > 1)
+                      IconButton(icon: const Icon(Icons.delete_outline, color: Colors.redAccent, size: 18), onPressed: () => setState(() => _slides.removeAt(i))),
+                  ],
+                ),
+                TextFormField(initialValue: _slides[i]['title'], decoration: const InputDecoration(labelText: 'Slide Title'), onChanged: (v) => _slides[i]['title'] = v),
+                TextFormField(initialValue: _slides[i]['content'], maxLines: 3, decoration: const InputDecoration(labelText: 'Bullets / Points'), onChanged: (v) => _slides[i]['content'] = v),
+              ],
+            ),
+          ),
+        ),
+      ),
       floatingActionButton: FloatingActionButton.extended(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white, onPressed: () => setState(() => _slides.add({'title': 'New Slide', 'content': '• Point 1\n• Point 2'})), icon: const Icon(Icons.add), label: const Text('Add Slide')),
     );
   }
@@ -3894,7 +5133,14 @@ class _LetterTemplatesScreenState extends State<LetterTemplatesScreen> {
 
   Future<void> _exportLetter() async {
     final pdf = pw.Document();
-    pdf.addPage(pw.Page(pageFormat: PdfPageFormat.a4, build: (_) => pw.Padding(padding: const pw.EdgeInsets.all(36), child: pw.Text(_ctrl.text, style: const pw.TextStyle(fontSize: 14, lineSpacing: 4)))));
+    if (_UnicodePdfHelper.hasNonAscii(_ctrl.text)) {
+      final pngBytes = await _UnicodePdfHelper.renderLinesToA4Png(blocks: [
+        {'text': _ctrl.text, 'size': 30.0},
+      ]);
+      pdf.addPage(pw.Page(pageFormat: PdfPageFormat.a4, margin: pw.EdgeInsets.zero, build: (_) => pw.Image(pw.MemoryImage(pngBytes), fit: pw.BoxFit.contain)));
+    } else {
+      pdf.addPage(pw.Page(pageFormat: PdfPageFormat.a4, build: (_) => pw.Padding(padding: const pw.EdgeInsets.all(36), child: pw.Text(_ctrl.text, style: const pw.TextStyle(fontSize: 14, lineSpacing: 4)))));
+    }
     final file = File("${(await getTemporaryDirectory()).path}/Formal_Letter.pdf");
     await file.writeAsBytes(await pdf.save());
     await Share.shareXFiles([XFile(file.path)], text: 'Formal Letter PDF');
@@ -4064,11 +5310,30 @@ class _WatermarkToolScreenState extends State<WatermarkToolScreen> {
     if (_selectedDocId == null) return;
     final doc = widget.savedDocs.firstWhere((d) => d['id'] == _selectedDocId);
     final pdf = pw.Document();
+    final String wmText = _wmCtrl.text;
+    pw.MemoryImage? unicodeStamp;
+    if (_UnicodePdfHelper.hasNonAscii(wmText)) {
+      unicodeStamp = pw.MemoryImage(await _UnicodePdfHelper.renderRotatedWatermarkPng(wmText));
+    }
+
     for (var path in (doc['images'] as List)) {
       final f = File(path);
       if (await f.exists()) {
         final imgMem = pw.MemoryImage(await f.readAsBytes());
-        pdf.addPage(pw.Page(pageFormat: PdfPageFormat.a4, build: (_) => pw.Stack(children: [pw.Center(child: pw.Image(imgMem, fit: pw.BoxFit.contain)), pw.Center(child: pw.Transform.rotate(angle: -0.6, child: pw.Text(_wmCtrl.text, style: pw.TextStyle(fontSize: 48, fontWeight: pw.FontWeight.bold, color: PdfColor.fromInt(0x35000000)))))])));
+        pdf.addPage(
+          pw.Page(
+            pageFormat: PdfPageFormat.a4,
+            build: (_) => pw.Stack(
+              children: [
+                pw.Center(child: pw.Image(imgMem, fit: pw.BoxFit.contain)),
+                if (unicodeStamp != null)
+                  pw.Center(child: pw.Image(unicodeStamp, width: 420, height: 420))
+                else
+                  pw.Center(child: pw.Transform.rotate(angle: -0.6, child: pw.Text(wmText, style: pw.TextStyle(fontSize: 48, fontWeight: pw.FontWeight.bold, color: PdfColor.fromInt(0x35000000))))),
+              ],
+            ),
+          ),
+        );
       }
     }
     final file = File("${(await getTemporaryDirectory()).path}/${doc['title']}_Watermarked.pdf");
@@ -4112,9 +5377,24 @@ class _UniversalImageToolScreenState extends State<UniversalImageToolScreen> {
     if (x != null && mounted) setState(() => _imgPath = x.path);
   }
 
+  Future<void> _pickImageMlKit() async {
+    final scanner = DocumentScanner(options: DocumentScannerOptions(documentFormat: DocumentFormat.jpeg, mode: ScannerMode.base, isGalleryImport: true, pageLimit: 1));
+    try {
+      final res = await scanner.scanDocument();
+      if (res.images.isNotEmpty && mounted) setState(() => _imgPath = res.images.first);
+    } finally {
+      await scanner.close();
+    }
+  }
+
   Future<void> _pickImageCamera() async {
-    final res = await DocumentScanner(options: DocumentScannerOptions(documentFormat: DocumentFormat.jpeg, mode: ScannerMode.base, isGalleryImport: true, pageLimit: 1)).scanDocument();
-    if (res.images.isNotEmpty && mounted) setState(() => _imgPath = res.images.first);
+    final captured = await Navigator.push<List<String>>(
+      context,
+      MaterialPageRoute(builder: (_) => ProCameraScannerScreen(pageLimit: 1, onSwitchToMlKitAutoScan: _pickImageMlKit)),
+    );
+    if (captured != null && captured.isNotEmpty && mounted) {
+      setState(() => _imgPath = captured.first);
+    }
   }
 
   Future<void> _rotate90() async {
@@ -4150,7 +5430,7 @@ class _UniversalImageToolScreenState extends State<UniversalImageToolScreen> {
   }
 }
 
-// 16. QR & BARCODE GENERATOR STUDIO
+// 16. QR & BARCODE GENERATOR STUDIO (REAL SCANNABLE QR CODE + PNG EXPORT)
 class QrBarcodeStudioScreen extends StatefulWidget {
   const QrBarcodeStudioScreen({super.key});
   @override
@@ -4161,19 +5441,73 @@ class _QrBarcodeStudioScreenState extends State<QrBarcodeStudioScreen> {
   final _qrTextCtrl = TextEditingController(text: 'https://bharatdocscanner.app');
 
   @override
+  void initState() {
+    super.initState();
+    _qrTextCtrl.addListener(() {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
   void dispose() {
     _qrTextCtrl.dispose();
     super.dispose();
   }
 
+  List<Rect> _buildQrRects(String text, double size) {
+    final List<Rect> rects = [];
+    if (text.isEmpty) return rects;
+    try {
+      for (final dynamic elem in pw.Barcode.qrCode().make(text, width: size, height: size, drawText: false)) {
+        if (elem.black == true) {
+          rects.add(Rect.fromLTWH(
+            (elem.left as num).toDouble(),
+            (elem.top as num).toDouble(),
+            (elem.width as num).toDouble(),
+            (elem.height as num).toDouble(),
+          ));
+        }
+      }
+    } catch (_) {}
+    return rects;
+  }
+
   Future<void> _shareQrCode() async {
     final text = _qrTextCtrl.text.trim();
     if (text.isEmpty) return;
-    await Share.share('QR Data: $text');
+    const double imgSize = 600.0;
+    const double pad = 48.0;
+    final rects = _buildQrRects(text, imgSize - pad * 2);
+    if (rects.isEmpty) {
+      await Share.share(text);
+      return;
+    }
+
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder, const Rect.fromLTWH(0, 0, imgSize, imgSize));
+    canvas.drawRect(const Rect.fromLTWH(0, 0, imgSize, imgSize), Paint()..color = Colors.white);
+    final blackPaint = Paint()..color = Colors.black;
+    for (final r in rects) {
+      canvas.drawRect(r.shift(const Offset(pad, pad)), blackPaint);
+    }
+    final pic = recorder.endRecording();
+    final imgUi = await pic.toImage(imgSize.toInt(), imgSize.toInt());
+    final data = await imgUi.toByteData(format: ui.ImageByteFormat.png);
+    imgUi.dispose();
+    pic.dispose();
+
+    if (data != null) {
+      final file = File('${(await getTemporaryDirectory()).path}/QR_${DateTime.now().millisecondsSinceEpoch}.png');
+      await file.writeAsBytes(data.buffer.asUint8List());
+      await Share.shareXFiles([XFile(file.path)], text: text);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    final qrText = _qrTextCtrl.text.trim();
+    final qrRects = _buildQrRects(qrText, 190.0);
+
     return Scaffold(
       appBar: AppBar(title: const Text('QR & Barcode Studio')),
       body: Padding(
@@ -4182,13 +5516,35 @@ class _QrBarcodeStudioScreenState extends State<QrBarcodeStudioScreen> {
           children: [
             TextField(controller: _qrTextCtrl, decoration: const InputDecoration(labelText: 'Enter Text / URL for QR', border: OutlineInputBorder())),
             const SizedBox(height: 20),
-            Container(padding: const EdgeInsets.all(24), decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16), border: Border.all(color: Colors.grey.shade300)), child: const Icon(Icons.qr_code_2_rounded, size: 160, color: Colors.black87)),
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16), border: Border.all(color: Colors.grey.shade300)),
+              child: qrRects.isEmpty
+                  ? const SizedBox(width: 190, height: 190, child: Center(child: Text('Enter text to generate QR', style: TextStyle(color: Colors.grey))))
+                  : SizedBox(width: 190, height: 190, child: CustomPaint(painter: _QrRectPainter(qrRects))),
+            ),
             const SizedBox(height: 20),
-            ElevatedButton.icon(style: ElevatedButton.styleFrom(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white, minimumSize: const Size.fromHeight(48)), icon: const Icon(Icons.share), label: const Text('Share QR Data'), onPressed: _shareQrCode),
+            ElevatedButton.icon(style: ElevatedButton.styleFrom(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white, minimumSize: const Size.fromHeight(48)), icon: const Icon(Icons.share), label: const Text('Share QR Image'), onPressed: qrText.isEmpty ? null : _shareQrCode),
           ],
         ),
       ),
     );
   }
+}
+
+class _QrRectPainter extends CustomPainter {
+  final List<Rect> rects;
+  _QrRectPainter(this.rects);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()..color = Colors.black;
+    for (final r in rects) {
+      canvas.drawRect(r, paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _QrRectPainter oldDelegate) => true;
 }
 // ==================== PART 4 END ====================
