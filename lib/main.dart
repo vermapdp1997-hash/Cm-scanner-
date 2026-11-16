@@ -4725,3 +4725,1143 @@ class _FullScreenPhotoViewerState extends State<FullScreenPhotoViewer> {
   }
 }
 // ==================== PART 4C END ====================
+// ==================== PART 5A START ====================
+// HELPER FOR MULTI-PAGE HINDI / UNICODE / RUPEE SYMBOL PDF RENDERING
+class _UnicodePdfHelper {
+  static bool hasNonAscii(String s) => s.runes.any((r) => r > 127);
+
+  static Future<List<Uint8List>> renderLinesToA4PngPages({
+    required List<Map<String, dynamic>> blocks,
+    bool landscape = false,
+  }) async {
+    final double pageW = landscape ? 1754.0 : 1240.0;
+    final double pageH = landscape ? 1240.0 : 1754.0;
+    const double pad = 80.0;
+
+    final List<Uint8List> pages = [];
+    ui.PictureRecorder recorder = ui.PictureRecorder();
+    Canvas canvas = Canvas(recorder, Rect.fromLTWH(0, 0, pageW, pageH));
+    canvas.drawRect(Rect.fromLTWH(0, 0, pageW, pageH), Paint()..color = Colors.white);
+    double y = pad;
+
+    Future<void> flushPage() async {
+      final pic = recorder.endRecording();
+      final imgUi = await pic.toImage(pageW.toInt(), pageH.toInt());
+      final data = await imgUi.toByteData(format: ui.ImageByteFormat.png);
+      imgUi.dispose();
+      pic.dispose();
+      if (data != null) pages.add(data.buffer.asUint8List());
+    }
+
+    void startNewPage() {
+      recorder = ui.PictureRecorder();
+      canvas = Canvas(recorder, Rect.fromLTWH(0, 0, pageW, pageH));
+      canvas.drawRect(Rect.fromLTWH(0, 0, pageW, pageH), Paint()..color = Colors.white);
+      y = pad;
+    }
+
+    for (final b in blocks) {
+      if (b['divider'] == true) {
+        if (y + 28 > pageH - pad && y > pad) {
+          await flushPage();
+          startNewPage();
+        }
+        y += 8;
+        canvas.drawLine(Offset(pad, y), Offset(pageW - pad, y), Paint()..color = const Color(0xFF2E7D32)..strokeWidth = 3);
+        y += 18;
+        continue;
+      }
+      final String text = (b['text'] ?? '').toString();
+      if (text.isEmpty) continue;
+      final double fontSize = (b['size'] as num?)?.toDouble() ?? 26.0;
+      final bool bold = b['bold'] == true;
+      final Color color = (b['color'] as Color?) ?? Colors.black87;
+      final double extraSpace = (b['space'] as num?)?.toDouble() ?? 14.0;
+
+      final lines = text.split('\n');
+      for (final line in lines) {
+        if (line.isEmpty) {
+          y += fontSize * 0.7;
+          continue;
+        }
+        final tp = TextPainter(
+          text: TextSpan(
+            text: line,
+            style: TextStyle(fontSize: fontSize, fontWeight: bold ? FontWeight.bold : FontWeight.normal, color: color, height: 1.4),
+          ),
+          textDirection: ui.TextDirection.ltr,
+        )..layout(maxWidth: pageW - pad * 2);
+
+        if (y + tp.height > pageH - pad && y > pad) {
+          await flushPage();
+          startNewPage();
+        }
+        tp.paint(canvas, Offset(pad, y));
+        y += tp.height + 6.0;
+      }
+      y += max(0.0, extraSpace - 6.0);
+    }
+
+    await flushPage();
+    return pages;
+  }
+
+  static Future<Uint8List> renderRotatedWatermarkPng(String text) async {
+    const double size = 900.0;
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder, const Rect.fromLTWH(0, 0, size, size));
+    canvas.save();
+    canvas.translate(size / 2, size / 2);
+    canvas.rotate(-0.6);
+    final tp = TextPainter(
+      text: TextSpan(
+        text: text,
+        style: TextStyle(fontSize: 82, fontWeight: FontWeight.bold, color: Colors.black.withOpacity(0.22)),
+      ),
+      textAlign: TextAlign.center,
+      textDirection: ui.TextDirection.ltr,
+    )..layout(maxWidth: size * 0.9);
+    tp.paint(canvas, Offset(-tp.width / 2, -tp.height / 2));
+    canvas.restore();
+
+    final pic = recorder.endRecording();
+    final imgUi = await pic.toImage(size.toInt(), size.toInt());
+    final data = await imgUi.toByteData(format: ui.ImageByteFormat.png);
+    imgUi.dispose();
+    pic.dispose();
+    return data!.buffer.asUint8List();
+  }
+}
+
+// 6. PASSPORT PHOTO STUDIO
+class PassportPhotoStudioScreen extends StatefulWidget {
+  const PassportPhotoStudioScreen({super.key});
+  @override
+  State<PassportPhotoStudioScreen> createState() => _PassportPhotoStudioScreenState();
+}
+
+class _PassportPhotoStudioScreenState extends State<PassportPhotoStudioScreen> {
+  String? _photoPath;
+  int _copies = 8;
+  String _presetSize = 'Indian Passport (3.5x4.5 cm)';
+  String _bgChoice = 'White';
+
+  Future<void> _pickPhotoFromGallery() async {
+    final x = await ImagePicker().pickImage(source: ImageSource.gallery);
+    if (x != null && mounted) setState(() => _photoPath = x.path);
+  }
+
+  Future<void> _scanPhotoMlKit() async {
+    final scanner = DocumentScanner(options: DocumentScannerOptions(documentFormat: DocumentFormat.jpeg, mode: ScannerMode.base, isGalleryImport: true, pageLimit: 1));
+    try {
+      final res = await scanner.scanDocument();
+      if (res.images.isNotEmpty && mounted) setState(() => _photoPath = res.images.first);
+    } finally {
+      await scanner.close();
+    }
+  }
+
+  Future<void> _scanPhotoCamera() async {
+    final captured = await Navigator.push<List<String>>(
+      context,
+      MaterialPageRoute(builder: (_) => ProCameraScannerScreen(pageLimit: 1, onSwitchToMlKitAutoScan: _scanPhotoMlKit)),
+    );
+    if (captured != null && captured.isNotEmpty && mounted) {
+      setState(() => _photoPath = captured.first);
+    }
+  }
+
+  Future<void> _exportPassportSheet() async {
+    if (_photoPath == null) return;
+    final tempDir = await getTemporaryDirectory();
+    final bakedPath = '${tempDir.path}/pass_baked_${DateTime.now().millisecondsSinceEpoch}.jpg';
+    final readyPath = await ProDocImageProcessor.bakeOrientationToFile(_photoPath!, bakedPath, maxDimension: 900);
+
+    final pdf = pw.Document();
+    final passImg = pw.MemoryImage(await File(readyPath).readAsBytes());
+    double w = 110, h = 145;
+    if (_presetSize.contains('US Visa')) { w = 140; h = 140; } else if (_presetSize.contains('PAN Card')) { w = 95; h = 130; } else if (_presetSize.contains('Stamp')) { w = 80; h = 100; }
+    PdfColor bgColor = PdfColors.white;
+    if (_bgChoice == 'Studio Blue') bgColor = PdfColor.fromInt(0xFFBBDEFB);
+    if (_bgChoice == 'Light Grey') bgColor = PdfColor.fromInt(0xFFECEFF1);
+
+    pdf.addPage(
+      pw.Page(
+        pageFormat: PdfPageFormat.a4,
+        build: (_) => pw.Container(
+          padding: const pw.EdgeInsets.all(24),
+          child: pw.Wrap(
+            spacing: 16,
+            runSpacing: 20,
+            children: List.generate(
+              _copies,
+              (_) => pw.Container(
+                width: w,
+                height: h,
+                color: bgColor,
+                padding: const pw.EdgeInsets.all(2),
+                child: pw.Container(
+                  decoration: pw.BoxDecoration(border: pw.Border.all(color: PdfColors.grey400, width: 1)),
+                  child: pw.ClipRect(child: pw.Image(passImg, width: w - 4, height: h - 4, fit: pw.BoxFit.cover)),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    final file = File("${tempDir.path}/Passport_Sheet_${_copies}_Prints.pdf");
+    await file.writeAsBytes(await pdf.save());
+    await Share.shareXFiles([XFile(file.path)], text: 'Passport Photos Print Sheet');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Passport Photo Studio')),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            Center(child: _photoPath != null ? ClipRRect(borderRadius: BorderRadius.circular(8), child: Image.file(File(_photoPath!), height: 180, width: 140, fit: BoxFit.cover)) : Container(height: 180, width: 140, decoration: BoxDecoration(color: Colors.grey.shade200, borderRadius: BorderRadius.circular(8)), child: const Icon(Icons.portrait, size: 60, color: Colors.grey))),
+            const SizedBox(height: 12),
+            Row(mainAxisAlignment: MainAxisAlignment.center, children: [ElevatedButton.icon(icon: const Icon(Icons.photo_library_rounded), label: const Text('From Gallery'), onPressed: _pickPhotoFromGallery), const SizedBox(width: 10), ElevatedButton.icon(icon: const Icon(Icons.camera_alt_rounded), label: const Text('Camera Scan'), onPressed: _scanPhotoCamera)]),
+            const SizedBox(height: 16),
+            DropdownButtonFormField<String>(value: _presetSize, decoration: const InputDecoration(labelText: 'Standard Photo Size', border: OutlineInputBorder()), items: const [DropdownMenuItem(value: 'Indian Passport (3.5x4.5 cm)', child: Text('Indian Passport (3.5x4.5 cm)')), DropdownMenuItem(value: 'PAN Card (2.5x3.5 cm)', child: Text('PAN Card (2.5x3.5 cm)')), DropdownMenuItem(value: 'US Visa / OCI (2x2 inch)', child: Text('US Visa / OCI (2x2 inch)')), DropdownMenuItem(value: 'Stamp Size (2x2.5 cm)', child: Text('Stamp Size (2x2.5 cm)'))], onChanged: (v) { if (v != null) setState(() => _presetSize = v); }),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String>(value: _bgChoice, decoration: const InputDecoration(labelText: 'Background Color', border: OutlineInputBorder()), items: const [DropdownMenuItem(value: 'White', child: Text('Pure White')), DropdownMenuItem(value: 'Studio Blue', child: Text('Studio Light Blue')), DropdownMenuItem(value: 'Light Grey', child: Text('Light Grey'))], onChanged: (v) { if (v != null) setState(() => _bgChoice = v); }),
+            const SizedBox(height: 16),
+            const Align(alignment: Alignment.centerLeft, child: Text('Number of Copies on A4:', style: TextStyle(fontWeight: FontWeight.bold))),
+            const SizedBox(height: 6),
+            SegmentedButton<int>(segments: const [ButtonSegment(value: 4, label: Text('4')), ButtonSegment(value: 8, label: Text('8')), ButtonSegment(value: 16, label: Text('16')), ButtonSegment(value: 32, label: Text('32'))], selected: {_copies}, onSelectionChanged: (s) => setState(() => _copies = s.first)),
+            const SizedBox(height: 24),
+            SizedBox(width: double.infinity, height: 48, child: ElevatedButton.icon(style: ElevatedButton.styleFrom(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white), icon: const Icon(Icons.picture_as_pdf), label: const Text('Export Printable A4 Sheet PDF'), onPressed: _photoPath == null ? null : _exportPassportSheet)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// 7. DIGITAL SIGNATURE
+class DigitalSignatureScreen extends StatefulWidget {
+  const DigitalSignatureScreen({super.key});
+  @override
+  State<DigitalSignatureScreen> createState() => _DigitalSignatureScreenState();
+}
+
+class _DigitalSignatureScreenState extends State<DigitalSignatureScreen> {
+  final List<List<Offset>> _strokes = [];
+  Color _inkColor = Colors.black;
+  double _strokeWidth = 3.5;
+
+  Future<void> _exportSignaturePng() async {
+    if (_strokes.isEmpty) return;
+    double minX = double.infinity, maxX = -double.infinity, minY = double.infinity, maxY = -double.infinity;
+    for (var stroke in _strokes) {
+      for (var p in stroke) {
+        if (p.dx < minX) minX = p.dx;
+        if (p.dx > maxX) maxX = p.dx;
+        if (p.dy < minY) minY = p.dy;
+        if (p.dy > maxY) maxY = p.dy;
+      }
+    }
+    if (!minX.isFinite) return;
+    const pad = 20.0;
+    minX = minX - pad;
+    minY = minY - pad;
+    final width = (maxX - minX + pad).clamp(60.0, 5000.0);
+    final height = (maxY - minY + pad).clamp(60.0, 5000.0);
+
+    ui.Picture? pic;
+    ui.Image? imgUi;
+    try {
+      final recorder = ui.PictureRecorder();
+      final canvas = Canvas(recorder, Rect.fromLTWH(0, 0, width, height));
+      canvas.translate(-minX, -minY);
+      final paint = Paint()..color = _inkColor..strokeWidth = _strokeWidth..strokeCap = StrokeCap.round..strokeJoin = StrokeJoin.round;
+      final dotPaint = Paint()..color = _inkColor..style = PaintingStyle.fill;
+      for (var stroke in _strokes) {
+        if (stroke.length == 1) {
+          canvas.drawCircle(stroke[0], _strokeWidth / 2, dotPaint);
+        } else {
+          for (int i = 0; i < stroke.length - 1; i++) {
+            canvas.drawLine(stroke[i], stroke[i + 1], paint);
+          }
+        }
+      }
+      pic = recorder.endRecording();
+      imgUi = await pic.toImage(width.toInt(), height.toInt());
+      final data = await imgUi.toByteData(format: ui.ImageByteFormat.png);
+      if (data != null) {
+        final file = File("${(await getTemporaryDirectory()).path}/Signature_${DateTime.now().millisecondsSinceEpoch}.png");
+        await file.writeAsBytes(data.buffer.asUint8List());
+        await Share.shareXFiles([XFile(file.path)], text: 'My Transparent Signature');
+      }
+    } finally {
+      imgUi?.dispose();
+      pic?.dispose();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Digital Signature'), actions: [LabeledIconButton(icon: Icons.undo, label: 'Undo', onPressed: () { if (_strokes.isNotEmpty) setState(() => _strokes.removeLast()); }), LabeledIconButton(icon: Icons.clear_all, label: 'Clear', onPressed: () => setState(() => _strokes.clear()))]),
+      body: Column(
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            color: Colors.grey.shade100,
+            child: Row(
+              children: [
+                const Text('Ink: ', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black87, fontSize: 12)),
+                ...[Colors.black, const Color(0xFF0D47A1), const Color(0xFFB71C1C), const Color(0xFF1B5E20)].map((c) => GestureDetector(onTap: () => setState(() => _inkColor = c), child: Container(margin: const EdgeInsets.symmetric(horizontal: 3), width: 24, height: 24, decoration: BoxDecoration(color: c, shape: BoxShape.circle, border: Border.all(color: _inkColor == c ? Colors.amber : Colors.transparent, width: 2))))),
+                const SizedBox(width: 8),
+                const Text('Size:', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black87, fontSize: 12)),
+                Expanded(child: Slider(value: _strokeWidth, min: 1.5, max: 8.0, onChanged: (v) => setState(() => _strokeWidth = v))),
+              ],
+            ),
+          ),
+          Expanded(
+            child: Container(
+              margin: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.grey.shade300),
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: LayoutBuilder(
+                  builder: (_, box) => GestureDetector(
+                    onPanStart: (d) {
+                      final p = Offset(d.localPosition.dx.clamp(0.0, box.maxWidth), d.localPosition.dy.clamp(0.0, box.maxHeight));
+                      setState(() => _strokes.add([p]));
+                    },
+                    onPanUpdate: (d) {
+                      if (_strokes.isEmpty) return;
+                      final p = Offset(d.localPosition.dx.clamp(0.0, box.maxWidth), d.localPosition.dy.clamp(0.0, box.maxHeight));
+                      setState(() => _strokes.last.add(p));
+                    },
+                    child: CustomPaint(painter: _SignPainter(_strokes, _inkColor, _strokeWidth), size: Size.infinite),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          Padding(padding: const EdgeInsets.all(16), child: SizedBox(width: double.infinity, height: 48, child: ElevatedButton.icon(style: ElevatedButton.styleFrom(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white), icon: const Icon(Icons.download_rounded), label: const Text('Export Transparent PNG Sign'), onPressed: _strokes.isEmpty ? null : _exportSignaturePng))),
+        ],
+      ),
+    );
+  }
+}
+
+class _SignPainter extends CustomPainter {
+  final List<List<Offset>> strokes;
+  final Color color;
+  final double strokeWidth;
+  _SignPainter(this.strokes, this.color, this.strokeWidth);
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()..color = color..strokeWidth = strokeWidth..strokeCap = StrokeCap.round..strokeJoin = StrokeJoin.round;
+    final dotPaint = Paint()..color = color..style = PaintingStyle.fill;
+    for (var stroke in strokes) {
+      if (stroke.length == 1) {
+        canvas.drawCircle(stroke[0], strokeWidth / 2, dotPaint);
+      } else {
+        for (int i = 0; i < stroke.length - 1; i++) {
+          canvas.drawLine(stroke[i], stroke[i + 1], paint);
+        }
+      }
+    }
+  }
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
+}
+
+// 8. GST TAX INVOICE MAKER
+class InvoiceMakerProScreen extends StatefulWidget {
+  const InvoiceMakerProScreen({super.key});
+  @override
+  State<InvoiceMakerProScreen> createState() => _InvoiceMakerProScreenState();
+}
+
+class _InvoiceMakerProScreenState extends State<InvoiceMakerProScreen> {
+  final _sellerCtrl = TextEditingController(text: 'My Business / Shop Name');
+  final _clientCtrl = TextEditingController(text: 'Customer / Client Name');
+  final _invNumCtrl = TextEditingController(text: 'INV-001');
+  final _itemCtrl = TextEditingController();
+  final _priceCtrl = TextEditingController();
+  final _qtyCtrl = TextEditingController(text: '1');
+  double _gstRate = 0.18;
+  final List<Map<String, dynamic>> _items = [{'name': 'Professional Consulting', 'price': 1200.0, 'qty': 1}];
+
+  @override
+  void dispose() {
+    _sellerCtrl.dispose();
+    _clientCtrl.dispose();
+    _invNumCtrl.dispose();
+    _itemCtrl.dispose();
+    _priceCtrl.dispose();
+    _qtyCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _exportInvoicePdf() async {
+    final pdf = pw.Document();
+    double subtotal = _items.fold(0.0, (s, i) => s + ((i['price'] as double) * (i['qty'] as int)));
+    double gstAmount = subtotal * _gstRate;
+    double grandTotal = subtotal + gstAmount;
+    final String allText = '${_sellerCtrl.text} ${_clientCtrl.text} ${_invNumCtrl.text} ${_items.map((e) => e['name']).join(' ')}';
+
+    if (_UnicodePdfHelper.hasNonAscii(allText)) {
+      final blocks = <Map<String, dynamic>>[
+        {'text': 'TAX INVOICE (${_invNumCtrl.text})', 'size': 40.0, 'bold': true, 'color': const Color(0xFF2E7D32), 'space': 16.0},
+        {'text': 'Seller: ${_sellerCtrl.text}', 'size': 26.0},
+        {'text': 'Billed To: ${_clientCtrl.text}', 'size': 26.0},
+        {'text': 'Date: ${DateFormat('dd MMM yyyy').format(DateTime.now())}', 'size': 24.0, 'color': Colors.grey.shade700},
+        {'divider': true},
+        ..._items.map((it) => {
+          'text': '• ${it['name']}  |  Qty: ${it['qty']} × ₹${it['price']}  =  ₹${(it['price'] * it['qty']).toStringAsFixed(2)}',
+          'size': 25.0,
+        }),
+        {'divider': true},
+        {'text': 'Subtotal: ₹${subtotal.toStringAsFixed(2)}', 'size': 26.0},
+        {'text': 'GST (${(_gstRate * 100).toInt()}%): ₹${gstAmount.toStringAsFixed(2)}', 'size': 26.0},
+        {'text': 'Grand Total: ₹${grandTotal.toStringAsFixed(2)}', 'size': 32.0, 'bold': true, 'color': const Color(0xFF2E7D32)},
+      ];
+      final pngPages = await _UnicodePdfHelper.renderLinesToA4PngPages(blocks: blocks);
+      for (final pngBytes in pngPages) {
+        pdf.addPage(pw.Page(pageFormat: PdfPageFormat.a4, margin: pw.EdgeInsets.zero, build: (_) => pw.Image(pw.MemoryImage(pngBytes), fit: pw.BoxFit.contain)));
+      }
+    } else {
+      pdf.addPage(
+        pw.Page(
+          pageFormat: PdfPageFormat.a4,
+          build: (_) => pw.Padding(
+            padding: const pw.EdgeInsets.all(28),
+            child: pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [pw.Text('TAX INVOICE', style: pw.TextStyle(fontSize: 22, fontWeight: pw.FontWeight.bold, color: PdfColors.green800)), pw.Text('Invoice #: ${_invNumCtrl.text}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold))]),
+                pw.SizedBox(height: 6),
+                pw.Text('Seller: ${_sellerCtrl.text}'),
+                pw.Text('Billed To: ${_clientCtrl.text}'),
+                pw.Text('Date: ${DateFormat('dd MMM yyyy').format(DateTime.now())}'),
+                pw.Divider(thickness: 1.5, color: PdfColors.green800),
+                pw.SizedBox(height: 10),
+                pw.TableHelper.fromTextArray(headers: ['Item / Service', 'Qty', 'Rate (INR)', 'Total (INR)'], data: _items.map((it) => [it['name'], '${it['qty']}', '${it['price']}', '${(it['price'] * it['qty']).toStringAsFixed(2)}']).toList()),
+                pw.SizedBox(height: 16),
+                pw.Align(alignment: pw.Alignment.centerRight, child: pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.end, children: [pw.Text('Subtotal: INR ${subtotal.toStringAsFixed(2)}'), pw.Text('GST (${(_gstRate * 100).toInt()}%): INR ${gstAmount.toStringAsFixed(2)}'), pw.Divider(), pw.Text('Grand Total: INR ${grandTotal.toStringAsFixed(2)}', style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold, color: PdfColors.green800))])),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+    final file = File("${(await getTemporaryDirectory()).path}/Tax_Invoice.pdf");
+    await file.writeAsBytes(await pdf.save());
+    await Share.shareXFiles([XFile(file.path)], text: 'Tax Invoice PDF');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('GST Tax Invoice Maker')),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            TextField(controller: _sellerCtrl, decoration: const InputDecoration(labelText: 'Seller / Business Name', border: OutlineInputBorder())),
+            const SizedBox(height: 8),
+            TextField(controller: _clientCtrl, decoration: const InputDecoration(labelText: 'Customer / Client Name', border: OutlineInputBorder())),
+            const SizedBox(height: 8),
+            TextField(controller: _invNumCtrl, decoration: const InputDecoration(labelText: 'Invoice Number', border: OutlineInputBorder())),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(flex: 3, child: TextField(controller: _itemCtrl, decoration: const InputDecoration(labelText: 'Item Name', border: OutlineInputBorder()))),
+                const SizedBox(width: 6),
+                Expanded(flex: 1, child: TextField(controller: _qtyCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Qty', border: OutlineInputBorder()))),
+                const SizedBox(width: 6),
+                Expanded(flex: 2, child: TextField(controller: _priceCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Price', border: OutlineInputBorder()))),
+                LabeledIconButton(
+                  icon: Icons.add_circle,
+                  label: 'Add Item',
+                  color: Colors.green,
+                  iconSize: 30,
+                  onPressed: () {
+                    final item = _itemCtrl.text.trim();
+                    final qty = int.tryParse(_qtyCtrl.text.trim());
+                    final price = double.tryParse(_priceCtrl.text.trim());
+                    if (item.isEmpty || qty == null || qty <= 0 || price == null || price < 0) {
+                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please enter valid item name, quantity and price')));
+                      return;
+                    }
+                    setState(() {
+                      _items.add({'name': item, 'qty': qty, 'price': price});
+                      _itemCtrl.clear();
+                      _priceCtrl.clear();
+                    });
+                  },
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('GST Slab Rate:'), DropdownButton<double>(value: _gstRate, items: const [DropdownMenuItem(value: 0.0, child: Text('0% Exempt')), DropdownMenuItem(value: 0.05, child: Text('5% GST')), DropdownMenuItem(value: 0.12, child: Text('12% GST')), DropdownMenuItem(value: 0.18, child: Text('18% Standard')), DropdownMenuItem(value: 0.28, child: Text('28% Luxury'))], onChanged: (v) { if (v != null) setState(() => _gstRate = v); })]),
+            const Divider(),
+            ...List.generate(_items.length, (i) {
+              final it = _items[i];
+              return ListTile(
+                title: Text(it['name']),
+                subtitle: Text('Qty: ${it['qty']} × INR ${it['price']}'),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text('INR ${(it['qty'] * it['price']).toStringAsFixed(2)}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                    IconButton(
+                      icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent, size: 20),
+                      onPressed: () => setState(() => _items.removeAt(i)),
+                    ),
+                  ],
+                ),
+              );
+            }),
+            const SizedBox(height: 20),
+            ElevatedButton.icon(style: ElevatedButton.styleFrom(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white, minimumSize: const Size.fromHeight(48)), icon: const Icon(Icons.picture_as_pdf), label: const Text('Export Official Tax Invoice PDF'), onPressed: _items.isEmpty ? null : _exportInvoicePdf),
+          ],
+        ),
+      ),
+    );
+  }
+}
+// ==================== PART 5A END ====================
+// ==================== PART 5B START ====================
+// 9. RESUME / CV BUILDER
+class ResumeBuilderScreen extends StatefulWidget {
+  const ResumeBuilderScreen({super.key});
+  @override
+  State<ResumeBuilderScreen> createState() => _ResumeBuilderScreenState();
+}
+
+class _ResumeBuilderScreenState extends State<ResumeBuilderScreen> {
+  final _name = TextEditingController(text: 'Rahul Sharma');
+  final _contact = TextEditingController(text: '+91 98765 43210 | rahul.sharma@email.com | New Delhi');
+  final _summary = TextEditingController(text: 'Motivated professional with expertise in operations, documentation, and team leadership.');
+  final _experience = TextEditingController(text: '• 3+ Years experience in Team Coordination & IT Documentation.\n• Managed client communications and delivery targets.');
+  final _education = TextEditingController(text: '• Bachelor of Science / Graduate (2021)\n• Higher Secondary Certificate (2018)');
+  final _skills = TextEditingController(text: 'MS Office, Communication, Team Leadership, Problem Solving');
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _contact.dispose();
+    _summary.dispose();
+    _experience.dispose();
+    _education.dispose();
+    _skills.dispose();
+    super.dispose();
+  }
+
+  Future<void> _exportCv() async {
+    final pdf = pw.Document();
+    final String allText = '${_name.text} ${_contact.text} ${_summary.text} ${_experience.text} ${_education.text} ${_skills.text}';
+    if (_UnicodePdfHelper.hasNonAscii(allText)) {
+      final pngPages = await _UnicodePdfHelper.renderLinesToA4PngPages(blocks: [
+        {'text': _name.text, 'size': 44.0, 'bold': true, 'color': const Color(0xFF2E7D32), 'space': 6.0},
+        {'text': _contact.text, 'size': 22.0, 'color': Colors.grey.shade700},
+        {'divider': true},
+        {'text': 'PROFESSIONAL SUMMARY', 'size': 28.0, 'bold': true},
+        {'text': _summary.text, 'size': 24.0, 'space': 22.0},
+        {'text': 'WORK EXPERIENCE', 'size': 28.0, 'bold': true},
+        {'text': _experience.text, 'size': 24.0, 'space': 22.0},
+        {'text': 'EDUCATION', 'size': 28.0, 'bold': true},
+        {'text': _education.text, 'size': 24.0, 'space': 22.0},
+        {'text': 'KEY SKILLS', 'size': 28.0, 'bold': true},
+        {'text': _skills.text, 'size': 24.0},
+      ]);
+      for (final pngBytes in pngPages) {
+        pdf.addPage(pw.Page(pageFormat: PdfPageFormat.a4, margin: pw.EdgeInsets.zero, build: (_) => pw.Image(pw.MemoryImage(pngBytes), fit: pw.BoxFit.contain)));
+      }
+    } else {
+      pdf.addPage(pw.Page(pageFormat: PdfPageFormat.a4, build: (_) => pw.Padding(padding: const pw.EdgeInsets.all(32), child: pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [pw.Text(_name.text, style: pw.TextStyle(fontSize: 22, fontWeight: pw.FontWeight.bold, color: PdfColors.green800)), pw.Text(_contact.text, style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey700)), pw.Divider(thickness: 1.5, color: PdfColors.green800), pw.SizedBox(height: 8), pw.Text('PROFESSIONAL SUMMARY', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12)), pw.Text(_summary.text, style: const pw.TextStyle(fontSize: 10)), pw.SizedBox(height: 12), pw.Text('WORK EXPERIENCE', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12)), pw.Text(_experience.text, style: const pw.TextStyle(fontSize: 10)), pw.SizedBox(height: 12), pw.Text('EDUCATION', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12)), pw.Text(_education.text, style: const pw.TextStyle(fontSize: 10)), pw.SizedBox(height: 12), pw.Text('KEY SKILLS', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12)), pw.Text(_skills.text, style: const pw.TextStyle(fontSize: 10))]))));
+    }
+    final file = File("${(await getTemporaryDirectory()).path}/Resume_${_name.text.replaceAll(' ', '_')}.pdf");
+    await file.writeAsBytes(await pdf.save());
+    await Share.shareXFiles([XFile(file.path)], text: 'Professional Resume');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Resume / CV Maker')),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            TextField(controller: _name, decoration: const InputDecoration(labelText: 'Full Name', border: OutlineInputBorder())),
+            const SizedBox(height: 8),
+            TextField(controller: _contact, decoration: const InputDecoration(labelText: 'Contact (Phone, Email, City)', border: OutlineInputBorder())),
+            const SizedBox(height: 8),
+            TextField(controller: _summary, maxLines: 2, decoration: const InputDecoration(labelText: 'Profile Summary', border: OutlineInputBorder())),
+            const SizedBox(height: 8),
+            TextField(controller: _experience, maxLines: 3, decoration: const InputDecoration(labelText: 'Work Experience', border: OutlineInputBorder())),
+            const SizedBox(height: 8),
+            TextField(controller: _education, maxLines: 2, decoration: const InputDecoration(labelText: 'Education', border: OutlineInputBorder())),
+            const SizedBox(height: 8),
+            TextField(controller: _skills, decoration: const InputDecoration(labelText: 'Skills', border: OutlineInputBorder())),
+            const SizedBox(height: 16),
+            ElevatedButton.icon(style: ElevatedButton.styleFrom(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white, minimumSize: const Size.fromHeight(48)), icon: const Icon(Icons.picture_as_pdf), label: const Text('Generate Resume PDF'), onPressed: _exportCv),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// 10. POWERPOINT / SLIDES MAKER
+class PowerPointStudioScreen extends StatefulWidget {
+  const PowerPointStudioScreen({super.key});
+  @override
+  State<PowerPointStudioScreen> createState() => _PowerPointStudioScreenState();
+}
+
+class _PowerPointStudioScreenState extends State<PowerPointStudioScreen> {
+  final List<Map<String, String>> _slides = [
+    {'title': 'Project Overview', 'content': '• Goals and Milestones\n• Target Audience\n• Timeline'},
+    {'title': 'Key Execution Steps', 'content': '• Step 1: Research & Discovery\n• Step 2: Implementation\n• Step 3: Launch'},
+  ];
+
+  Future<void> _exportDeck() async {
+    final pdf = pw.Document();
+    for (int i = 0; i < _slides.length; i++) {
+      final s = _slides[i];
+      final title = s['title'] ?? '';
+      final content = s['content'] ?? '';
+      if (_UnicodePdfHelper.hasNonAscii('$title $content')) {
+        final pngPages = await _UnicodePdfHelper.renderLinesToA4PngPages(
+          landscape: true,
+          blocks: [
+            {'text': '$title   (Slide ${i + 1}/${_slides.length})', 'size': 48.0, 'bold': true, 'color': const Color(0xFF2E7D32)},
+            {'divider': true},
+            {'text': content, 'size': 34.0},
+          ],
+        );
+        for (final pngBytes in pngPages) {
+          pdf.addPage(pw.Page(pageFormat: PdfPageFormat.a4.landscape, margin: pw.EdgeInsets.zero, build: (_) => pw.Image(pw.MemoryImage(pngBytes), fit: pw.BoxFit.contain)));
+        }
+      } else {
+        pdf.addPage(pw.Page(pageFormat: PdfPageFormat.a4.landscape, build: (_) => pw.Container(padding: const pw.EdgeInsets.all(36), child: pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [pw.Text(title, style: pw.TextStyle(fontSize: 26, fontWeight: pw.FontWeight.bold, color: PdfColors.green800)), pw.Text('Slide ${i + 1} of ${_slides.length}', style: const pw.TextStyle(color: PdfColors.grey600))]), pw.Divider(thickness: 2, color: PdfColors.green800), pw.SizedBox(height: 20), pw.Text(content, style: const pw.TextStyle(fontSize: 18, lineSpacing: 4))]))));
+      }
+    }
+    final file = File("${(await getTemporaryDirectory()).path}/Presentation_Slides.pdf");
+    await file.writeAsBytes(await pdf.save());
+    await Share.shareXFiles([XFile(file.path)], text: 'Presentation Slides');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Slides Maker'), actions: [LabeledIconButton(icon: Icons.share, label: 'Share PDF', onPressed: _exportDeck)]),
+      body: ListView.builder(
+        padding: const EdgeInsets.all(16),
+        itemCount: _slides.length,
+        itemBuilder: (ctx, i) => Card(
+          key: ObjectKey(_slides[i]),
+          margin: const EdgeInsets.only(bottom: 12),
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text('Slide ${i + 1}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.grey)),
+                    if (_slides.length > 1)
+                      IconButton(icon: const Icon(Icons.delete_outline, color: Colors.redAccent, size: 18), onPressed: () => setState(() => _slides.removeAt(i))),
+                  ],
+                ),
+                TextFormField(initialValue: _slides[i]['title'], decoration: const InputDecoration(labelText: 'Slide Title'), onChanged: (v) => _slides[i]['title'] = v),
+                TextFormField(initialValue: _slides[i]['content'], maxLines: 3, decoration: const InputDecoration(labelText: 'Bullets / Points'), onChanged: (v) => _slides[i]['content'] = v),
+              ],
+            ),
+          ),
+        ),
+      ),
+      floatingActionButton: FloatingActionButton.extended(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white, onPressed: () => setState(() => _slides.add({'title': 'New Slide', 'content': '• Point 1\n• Point 2'})), icon: const Icon(Icons.add), label: const Text('Add Slide')),
+    );
+  }
+}
+
+// 11. FORMAL LETTER TEMPLATES
+class LetterTemplatesScreen extends StatefulWidget {
+  const LetterTemplatesScreen({super.key});
+  @override
+  State<LetterTemplatesScreen> createState() => _LetterTemplatesScreenState();
+}
+
+class _LetterTemplatesScreenState extends State<LetterTemplatesScreen> {
+  final _ctrl = TextEditingController(text: "To,\nThe Branch Manager,\nSubject: Application for New Cheque Book\n\nRespected Sir/Madam,\nI hold a savings account in your branch (Account No: XXXXXXXX). I kindly request you to issue a new cheque book for my account.\n\nThanking You,\nYours Sincerely,\n[Your Name]");
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _exportLetter() async {
+    final pdf = pw.Document();
+    if (_UnicodePdfHelper.hasNonAscii(_ctrl.text)) {
+      final pngPages = await _UnicodePdfHelper.renderLinesToA4PngPages(blocks: [
+        {'text': _ctrl.text, 'size': 30.0},
+      ]);
+      for (final pngBytes in pngPages) {
+        pdf.addPage(pw.Page(pageFormat: PdfPageFormat.a4, margin: pw.EdgeInsets.zero, build: (_) => pw.Image(pw.MemoryImage(pngBytes), fit: pw.BoxFit.contain)));
+      }
+    } else {
+      pdf.addPage(pw.Page(pageFormat: PdfPageFormat.a4, build: (_) => pw.Padding(padding: const pw.EdgeInsets.all(36), child: pw.Text(_ctrl.text, style: const pw.TextStyle(fontSize: 14, lineSpacing: 4)))));
+    }
+    final file = File("${(await getTemporaryDirectory()).path}/Formal_Letter.pdf");
+    await file.writeAsBytes(await pdf.save());
+    await Share.shareXFiles([XFile(file.path)], text: 'Formal Letter PDF');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Letter Maker'), actions: [LabeledIconButton(icon: Icons.share, label: 'Share PDF', onPressed: _exportLetter)]),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            Wrap(
+              spacing: 8,
+              children: [
+                ActionChip(label: const Text('Leave Letter'), onPressed: () => setState(() => _ctrl.text = "To,\nThe HR Manager,\nSubject: Leave Application\n\nRespected Sir/Madam,\nI am writing to formally request 3 days of leave from [Start Date] to [End Date] due to urgent personal reasons.\n\nThank you.\nSincerely,\n[Your Name]")),
+                ActionChip(label: const Text('Resignation'), onPressed: () => setState(() => _ctrl.text = "To,\nThe Management,\nSubject: Notice of Resignation\n\nPlease accept this letter as formal notification that I am resigning from my position as [Designation]. My last working day will be [Date].\n\nRegards,\n[Your Name]")),
+                ActionChip(label: const Text('Bank Manager'), onPressed: () => setState(() => _ctrl.text = "To,\nThe Branch Manager,\nSubject: Request to Update Phone Number\n\nRespected Sir,\nKindly update my mobile number [New Number] in my bank account [Account No].\n\nThanking you,\n[Your Name]")),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Expanded(child: TextField(controller: _ctrl, maxLines: null, expands: true, decoration: const InputDecoration(border: OutlineInputBorder()))),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// 12. TXT & NOTES STUDIO
+class TxtEditorNotesScreen extends StatefulWidget {
+  const TxtEditorNotesScreen({super.key});
+  @override
+  State<TxtEditorNotesScreen> createState() => _TxtEditorNotesScreenState();
+}
+
+class _TxtEditorNotesScreenState extends State<TxtEditorNotesScreen> {
+  final _titleCtrl = TextEditingController(text: 'Quick Note');
+  final _bodyCtrl = TextEditingController();
+
+  @override
+  void dispose() {
+    _titleCtrl.dispose();
+    _bodyCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _exportTxt() async {
+    final file = File("${(await getTemporaryDirectory()).path}/${_titleCtrl.text.replaceAll(' ', '_')}.txt");
+    await file.writeAsString(_bodyCtrl.text);
+    await Share.shareXFiles([XFile(file.path)], text: 'Exported Note');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Notes & TXT Studio'), actions: [LabeledIconButton(icon: Icons.share, label: 'Share TXT', onPressed: _exportTxt)]),
+      body: Padding(padding: const EdgeInsets.all(16), child: Column(children: [TextField(controller: _titleCtrl, decoration: const InputDecoration(labelText: 'Title', border: OutlineInputBorder())), const SizedBox(height: 10), Expanded(child: TextField(controller: _bodyCtrl, maxLines: null, expands: true, decoration: const InputDecoration(hintText: 'Start writing notes...', border: OutlineInputBorder())))])),
+    );
+  }
+}
+
+// 13. PDF MERGE STUDIO
+class PdfStudioScreen extends StatefulWidget {
+  final List<Map<String, dynamic>> savedDocs;
+  const PdfStudioScreen({super.key, required this.savedDocs});
+  @override
+  State<PdfStudioScreen> createState() => _PdfStudioScreenState();
+}
+
+class _PdfStudioScreenState extends State<PdfStudioScreen> {
+  final List<String> _selectedIdsOrder = [];
+  bool _isMerging = false;
+
+  Future<void> _mergeDocs({required bool saveToPhone}) async {
+    if (_selectedIdsOrder.length < 2) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please select at least 2 documents to merge!')));
+      return;
+    }
+    setState(() => _isMerging = true);
+    try {
+      final pdf = pw.Document();
+      for (var id in _selectedIdsOrder) {
+        final doc = widget.savedDocs.firstWhere((d) => d['id'].toString() == id);
+        for (var p in (doc['images'] as List)) {
+          final f = File(p.toString());
+          if (await f.exists()) {
+            final bytes = await f.readAsBytes();
+            pdf.addPage(pw.Page(pageFormat: PdfPageFormat.a4, build: (_) => pw.Center(child: pw.Image(pw.MemoryImage(bytes), fit: pw.BoxFit.contain))));
+          }
+        }
+      }
+      final pdfBytes = await pdf.save();
+      if (saveToPhone) {
+        final res = await PhoneStorageManager.savePdfBytesToPublicDownloads(pdfBytes, 'Merged_${_selectedIdsOrder.length}_Docs');
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(res.savedPath != null ? '✅ Merged PDF saved to ${res.folderLabel}!' : '❌ Failed to save')));
+      } else {
+        final file = File("${(await getTemporaryDirectory()).path}/Merged_${DateTime.now().millisecondsSinceEpoch}.pdf");
+        await file.writeAsBytes(pdfBytes);
+        await Share.shareXFiles([XFile(file.path)], text: 'Merged PDF Document');
+      }
+    } finally {
+      if (mounted) setState(() => _isMerging = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Merge Documents (Ordered)')),
+      body: Stack(
+        children: [
+          ListView.builder(
+            itemCount: widget.savedDocs.length,
+            itemBuilder: (ctx, i) {
+              final doc = widget.savedDocs[i];
+              final docId = doc['id'].toString();
+              final orderIdx = _selectedIdsOrder.indexOf(docId);
+              final isSel = orderIdx != -1;
+              return CheckboxListTile(
+                value: isSel,
+                secondary: isSel ? CircleAvatar(radius: 13, backgroundColor: appPrimaryColor.value, child: Text('#${orderIdx + 1}', style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold))) : null,
+                title: Text(doc['title'] ?? 'Document'),
+                subtitle: Text('${doc['pages']} pages'),
+                onChanged: (v) => setState(() => v == true ? _selectedIdsOrder.add(docId) : _selectedIdsOrder.remove(docId)),
+              );
+            },
+          ),
+          if (_isMerging) const Center(child: CircularProgressIndicator()),
+        ],
+      ),
+      bottomNavigationBar: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            children: [
+              Expanded(child: ElevatedButton.icon(style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white, minimumSize: const Size.fromHeight(48)), icon: const Icon(Icons.download_for_offline_rounded), label: Text('Save PDF (${_selectedIdsOrder.length})'), onPressed: _isMerging ? null : () => _mergeDocs(saveToPhone: true))),
+              const SizedBox(width: 10),
+              Expanded(child: ElevatedButton.icon(style: ElevatedButton.styleFrom(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white, minimumSize: const Size.fromHeight(48)), icon: const Icon(Icons.picture_as_pdf), label: Text('Share PDF (${_selectedIdsOrder.length})'), onPressed: _isMerging ? null : () => _mergeDocs(saveToPhone: false))),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// 14. WATERMARK STUDIO
+class WatermarkToolScreen extends StatefulWidget {
+  final List<Map<String, dynamic>> savedDocs;
+  const WatermarkToolScreen({super.key, required this.savedDocs});
+  @override
+  State<WatermarkToolScreen> createState() => _WatermarkToolScreenState();
+}
+
+class _WatermarkToolScreenState extends State<WatermarkToolScreen> {
+  final _wmCtrl = TextEditingController(text: 'CONFIDENTIAL');
+  String? _selectedDocId;
+
+  @override
+  void dispose() {
+    _wmCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _exportWatermarkedPdf() async {
+    if (_selectedDocId == null) return;
+    final doc = widget.savedDocs.firstWhere((d) => d['id'].toString() == _selectedDocId);
+    final pdf = pw.Document();
+    final String wmText = _wmCtrl.text;
+    pw.MemoryImage? unicodeStamp;
+    if (_UnicodePdfHelper.hasNonAscii(wmText)) {
+      unicodeStamp = pw.MemoryImage(await _UnicodePdfHelper.renderRotatedWatermarkPng(wmText));
+    }
+
+    for (var path in (doc['images'] as List)) {
+      final f = File(path.toString());
+      if (await f.exists()) {
+        final imgMem = pw.MemoryImage(await f.readAsBytes());
+        pdf.addPage(
+          pw.Page(
+            pageFormat: PdfPageFormat.a4,
+            build: (_) => pw.Stack(
+              children: [
+                pw.Center(child: pw.Image(imgMem, fit: pw.BoxFit.contain)),
+                if (unicodeStamp != null)
+                  pw.Center(child: pw.Image(unicodeStamp, width: 420, height: 420))
+                else
+                  pw.Center(child: pw.Transform.rotate(angle: -0.6, child: pw.Text(wmText, style: pw.TextStyle(fontSize: 48, fontWeight: pw.FontWeight.bold, color: PdfColor.fromInt(0x35000000))))),
+              ],
+            ),
+          ),
+        );
+      }
+    }
+    final file = File("${(await getTemporaryDirectory()).path}/${doc['title']}_Watermarked.pdf");
+    await file.writeAsBytes(await pdf.save());
+    await Share.shareXFiles([XFile(file.path)], text: 'Watermarked PDF');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Add PDF Watermark')),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            DropdownButtonFormField<String>(value: _selectedDocId, hint: const Text('Choose Document'), items: widget.savedDocs.map((d) => DropdownMenuItem<String>(value: d['id'].toString(), child: Text(d['title'] ?? 'Document'))).toList(), onChanged: (v) => setState(() => _selectedDocId = v)),
+            const SizedBox(height: 12),
+            TextField(controller: _wmCtrl, decoration: const InputDecoration(labelText: 'Watermark Stamp Text', border: OutlineInputBorder())),
+            const SizedBox(height: 24),
+            ElevatedButton.icon(style: ElevatedButton.styleFrom(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white, minimumSize: const Size.fromHeight(48)), icon: const Icon(Icons.branding_watermark_outlined), label: const Text('Apply Stamp & Share PDF'), onPressed: _selectedDocId == null ? null : _exportWatermarkedPdf),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// 15. UNIVERSAL PHOTO ROTATE
+class UniversalImageToolScreen extends StatefulWidget {
+  const UniversalImageToolScreen({super.key});
+  @override
+  State<UniversalImageToolScreen> createState() => _UniversalImageToolScreenState();
+}
+
+class _UniversalImageToolScreenState extends State<UniversalImageToolScreen> {
+  String? _imgPath;
+  String? _lastTempRotatedPath;
+  bool _isRotating = false;
+
+  @override
+  void dispose() {
+    _deleteTempQuietly(_lastTempRotatedPath);
+    super.dispose();
+  }
+
+  void _deleteTempQuietly(String? p) {
+    if (p == null) return;
+    try {
+      final f = File(p);
+      if (f.existsSync()) f.deleteSync();
+    } catch (_) {}
+  }
+
+  Future<void> _pickImageGallery() async {
+    final x = await ImagePicker().pickImage(source: ImageSource.gallery);
+    if (x != null && mounted) {
+      _deleteTempQuietly(_lastTempRotatedPath);
+      _lastTempRotatedPath = null;
+      setState(() => _imgPath = x.path);
+    }
+  }
+
+  Future<void> _pickImageMlKit() async {
+    final scanner = DocumentScanner(options: DocumentScannerOptions(documentFormat: DocumentFormat.jpeg, mode: ScannerMode.base, isGalleryImport: true, pageLimit: 1));
+    try {
+      final res = await scanner.scanDocument();
+      if (res.images.isNotEmpty && mounted) {
+        _deleteTempQuietly(_lastTempRotatedPath);
+        _lastTempRotatedPath = null;
+        setState(() => _imgPath = res.images.first);
+      }
+    } finally {
+      await scanner.close();
+    }
+  }
+
+  Future<void> _pickImageCamera() async {
+    final captured = await Navigator.push<List<String>>(
+      context,
+      MaterialPageRoute(builder: (_) => ProCameraScannerScreen(pageLimit: 1, onSwitchToMlKitAutoScan: _pickImageMlKit)),
+    );
+    if (captured != null && captured.isNotEmpty && mounted) {
+      _deleteTempQuietly(_lastTempRotatedPath);
+      _lastTempRotatedPath = null;
+      setState(() => _imgPath = captured.first);
+    }
+  }
+
+  Future<void> _rotate90() async {
+    if (_imgPath == null || _isRotating) return;
+    setState(() => _isRotating = true);
+    try {
+      final tempDir = await getTemporaryDirectory();
+      final outPath = '${tempDir.path}/rot_${DateTime.now().millisecondsSinceEpoch}.jpg';
+      final rotatedPath = await ProDocImageProcessor.rotateImage90Fast(_imgPath!, outPath);
+      if (rotatedPath != _imgPath) {
+        final prevTemp = _lastTempRotatedPath;
+        _lastTempRotatedPath = rotatedPath;
+        if (mounted) setState(() => _imgPath = rotatedPath);
+        _deleteTempQuietly(prevTemp);
+      }
+    } finally {
+      if (mounted) setState(() => _isRotating = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Photo Rotate Studio'),
+        actions: [
+          if (_imgPath != null) LabeledIconButton(icon: Icons.rotate_right, label: 'Rotate 90°', onPressed: _isRotating ? null : _rotate90),
+          if (_imgPath != null) LabeledIconButton(icon: Icons.save_alt_rounded, label: AppLang.tr('save_jpg'), onPressed: () async { final res = await PhoneStorageManager.saveImagesToPublicGallery([_imgPath!], 'Rotated_Photo'); if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('✅ ${res.count} photo saved to ${res.folderLabel}!'))); }),
+          if (_imgPath != null) LabeledIconButton(icon: Icons.share, label: 'Share', onPressed: () => Share.shareXFiles([XFile(_imgPath!)])),
+        ],
+      ),
+      body: Stack(
+        children: [
+          Center(child: _imgPath == null ? Column(mainAxisSize: MainAxisSize.min, children: [ElevatedButton.icon(icon: const Icon(Icons.photo_library_rounded), label: const Text('Select Photo from Gallery'), onPressed: _pickImageGallery), const SizedBox(height: 12), ElevatedButton.icon(icon: const Icon(Icons.camera_alt_rounded), label: const Text('Scan Photo from Camera'), onPressed: _pickImageCamera)]) : Image.file(File(_imgPath!))),
+          if (_isRotating) const Center(child: CircularProgressIndicator()),
+        ],
+      ),
+    );
+  }
+}
+
+// 16. QR & BARCODE GENERATOR STUDIO (REAL SCANNABLE QR CODE + PNG EXPORT)
+class QrBarcodeStudioScreen extends StatefulWidget {
+  const QrBarcodeStudioScreen({super.key});
+  @override
+  State<QrBarcodeStudioScreen> createState() => _QrBarcodeStudioScreenState();
+}
+
+class _QrBarcodeStudioScreenState extends State<QrBarcodeStudioScreen> {
+  final _qrTextCtrl = TextEditingController(text: 'https://bharatdocscanner.app');
+  bool _qrTooLong = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _qrTextCtrl.addListener(() {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _qrTextCtrl.dispose();
+    super.dispose();
+  }
+
+  List<Rect> _buildQrRects(String text, double size) {
+    final List<Rect> rects = [];
+    _qrTooLong = false;
+    if (text.isEmpty) return rects;
+    try {
+      for (final elem in pw.Barcode.qrCode().make(text, width: size, height: size, drawText: false)) {
+        if (elem is pw.BarcodeBar && elem.black) {
+          rects.add(Rect.fromLTWH(
+            elem.left.toDouble(),
+            elem.top.toDouble(),
+            elem.width.toDouble(),
+            elem.height.toDouble(),
+          ));
+        }
+      }
+    } catch (_) {
+      _qrTooLong = true;
+    }
+    return rects;
+  }
+
+  Future<void> _shareQrCode() async {
+    final text = _qrTextCtrl.text.trim();
+    if (text.isEmpty) return;
+    const double imgSize = 600.0;
+    const double pad = 48.0;
+    final rects = _buildQrRects(text, imgSize - pad * 2);
+    if (rects.isEmpty) {
+      await Share.share(text);
+      return;
+    }
+
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder, const Rect.fromLTWH(0, 0, imgSize, imgSize));
+    canvas.drawRect(const Rect.fromLTWH(0, 0, imgSize, imgSize), Paint()..color = Colors.white);
+    final blackPaint = Paint()..color = Colors.black;
+    for (final r in rects) {
+      canvas.drawRect(r.shift(const Offset(pad, pad)), blackPaint);
+    }
+    final pic = recorder.endRecording();
+    final imgUi = await pic.toImage(imgSize.toInt(), imgSize.toInt());
+    final data = await imgUi.toByteData(format: ui.ImageByteFormat.png);
+    imgUi.dispose();
+    pic.dispose();
+
+    if (data != null) {
+      final file = File('${(await getTemporaryDirectory()).path}/QR_${DateTime.now().millisecondsSinceEpoch}.png');
+      await file.writeAsBytes(data.buffer.asUint8List());
+      await Share.shareXFiles([XFile(file.path)], text: text);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final qrText = _qrTextCtrl.text.trim();
+    final qrRects = _buildQrRects(qrText, 190.0);
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('QR & Barcode Studio')),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            TextField(controller: _qrTextCtrl, decoration: const InputDecoration(labelText: 'Enter Text / URL for QR', border: OutlineInputBorder())),
+            const SizedBox(height: 20),
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16), border: Border.all(color: Colors.grey.shade300)),
+              child: qrRects.isEmpty
+                  ? SizedBox(width: 190, height: 190, child: Center(child: Text(_qrTooLong ? 'Text too long for QR code' : 'Enter text to generate QR', textAlign: TextAlign.center, style: const TextStyle(color: Colors.grey))))
+                  : SizedBox(width: 190, height: 190, child: CustomPaint(painter: _QrRectPainter(qrRects))),
+            ),
+            const SizedBox(height: 20),
+            ElevatedButton.icon(style: ElevatedButton.styleFrom(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white, minimumSize: const Size.fromHeight(48)), icon: const Icon(Icons.share), label: const Text('Share QR Image'), onPressed: (qrText.isEmpty || _qrTooLong) ? null : _shareQrCode),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _QrRectPainter extends CustomPainter {
+  final List<Rect> rects;
+  _QrRectPainter(this.rects);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()..color = Colors.black;
+    for (final r in rects) {
+      canvas.drawRect(r, paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _QrRectPainter oldDelegate) => true;
+}
+// ==================== PART 5B END ====================
