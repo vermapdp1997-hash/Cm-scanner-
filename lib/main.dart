@@ -2499,7 +2499,7 @@ class _CameraGridPainter extends CustomPainter {
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 // ==================== PART 2B OF 4 END ====================
-/ ==================== PART 3A OF 4 START ====================
+// ==================== PART 3A OF 4 START ====================
 // 2. MAIN DASHBOARD SCREEN
 class MainDashboardScreen extends StatefulWidget {
   const MainDashboardScreen({super.key});
