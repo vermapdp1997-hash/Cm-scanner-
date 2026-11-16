@@ -46,7 +46,7 @@ String normalizeLocalFilePath(String raw) {
 }
 
 // Safe multi-image import helper (supports direct file paths AND Android Photo Picker content URIs/bytes)
-Future<String?> importXFileSafely(XFile xfile, String destPath, {int maxDimension = 2500}) async {
+Future<String?> importXFileSafely(XFile xfile, String destPath, {int maxDimension = 3000}) async {
   try {
     final cleanPath = normalizeLocalFilePath(xfile.path);
     final f = File(cleanPath);
@@ -230,7 +230,7 @@ Future<void> cleanupOrphanScanFiles(List<Map<String, dynamic>> activeDocs) async
 }
 
 // ============================================================================
-// PRO-LEVEL ADAPTIVE DOCUMENT IMAGE PROCESSOR (PHOTO-SAFE & HALO-FREE)
+// PRO-LEVEL ADAPTIVE DOCUMENT IMAGE PROCESSOR (PRINT-GRADE 3000PX + PHOTO-SAFE)
 // ============================================================================
 class ProDocImageProcessor {
   static List<int>? _readDimensionsFast(Uint8List rawBytes) {
@@ -330,7 +330,7 @@ class ProDocImageProcessor {
     }
   }
 
-  static Future<String> bakeOrientationToFile(String sourcePath, String outputPath, {int maxDimension = 2500}) async {
+  static Future<String> bakeOrientationToFile(String sourcePath, String outputPath, {int maxDimension = 3000}) async {
     ui.Codec? codec;
     ui.Image? targetImg;
     try {
@@ -366,7 +366,7 @@ class ProDocImageProcessor {
         final int w = targetImg.width;
         final int h = targetImg.height;
         final ttd = TransferableTypedData.fromList([byteData.buffer.asUint8List()]);
-        final jpgBytes = await Isolate.run(() => _encodeRgbaToJpgFast(ttd, w, h, 92));
+        final jpgBytes = await Isolate.run(() => _encodeRgbaToJpgFast(ttd, w, h, 94));
         await File(outputPath).writeAsBytes(jpgBytes);
         return outputPath;
       }
@@ -498,10 +498,10 @@ class ProDocImageProcessor {
         (sharpness - 0.72).abs() > 0.02 ||
         (eraserStrokes != null && eraserStrokes.isNotEmpty);
     if (filterId == 'original' && !hasAdjustments) {
-      return bakeOrientationToFile(sourcePath, outputPath, maxDimension: 2500);
+      return bakeOrientationToFile(sourcePath, outputPath, maxDimension: 3000);
     }
     final wh = [0, 0];
-    final rgba = await decodeImageToRgba(sourcePath, maxDimension: 2450, outWidthHeight: wh);
+    final rgba = await decodeImageToRgba(sourcePath, maxDimension: 2800, outWidthHeight: wh);
     if (rgba == null) return sourcePath;
 
     final ttd = TransferableTypedData.fromList([rgba]);
@@ -525,7 +525,7 @@ class ProDocImageProcessor {
         cachedBg: cachedBg,
       );
       final im = img.Image.fromBytes(width: w, height: h, bytes: enhanced.buffer, numChannels: 4, order: img.ChannelOrder.rgba);
-      return Uint8List.fromList(img.encodeJpg(im, quality: 92));
+      return Uint8List.fromList(img.encodeJpg(im, quality: 94));
     });
 
     await File(outputPath).writeAsBytes(jpgBytes);
@@ -550,7 +550,7 @@ class ProDocImageProcessor {
   static Future<String> perspectiveCropImage(String sourcePath, List<Offset> normCorners, String outputPath) async {
     try {
       final wh = [0, 0];
-      final rgba = await decodeImageToRgba(sourcePath, maxDimension: 2500, outWidthHeight: wh);
+      final rgba = await decodeImageToRgba(sourcePath, maxDimension: 3000, outWidthHeight: wh);
       if (rgba == null) return sourcePath;
       final pts = normCorners.map((o) => [o.dx, o.dy]).toList();
       final ttd = TransferableTypedData.fromList([rgba]);
@@ -579,7 +579,7 @@ Uint8List? _rotate90Isolate(Uint8List rawBytes) {
   if (decoded == null) return null;
   final oriented = img.bakeOrientation(decoded);
   final rotated = img.copyRotate(oriented, angle: 90);
-  return Uint8List.fromList(img.encodeJpg(rotated, quality: 92));
+  return Uint8List.fromList(img.encodeJpg(rotated, quality: 94));
 }
 
 Uint8List? _perspectiveCropIsolate(Uint8List src, int w, int h, List<List<double>> pts) {
@@ -658,12 +658,11 @@ Uint8List? _perspectiveCropIsolate(Uint8List src, int w, int h, List<List<double
     }
   }
   final im = img.Image.fromBytes(width: outW, height: outH, bytes: out.buffer, numChannels: 4, order: img.ChannelOrder.rgba);
-  return Uint8List.fromList(img.encodeJpg(im, quality: 92));
+  return Uint8List.fromList(img.encodeJpg(im, quality: 94));
 }
 
 PrecomputedBgMap _computeFineBgMap(Uint8List src, int w, int h) {
   final int total = w * h;
-  // 24x24 macro illumination grid: removes shadows/yellow tint cleanly WITHOUT blowing out ID photos, stamps, or logos
   const int gridCols = 24;
   const int gridRows = 24;
   const int gridCount = gridCols * gridRows;
@@ -716,10 +715,9 @@ PrecomputedBgMap _computeFineBgMap(Uint8List src, int w, int h) {
     highClip = 250;
   }
 
-  // Safe floor prevents dark photos/borders from getting artificially amplified
-  final double minFloorR = max(52.0, percentileHigh(gHistR, 0.15) * 0.42);
-  final double minFloorG = max(52.0, percentileHigh(gHistG, 0.15) * 0.42);
-  final double minFloorB = max(52.0, percentileHigh(gHistB, 0.15) * 0.42);
+  final double minFloorR = max(44.0, percentileHigh(gHistR, 0.15) * 0.36);
+  final double minFloorG = max(44.0, percentileHigh(gHistG, 0.15) * 0.36);
+  final double minFloorB = max(44.0, percentileHigh(gHistB, 0.15) * 0.36);
 
   final Int32List blkHist = Int32List(256);
   final Int32List blkSumR = Int32List(256), blkSumG = Int32List(256), blkSumB = Int32List(256);
@@ -766,9 +764,9 @@ PrecomputedBgMap _computeFineBgMap(Uint8List src, int w, int h) {
           if (bAcc >= target) break;
         }
       }
-      bgRGrid[gIdx] = max(sR / bAcc, minFloorR).clamp(48.0, 255.0);
-      bgGGrid[gIdx] = max(sG / bAcc, minFloorG).clamp(48.0, 255.0);
-      bgBGrid[gIdx] = max(sB / bAcc, minFloorB).clamp(48.0, 255.0);
+      bgRGrid[gIdx] = max(sR / bAcc, minFloorR).clamp(42.0, 255.0);
+      bgGGrid[gIdx] = max(sG / bAcc, minFloorG).clamp(42.0, 255.0);
+      bgBGrid[gIdx] = max(sB / bAcc, minFloorB).clamp(42.0, 255.0);
     }
   }
 
@@ -826,7 +824,6 @@ PrecomputedBgMap _computeFineBgMap(Uint8List src, int w, int h) {
     bgBGrid.setAll(0, tmpB);
   }
 
-  // Measure paper uniformity to avoid over-processing already clean/digital documents
   final List<double> cellLums = List<double>.generate(
     gridCount,
     (i) => 0.299 * bgRGrid[i] + 0.587 * bgGGrid[i] + 0.114 * bgBGrid[i],
@@ -834,7 +831,7 @@ PrecomputedBgMap _computeFineBgMap(Uint8List src, int w, int h) {
   final double p15 = cellLums[(gridCount * 0.15).floor()];
   final double p50 = cellLums[gridCount ~/ 2];
   final double p85 = cellLums[(gridCount * 0.85).floor()];
-  final bool isAlreadyClean = p50 >= 205.0 && (p85 - p15) <= 28.0;
+  final bool isAlreadyClean = p50 >= 212.0 && (p85 - p15) <= 22.0;
 
   return PrecomputedBgMap(
     bgR: bgRGrid,
@@ -847,6 +844,26 @@ PrecomputedBgMap _computeFineBgMap(Uint8List src, int w, int h) {
     isAlreadyClean: isAlreadyClean,
     paperMedianLum: p50,
   );
+}
+
+Float32List _buildSmoothToneLut(double blackAnchor, double paperSnap, double inkGamma, double deepInkFloor) {
+  final Float32List lut = Float32List(256);
+  for (int v = 0; v < 256; v++) {
+    final double dv = v.toDouble();
+    if (dv <= blackAnchor && blackAnchor > 0.5) {
+      final double r = (dv / blackAnchor).clamp(0.0, 1.0);
+      lut[v] = (pow(r, 1.3) * deepInkFloor).clamp(0.0, deepInkFloor);
+    } else {
+      final double normalized = ((dv - blackAnchor) / max(1.0, paperSnap - blackAnchor)).clamp(0.0, 1.0);
+      final double inkVal = deepInkFloor + pow(normalized, inkGamma) * (paperSnap - deepInkFloor);
+      final double kneeStart = paperSnap - 28.0;
+      final double kneeEnd = min(253.0, paperSnap + 12.0);
+      final double t = ((dv - kneeStart) / max(1.0, kneeEnd - kneeStart)).clamp(0.0, 1.0);
+      final double smoothWhite = t * t * (3.0 - 2.0 * t);
+      lut[v] = (inkVal + (255.0 - inkVal) * smoothWhite).clamp(0.0, 255.0);
+    }
+  }
+  return lut;
 }
 
 Uint8List _processRgbaCore({
@@ -922,9 +939,9 @@ Uint8List _processRgbaCore({
         final double estB = (bgB[i00] + (bgB[i10] - bgB[i00]) * fx) * (1.0 - fy) + (bgB[i01] + (bgB[i11] - bgB[i01]) * fx) * fy;
 
         final int p = (rb + x) * 4;
-        final double gR = min(255.0 / max(estR, 48.0), 2.65);
-        final double gG = min(255.0 / max(estG, 48.0), 2.65);
-        final double gB = min(255.0 / max(estB, 48.0), 2.65);
+        final double gR = min(255.0 / max(estR, 42.0), 3.1);
+        final double gG = min(255.0 / max(estG, 42.0), 3.1);
+        final double gB = min(255.0 / max(estB, 42.0), 3.1);
         final int nL = (0.299 * src[p] * gR + 0.587 * src[p + 1] * gG + 0.114 * src[p + 2] * gB).round().clamp(0, 255);
         normLum[rb + x] = nL;
         rowSum += nL;
@@ -952,14 +969,14 @@ Uint8List _processRgbaCore({
         final int cur = normLum[rowOff + x];
 
         int bw;
-        if (cur > 224 && stdDev < 18.0) {
+        if (cur > 222 && stdDev < 18.0) {
           bw = 255;
-        } else if (cur < 54 || (mean < 52.0 && cur <= mean + 12.0)) {
-          bw = 6;
+        } else if (cur < 56 || (mean < 54.0 && cur <= mean + 12.0)) {
+          bw = 4;
         } else {
           final double thresh = mean * (1.0 + kSauvola * (stdDev / 128.0 - 1.0));
           final double t = ((cur - (thresh - band)) / (2.0 * band)).clamp(0.0, 1.0);
-          bw = (6 + (t * t * (3.0 - 2.0 * t)) * 249).round().clamp(0, 255);
+          bw = (4 + (t * t * (3.0 - 2.0 * t)) * 251).round().clamp(0, 255);
         }
         if (hasManualTone) {
           bw = ((bw - 128.0) * clampedContrast + 128.0 + brightOffset).round().clamp(0, 255);
@@ -973,88 +990,79 @@ Uint8List _processRgbaCore({
       }
     }
   } else {
-    // NATURAL PRO TONE LUT (Protects photos, stamps & fine text while whitening paper smoothly)
+    // DUAL-CURVE PRO ENHANCEMENT: Crisp Jet-Black Ink + Pure Paper + Natural Protected Photos/Stamps
     final bool isCleanDoc = bgMap?.isAlreadyClean ?? false;
-    final double cleanScale = isCleanDoc ? 0.65 : 1.0;
+    final double cleanScale = isCleanDoc ? 0.62 : 1.0;
 
-    final Float32List toneLut = Float32List(256);
+    late final Float32List inkLut;
+    late final Float32List photoLut;
+
     if (filter == 'magic_pro' || filter == 'auto_pro' || filter == 'dark_ink' || filter == 'ocv_crisp') {
       final double blackAnchor = (filter == 'dark_ink'
-              ? (16.0 + 18.0 * clampedIntensity)
+              ? (34.0 + 22.0 * clampedIntensity)
               : filter == 'magic_pro'
-                  ? (12.0 + 14.0 * clampedIntensity)
+                  ? (28.0 + 20.0 * clampedIntensity)
                   : filter == 'ocv_crisp'
-                      ? (12.0 + 16.0 * clampedIntensity)
-                      : (8.0 + 10.0 * clampedIntensity)) *
+                      ? (26.0 + 18.0 * clampedIntensity)
+                      : (22.0 + 18.0 * clampedIntensity)) *
           cleanScale;
       final double paperSnap = filter == 'dark_ink'
-          ? (224.0 - 22.0 * clampedIntensity * cleanScale)
+          ? (216.0 - 20.0 * clampedIntensity * cleanScale)
           : filter == 'magic_pro'
-              ? (230.0 - 20.0 * clampedIntensity * cleanScale)
+              ? (220.0 - 18.0 * clampedIntensity * cleanScale)
               : filter == 'ocv_crisp'
-                  ? (228.0 - 20.0 * clampedIntensity * cleanScale)
-                  : (238.0 - 16.0 * clampedIntensity * cleanScale);
+                  ? (220.0 - 18.0 * clampedIntensity * cleanScale)
+                  : (226.0 - 16.0 * clampedIntensity * cleanScale);
       final double inkGamma = 1.0 +
           ((filter == 'dark_ink'
-                  ? (0.25 + 0.32 * clampedIntensity)
+                  ? (0.58 + 0.36 * clampedIntensity)
                   : filter == 'magic_pro'
-                      ? (0.18 + 0.24 * clampedIntensity)
+                      ? (0.52 + 0.34 * clampedIntensity)
                       : filter == 'ocv_crisp'
-                          ? (0.20 + 0.24 * clampedIntensity)
-                          : (0.12 + 0.16 * clampedIntensity)) *
+                          ? (0.48 + 0.30 * clampedIntensity)
+                          : (0.45 + 0.28 * clampedIntensity)) *
               cleanScale);
-      const double deepInkFloor = 4.0;
 
-      for (int v = 0; v < 256; v++) {
-        final double dv = v.toDouble();
-        if (dv <= blackAnchor && blackAnchor > 0.5) {
-          final double r = (dv / blackAnchor).clamp(0.0, 1.0);
-          toneLut[v] = (pow(r, 1.25) * deepInkFloor).clamp(0.0, deepInkFloor);
-        } else {
-          final double normalized = ((dv - blackAnchor) / max(1.0, paperSnap - blackAnchor)).clamp(0.0, 1.0);
-          final double inkVal = deepInkFloor + pow(normalized, inkGamma) * (paperSnap - deepInkFloor);
-          final double kneeStart = paperSnap - 28.0;
-          final double kneeEnd = min(253.0, paperSnap + 12.0);
-          final double t = ((dv - kneeStart) / max(1.0, kneeEnd - kneeStart)).clamp(0.0, 1.0);
-          final double smoothWhite = t * t * (3.0 - 2.0 * t);
-          toneLut[v] = (inkVal + (255.0 - inkVal) * smoothWhite).clamp(0.0, 255.0);
-        }
-      }
+      inkLut = _buildSmoothToneLut(blackAnchor, paperSnap, inkGamma, 3.0);
+      photoLut = _buildSmoothToneLut(8.0 * cleanScale, 242.0 - 8.0 * cleanScale, 1.08, 4.0);
     } else if (filter == 'lighten_pro') {
-      final double liftGamma = 0.84 - 0.18 * clampedIntensity;
+      inkLut = Float32List(256);
       for (int v = 0; v < 256; v++) {
-        final double val = pow(v / 255.0, liftGamma) * 255.0;
-        final double t = ((val - 228.0) / 24.0).clamp(0.0, 1.0);
+        final double val = pow(v / 255.0, 0.80 - 0.18 * clampedIntensity) * 255.0;
+        final double t = ((val - 224.0) / 26.0).clamp(0.0, 1.0);
         final double roll = t * t * (3.0 - 2.0 * t);
-        toneLut[v] = (val + (255.0 - val) * roll).clamp(0.0, 255.0);
+        inkLut[v] = (val + (255.0 - val) * roll).clamp(0.0, 255.0);
       }
+      photoLut = inkLut;
     } else {
+      inkLut = Float32List(256);
       for (int v = 0; v < 256; v++) {
-        toneLut[v] = v.toDouble();
+        inkLut[v] = v.toDouble();
       }
+      photoLut = inkLut;
     }
 
     final int lowClip = bgMap?.lowClip ?? 5;
     final int highClip = bgMap?.highClip ?? 250;
     final double vividScale = 255.0 / max(1, highClip - lowClip);
-    final double vividBlend = 0.30 + 0.25 * clampedIntensity;
+    final double vividBlend = 0.32 + 0.28 * clampedIntensity;
     final double maxGain = filter == 'dark_ink'
-        ? 2.65
+        ? 3.2
         : filter == 'ocv_crisp'
-            ? 2.55
+            ? 3.0
             : filter == 'magic_pro'
-                ? 2.45
+                ? 3.0
                 : filter == 'lighten_pro'
-                    ? 2.25
-                    : 2.10; // auto_pro
-    final double gainStrength = isCleanDoc ? 0.65 : (0.78 + 0.22 * clampedIntensity);
+                    ? 2.6
+                    : 2.85;
+    final double gainStrength = isCleanDoc ? 0.72 : (0.85 + 0.15 * clampedIntensity);
     final double satBoost = filter == 'magic_pro'
-        ? (1.15 + 0.18 * clampedIntensity)
+        ? (1.20 + 0.20 * clampedIntensity)
         : filter == 'auto_pro'
-            ? (1.06 + 0.10 * clampedIntensity)
+            ? (1.12 + 0.12 * clampedIntensity)
             : filter == 'vivid_color'
-                ? (1.14 + 0.20 * clampedIntensity)
-                : 1.08;
+                ? (1.16 + 0.22 * clampedIntensity)
+                : 1.10;
     final Float32List? bgR = bgMap?.bgR;
     final Float32List? bgG = bgMap?.bgG;
     final Float32List? bgB = bgMap?.bgB;
@@ -1092,9 +1100,9 @@ Uint8List _processRgbaCore({
           final double estG = (bgG[i00] + (bgG[i10] - bgG[i00]) * fx) * invFy + (bgG[i01] + (bgG[i11] - bgG[i01]) * fx) * fy;
           final double estB = (bgB[i00] + (bgB[i10] - bgB[i00]) * fx) * invFy + (bgB[i01] + (bgB[i11] - bgB[i01]) * fx) * fy;
 
-          final double rawGR = min(255.0 / max(estR, 48.0), maxGain);
-          final double rawGG = min(255.0 / max(estG, 48.0), maxGain);
-          final double rawGB = min(255.0 / max(estB, 48.0), maxGain);
+          final double rawGR = min(255.0 / max(estR, 42.0), maxGain);
+          final double rawGG = min(255.0 / max(estG, 42.0), maxGain);
+          final double rawGB = min(255.0 / max(estB, 42.0), maxGain);
 
           final double gR = 1.0 + (rawGR - 1.0) * gainStrength;
           final double gG = 1.0 + (rawGG - 1.0) * gainStrength;
@@ -1104,33 +1112,37 @@ Uint8List _processRgbaCore({
           final double wbG = (ng * gG).clamp(0.0, 255.0);
           final double wbB = (nb * gB).clamp(0.0, 255.0);
           final double wbLum = (0.299 * wbR + 0.587 * wbG + 0.114 * wbB).clamp(0.0, 255.0);
+          final int wbIdx = wbLum.round().clamp(0, 255);
 
           if (filter == 'ocv_crisp') {
-            final double targetL = toneLut[wbLum.round().clamp(0, 255)];
+            final double targetL = inkLut[wbIdx];
             nr = targetL;
             ng = targetL;
             nb = targetL;
           } else if (filter == 'lighten_pro') {
-            final double blend = 0.65 + 0.35 * clampedIntensity;
+            final double blend = 0.68 + 0.32 * clampedIntensity;
             final double lR = nr + (wbR - nr) * blend;
             final double lG = ng + (wbG - ng) * blend;
             final double lB = nb + (wbB - nb) * blend;
-            nr = toneLut[lR.round().clamp(0, 255)];
-            ng = toneLut[lG.round().clamp(0, 255)];
-            nb = toneLut[lB.round().clamp(0, 255)];
+            nr = inkLut[lR.round().clamp(0, 255)];
+            ng = inkLut[lG.round().clamp(0, 255)];
+            nb = inkLut[lB.round().clamp(0, 255)];
           } else {
-            final double targetL = toneLut[wbLum.round().clamp(0, 255)];
+            final double maxWb = wbR > wbG ? (wbR > wbB ? wbR : wbB) : (wbG > wbB ? wbG : wbB);
+            final double minWb = wbR < wbG ? (wbR < wbB ? wbR : wbB) : (wbG < wbB ? wbG : wbB);
+            final double wbChroma = maxWb - minWb;
+
+            final double colorWeight = ((wbChroma - 18.0) / 34.0).clamp(0.0, 1.0);
+            final double photoProtect = colorWeight * 0.78;
+            final double targetL = inkLut[wbIdx] * (1.0 - photoProtect) + photoLut[wbIdx] * photoProtect;
+
             final double ratio = wbLum > 1.5 ? (targetL / wbLum) : 1.0;
             final double sr = (wbR * ratio).clamp(0.0, 255.0);
             final double sg = (wbG * ratio).clamp(0.0, 255.0);
             final double sb = (wbB * ratio).clamp(0.0, 255.0);
 
-            final double maxC = sr > sg ? (sr > sb ? sr : sb) : (sg > sb ? sg : sb);
-            final double minC = sr < sg ? (sr < sb ? sr : sb) : (sg < sb ? sg : sb);
-            final double chroma = maxC - minC;
-            final double colorWeight = ((chroma - 18.0) / 36.0).clamp(0.0, 1.0);
-            final double paperFade = ((255.0 - targetL) / 36.0).clamp(0.0, 1.0);
-            final double satFactor = (wbLum > 205.0 && chroma < 24.0)
+            final double paperFade = ((255.0 - targetL) / 34.0).clamp(0.0, 1.0);
+            final double satFactor = (wbLum > 205.0 && wbChroma < 24.0)
                 ? 0.0
                 : (paperFade < 0.25 ? paperFade * 4.0 : (1.0 + (satBoost - 1.0) * colorWeight * paperFade));
 
@@ -1156,20 +1168,20 @@ Uint8List _processRgbaCore({
     }
   }
 
-  // NOISE-GATED HALO-FREE 5x5 EDGE-AWARE CRISP UNSHARP MASK
+  // ASYMMETRIC HALO-FREE DOCUMENT SHARPENING + FLAT-PAPER GRAIN DENOISE
   final double baseSharp = filter == 'dark_ink'
-      ? (0.42 + 0.28 * clampedIntensity)
+      ? (0.58 + 0.34 * clampedIntensity)
       : (filter == 'magic_pro' || filter == 'ocv_crisp' || filter == 'super_bw')
-          ? (0.36 + 0.26 * clampedIntensity)
+          ? (0.52 + 0.32 * clampedIntensity)
           : filter == 'auto_pro'
-              ? (0.30 + 0.22 * clampedIntensity)
-              : (filter == 'original' ? 0.35 : 0.22);
+              ? (0.48 + 0.30 * clampedIntensity)
+              : (filter == 'original' ? 0.35 : 0.28);
   final double effectiveUser = filter == 'original'
       ? max(0.0, (clampedSharp - 0.72) * 1.5)
-      : (0.40 + clampedSharp * 0.85);
-  final double sharpAmt = (baseSharp * effectiveUser).clamp(0.0, 1.05);
+      : (0.45 + clampedSharp * 0.90);
+  final double sharpAmt = (baseSharp * effectiveUser).clamp(0.0, 1.25);
 
-  if (sharpAmt > 0.05 && w > 5 && h > 5) {
+  if (w > 5 && h > 5 && (sharpAmt > 0.05 || filter != 'original')) {
     final Uint8List tmpBlur = Uint8List(total);
     for (int y = 0; y < h; y++) {
       final int rb = y * w;
@@ -1185,12 +1197,19 @@ Uint8List _processRgbaCore({
       final int r0 = (y - 2) * w, r1 = (y - 1) * w, r2 = y * w, r3 = (y + 1) * w, r4 = (y + 2) * w;
       for (int x = 2; x < w - 2; x++) {
         final int center = lumCache[r2 + x];
-        if (center >= 238) continue;
         final int blur = (tmpBlur[r0 + x] + 4 * tmpBlur[r1 + x] + 6 * tmpBlur[r2 + x] + 4 * tmpBlur[r3 + x] + tmpBlur[r4 + x]) >> 4;
         final int diff = center - blur;
-        if (diff.abs() > 10) {
-          final int delta = (diff * sharpAmt).round().clamp(-40, 40);
-          final int p = (r2 + x) * 4;
+        final int p = (r2 + x) * 4;
+
+        if (filter != 'original' && center > 210 && diff.abs() <= 9) {
+          final int smoothDelta = ((blur - center) * 0.45).round();
+          out[p] = (out[p] + smoothDelta).clamp(0, 255);
+          out[p + 1] = (out[p + 1] + smoothDelta).clamp(0, 255);
+          out[p + 2] = (out[p + 2] + smoothDelta).clamp(0, 255);
+        } else if (sharpAmt > 0.05 && center < 238 && diff.abs() > 8) {
+          final int delta = diff < 0
+              ? (diff * sharpAmt).round().clamp(-52, 0)
+              : (diff * sharpAmt * 0.30).round().clamp(0, 14);
           out[p] = (out[p] + delta).clamp(0, 255);
           out[p + 1] = (out[p + 1] + delta).clamp(0, 255);
           out[p + 2] = (out[p + 2] + delta).clamp(0, 255);
@@ -1305,7 +1324,7 @@ Uint8List? _rotateArbitraryIsolate(Uint8List rawBytes, double angleDeg) {
   final decoded = img.decodeImage(rawBytes);
   if (decoded == null) return null;
   final oriented = img.bakeOrientation(decoded);
-  if (angleDeg.abs() < 0.05) return Uint8List.fromList(img.encodeJpg(oriented, quality: 92));
+  if (angleDeg.abs() < 0.05) return Uint8List.fromList(img.encodeJpg(oriented, quality: 94));
 
   final int w = oriented.width;
   final int h = oriented.height;
@@ -1347,7 +1366,7 @@ Uint8List? _rotateArbitraryIsolate(Uint8List rawBytes, double angleDeg) {
     }
   }
   final outIm = img.Image.fromBytes(width: outW, height: outH, bytes: outBytes.buffer, numChannels: 3, order: img.ChannelOrder.rgb);
-  return Uint8List.fromList(img.encodeJpg(outIm, quality: 92));
+  return Uint8List.fromList(img.encodeJpg(outIm, quality: 94));
 }
 // ==================== PART 1B OF 4 END ====================
 // ==================== PART 2A OF 4 START ====================
@@ -1845,7 +1864,7 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
 // ==================== PART 2A OF 4 END ====================
 // ==================== PART 2B OF 4 START ====================
 // ============================================================================
-// NIGHT PRO CAMERA SCANNER (FIXED FLASH STATE + FAST MULTI-PAGE & GALLERY IMPORT)
+// NIGHT PRO CAMERA SCANNER (MAX SENSOR RES + EXACT FLASH + FAST MULTI-PAGE)
 // ============================================================================
 class ProCameraScannerScreen extends StatefulWidget {
   static const String switchToMlKitMarker = '__SWITCH_TO_MLKIT__';
@@ -1966,9 +1985,10 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
       orElse: () => _cameras.first,
     );
 
+    // Full sensor resolution first (max -> ultraHigh -> veryHigh -> high) for print-sharp A4 text
     CameraController? initializedCtrl;
     Object? lastErr;
-    for (final preset in [ResolutionPreset.veryHigh, ResolutionPreset.high, ResolutionPreset.medium]) {
+    for (final preset in [ResolutionPreset.max, ResolutionPreset.ultraHigh, ResolutionPreset.veryHigh, ResolutionPreset.high]) {
       final candidate = CameraController(chosen, preset, enableAudio: false, imageFormatGroup: ImageFormatGroup.jpeg);
       try {
         await candidate.initialize();
@@ -1995,6 +2015,9 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
     }
     try {
       await initializedCtrl.setFocusMode(FocusMode.auto);
+    } catch (_) {}
+    try {
+      await initializedCtrl.setExposureMode(ExposureMode.auto);
     } catch (_) {}
     try {
       _minExposure = await initializedCtrl.getMinExposureOffset();
@@ -2134,7 +2157,7 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
       final scansDir = Directory('${appDir.path}/scans');
       if (!await scansDir.exists()) await scansDir.create(recursive: true);
       final destPath = '${scansDir.path}/cam_${DateTime.now().millisecondsSinceEpoch}_${_capturedPaths.length}.jpg';
-      final saved = await importXFileSafely(shot, destPath, maxDimension: 2500);
+      final saved = await importXFileSafely(shot, destPath, maxDimension: 3000);
 
       if (mounted && saved != null) {
         setState(() => _capturedPaths.add(saved));
@@ -2180,7 +2203,7 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
         if (!mounted) break;
         setState(() => _importProgressText = 'Importing ${i + 1}/$countToImport...');
         final dest = '${scansDir.path}/camgal_${DateTime.now().millisecondsSinceEpoch}_$i.jpg';
-        final savedPath = await importXFileSafely(picked[i], dest, maxDimension: 2500);
+        final savedPath = await importXFileSafely(picked[i], dest, maxDimension: 3000);
         if (savedPath != null && mounted) {
           _capturedPaths.add(savedPath);
           importedCount++;
@@ -2822,7 +2845,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
         for (int i = 0; i < picked.length; i++) {
           progressNotifier.value = 'Importing ${i + 1}/${picked.length}...';
           final targetPath = '${scansDir.path}/gal_${DateTime.now().millisecondsSinceEpoch}_$i.jpg';
-          final saved = await importXFileSafely(picked[i], targetPath, maxDimension: 2500);
+          final saved = await importXFileSafely(picked[i], targetPath, maxDimension: 3000);
           if (saved != null) persistentRawPaths.add(saved);
         }
       } finally {
@@ -2918,7 +2941,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
           final f = File(cleanPath);
           if (await f.exists()) {
             final targetPath = '${scansDir.path}/mlkit_${DateTime.now().millisecondsSinceEpoch}_$i.jpg';
-            await ProDocImageProcessor.bakeOrientationToFile(f.path, targetPath, maxDimension: 2500);
+            await ProDocImageProcessor.bakeOrientationToFile(f.path, targetPath, maxDimension: 3000);
             persistentRawPaths.add(targetPath);
           }
         }
@@ -2998,7 +3021,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       final byteData = await a4CollageImg.toByteData(format: ui.ImageByteFormat.rawRgba);
       if (byteData != null) {
         final ttd = TransferableTypedData.fromList([byteData.buffer.asUint8List()]);
-        final jpgBytes = await Isolate.run(() => _encodeRgbaToJpgFast(ttd, a4Width.toInt(), a4Height.toInt(), 92));
+        final jpgBytes = await Isolate.run(() => _encodeRgbaToJpgFast(ttd, a4Width.toInt(), a4Height.toInt(), 94));
         final appDir = await getApplicationDocumentsDirectory();
         final scansDir = Directory('${appDir.path}/scans');
         if (!await scansDir.exists()) await scansDir.create(recursive: true);
@@ -3029,7 +3052,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     }
   }
 // ==================== PART 3A OF 4 END ====================
-  // ==================== PART 3B OF 4 START ====================
+// ==================== PART 3B OF 4 START ====================
   void _promptSaveDoc(List<String> enhancedImages, List<String> rawImages, String prefix, String defaultCat) {
     final nameCtrl = TextEditingController(text: "${prefix}_${DateFormat('ddMMM_HHmm').format(DateTime.now())}");
     String chosenFolder = (defaultCat != 'General' && _actualFolders.contains(defaultCat))
@@ -3807,7 +3830,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
   }
 }
 // ==================== PART 3B OF 4 END ====================
- // ==================== PART 4A OF 4 START ====================
+// ==================== PART 4A OF 4 START ====================
 // ============================================================================
 // 3. PRO SCAN FILTER, CROP, MANUAL ADJUST, ERASER & MULTI-PAGE ADD SCREEN
 // ============================================================================
@@ -3827,7 +3850,7 @@ class ScanFilterReviewScreen extends StatefulWidget {
 }
 
 class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
-  static const int _maxCachedPreviewPages = 4;
+  static const int _maxCachedPreviewPages = 2;
 
   int _curPageIndex = 0;
   bool _isSaving = false;
@@ -3987,7 +4010,7 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
 
     if (!_cachedBasePreviewRgba.containsKey(pageIdx)) {
       final wh = [0, 0];
-      final rgba = await ProDocImageProcessor.decodeImageToRgba(_workingPaths[pageIdx], maxDimension: 820, outWidthHeight: wh);
+      final rgba = await ProDocImageProcessor.decodeImageToRgba(_workingPaths[pageIdx], maxDimension: 1440, outWidthHeight: wh);
       if (rgba != null) {
         _cachedBasePreviewRgba[pageIdx] = rgba;
         _cachedBasePreviewWH[pageIdx] = wh;
@@ -4124,7 +4147,7 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
                     for (int i = 0; i < picked.length; i++) {
                       if (mounted) setState(() => _savingStatusText = 'Importing ${i + 1}/${picked.length}...');
                       final dest = '${scansDir.path}/rev_gal_${DateTime.now().millisecondsSinceEpoch}_$i.jpg';
-                      final saved = await importXFileSafely(picked[i], dest, maxDimension: 2500);
+                      final saved = await importXFileSafely(picked[i], dest, maxDimension: 3000);
                       if (saved != null) added.add(saved);
                     }
                   } finally {
@@ -4172,7 +4195,7 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
           final f = File(normalizeLocalFilePath(res.images[i]));
           if (await f.exists()) {
             final dest = '${scansDir.path}/rev_mlkit_${DateTime.now().millisecondsSinceEpoch}_$i.jpg';
-            await ProDocImageProcessor.bakeOrientationToFile(f.path, dest, maxDimension: 2500);
+            await ProDocImageProcessor.bakeOrientationToFile(f.path, dest, maxDimension: 3000);
             added.add(dest);
           }
         }
@@ -4321,7 +4344,7 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
 
     String processedPath;
     if (filterId == 'original' && !hasAdjustments) {
-      await ProDocImageProcessor.bakeOrientationToFile(_workingPaths[i], outPath, maxDimension: 2500);
+      await ProDocImageProcessor.bakeOrientationToFile(_workingPaths[i], outPath, maxDimension: 3000);
       processedPath = outPath;
     } else {
       processedPath = await ProDocImageProcessor.processAndSaveHighRes(
@@ -5111,7 +5134,6 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
 
   Future<void> _scanWithMlKitAndAppend({List<String> preCapturedPaths = const []}) async {
     DocumentScanningResult? res;
-    // ScannerMode.base = Auto Border Crop + Straighten ONLY (consistent filter flow with Camera)
     final scanner = DocumentScanner(
       options: DocumentScannerOptions(
         documentFormat: DocumentFormat.jpeg,
@@ -5220,7 +5242,7 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
       for (int i = 0; i < picked.length; i++) {
         progressNotifier.value = 'Importing ${i + 1}/${picked.length}...';
         final target = '${scansDir.path}/addgal_${DateTime.now().millisecondsSinceEpoch}_$i.jpg';
-        final saved = await importXFileSafely(picked[i], target, maxDimension: 2500);
+        final saved = await importXFileSafely(picked[i], target, maxDimension: 3000);
         if (saved != null) copiedRaw.add(saved);
       }
     } finally {
@@ -5255,7 +5277,7 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
       final f = File(normalizeLocalFilePath(rawPaths[i]));
       if (await f.exists()) {
         final target = '${scansDir.path}/add_${DateTime.now().millisecondsSinceEpoch}_$i.jpg';
-        await ProDocImageProcessor.bakeOrientationToFile(f.path, target, maxDimension: 2500);
+        await ProDocImageProcessor.bakeOrientationToFile(f.path, target, maxDimension: 3000);
         copiedRaw.add(target);
       }
     }
@@ -5750,7 +5772,7 @@ class _PassportPhotoStudioScreenState extends State<PassportPhotoStudioScreen> {
     if (x == null || !mounted) return;
     final tempDir = await getTemporaryDirectory();
     final dest = '${tempDir.path}/pass_gal_${DateTime.now().millisecondsSinceEpoch}.jpg';
-    final saved = await importXFileSafely(x, dest, maxDimension: 1600);
+    final saved = await importXFileSafely(x, dest, maxDimension: 1800);
     if (saved != null && mounted) setState(() => _photoPath = saved);
   }
 
@@ -5787,7 +5809,7 @@ class _PassportPhotoStudioScreenState extends State<PassportPhotoStudioScreen> {
     if (_photoPath == null) return;
     final tempDir = await getTemporaryDirectory();
     final bakedPath = '${tempDir.path}/pass_baked_${DateTime.now().millisecondsSinceEpoch}.jpg';
-    final readyPath = await ProDocImageProcessor.bakeOrientationToFile(_photoPath!, bakedPath, maxDimension: 900);
+    final readyPath = await ProDocImageProcessor.bakeOrientationToFile(_photoPath!, bakedPath, maxDimension: 1000);
 
     final pdf = pw.Document();
     final passImg = pw.MemoryImage(await File(readyPath).readAsBytes());
@@ -6588,7 +6610,7 @@ class _UniversalImageToolScreenState extends State<UniversalImageToolScreen> {
     if (x == null || !mounted) return;
     final tempDir = await getTemporaryDirectory();
     final dest = '${tempDir.path}/uni_gal_${DateTime.now().millisecondsSinceEpoch}.jpg';
-    final saved = await importXFileSafely(x, dest, maxDimension: 2500);
+    final saved = await importXFileSafely(x, dest, maxDimension: 3000);
     if (saved != null && mounted) {
       _deleteTempQuietly(_lastTempPath);
       _lastTempPath = saved;
