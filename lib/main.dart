@@ -5641,3 +5641,639 @@ class _InvoiceMakerProScreenState extends State<InvoiceMakerProScreen> {
   }
 }
 // ==================== PART 4C-1 (3/3) END ====================
+// ==================== PART 4C-2 (3/3) START ====================
+// 9. RESUME / CV BUILDER
+class ResumeBuilderScreen extends StatefulWidget {
+  const ResumeBuilderScreen({super.key});
+  @override
+  State<ResumeBuilderScreen> createState() => _ResumeBuilderScreenState();
+}
+
+class _ResumeBuilderScreenState extends State<ResumeBuilderScreen> {
+  final _name = TextEditingController(text: 'Rahul Sharma');
+  final _contact = TextEditingController(text: '+91 98765 43210 | rahul.sharma@email.com | New Delhi');
+  final _summary = TextEditingController(text: 'Motivated professional with expertise in operations, documentation, and team leadership.');
+  final _experience = TextEditingController(text: '• 3+ Years experience in Team Coordination & IT Documentation.\n• Managed client communications and delivery targets.');
+  final _education = TextEditingController(text: '• Bachelor of Science / Graduate (2021)\n• Higher Secondary Certificate (2018)');
+  final _skills = TextEditingController(text: 'MS Office, Communication, Team Leadership, Problem Solving');
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _contact.dispose();
+    _summary.dispose();
+    _experience.dispose();
+    _education.dispose();
+    _skills.dispose();
+    super.dispose();
+  }
+
+  Future<void> _exportCv() async {
+    final pdf = pw.Document();
+    final String allText = '${_name.text} ${_contact.text} ${_summary.text} ${_experience.text} ${_education.text} ${_skills.text}';
+    if (_UnicodePdfHelper.hasNonAscii(allText)) {
+      final pngPages = await _UnicodePdfHelper.renderLinesToA4PngPages(blocks: [
+        {'text': _name.text, 'size': 44.0, 'bold': true, 'color': const Color(0xFF2E7D32), 'space': 6.0},
+        {'text': _contact.text, 'size': 22.0, 'color': Colors.grey.shade700},
+        {'divider': true},
+        {'text': 'PROFESSIONAL SUMMARY', 'size': 28.0, 'bold': true},
+        {'text': _summary.text, 'size': 24.0, 'space': 22.0},
+        {'text': 'WORK EXPERIENCE', 'size': 28.0, 'bold': true},
+        {'text': _experience.text, 'size': 24.0, 'space': 22.0},
+        {'text': 'EDUCATION', 'size': 28.0, 'bold': true},
+        {'text': _education.text, 'size': 24.0, 'space': 22.0},
+        {'text': 'KEY SKILLS', 'size': 28.0, 'bold': true},
+        {'text': _skills.text, 'size': 24.0},
+      ]);
+      for (final pngBytes in pngPages) {
+        pdf.addPage(pw.Page(pageFormat: PdfPageFormat.a4, margin: pw.EdgeInsets.zero, build: (_) => pw.Image(pw.MemoryImage(pngBytes), fit: pw.BoxFit.contain)));
+      }
+    } else {
+      pdf.addPage(pw.Page(pageFormat: PdfPageFormat.a4, build: (_) => pw.Padding(padding: const pw.EdgeInsets.all(32), child: pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [pw.Text(_name.text, style: pw.TextStyle(fontSize: 22, fontWeight: pw.FontWeight.bold, color: PdfColors.green800)), pw.Text(_contact.text, style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey700)), pw.Divider(thickness: 1.5, color: PdfColors.green800), pw.SizedBox(height: 8), pw.Text('PROFESSIONAL SUMMARY', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12)), pw.Text(_summary.text, style: const pw.TextStyle(fontSize: 10)), pw.SizedBox(height: 12), pw.Text('WORK EXPERIENCE', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12)), pw.Text(_experience.text, style: const pw.TextStyle(fontSize: 10)), pw.SizedBox(height: 12), pw.Text('EDUCATION', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12)), pw.Text(_education.text, style: const pw.TextStyle(fontSize: 10)), pw.SizedBox(height: 12), pw.Text('KEY SKILLS', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12)), pw.Text(_skills.text, style: const pw.TextStyle(fontSize: 10))]))));
+    }
+    final file = File("${(await getTemporaryDirectory()).path}/Resume_${_name.text.replaceAll(' ', '_')}.pdf");
+    await file.writeAsBytes(await pdf.save());
+    await Share.shareXFiles([XFile(file.path)], text: 'Professional Resume');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Resume / CV Maker')),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            TextField(controller: _name, decoration: const InputDecoration(labelText: 'Full Name', border: OutlineInputBorder())),
+            const SizedBox(height: 8),
+            TextField(controller: _contact, decoration: const InputDecoration(labelText: 'Contact (Phone, Email, City)', border: OutlineInputBorder())),
+            const SizedBox(height: 8),
+            TextField(controller: _summary, maxLines: 2, decoration: const InputDecoration(labelText: 'Profile Summary', border: OutlineInputBorder())),
+            const SizedBox(height: 8),
+            TextField(controller: _experience, maxLines: 3, decoration: const InputDecoration(labelText: 'Work Experience', border: OutlineInputBorder())),
+            const SizedBox(height: 8),
+            TextField(controller: _education, maxLines: 2, decoration: const InputDecoration(labelText: 'Education', border: OutlineInputBorder())),
+            const SizedBox(height: 8),
+            TextField(controller: _skills, decoration: const InputDecoration(labelText: 'Skills', border: OutlineInputBorder())),
+            const SizedBox(height: 16),
+            ElevatedButton.icon(style: ElevatedButton.styleFrom(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white, minimumSize: const Size.fromHeight(48)), icon: const Icon(Icons.picture_as_pdf), label: const Text('Generate Resume PDF'), onPressed: _exportCv),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// 10. POWERPOINT / SLIDES MAKER
+class PowerPointStudioScreen extends StatefulWidget {
+  const PowerPointStudioScreen({super.key});
+  @override
+  State<PowerPointStudioScreen> createState() => _PowerPointStudioScreenState();
+}
+
+class _PowerPointStudioScreenState extends State<PowerPointStudioScreen> {
+  final List<Map<String, String>> _slides = [
+    {'title': 'Project Overview', 'content': '• Goals and Milestones\n• Target Audience\n• Timeline'},
+    {'title': 'Key Execution Steps', 'content': '• Step 1: Research & Discovery\n• Step 2: Implementation\n• Step 3: Launch'},
+  ];
+
+  Future<void> _exportDeck() async {
+    final pdf = pw.Document();
+    for (int i = 0; i < _slides.length; i++) {
+      final s = _slides[i];
+      final title = s['title'] ?? '';
+      final content = s['content'] ?? '';
+      if (_UnicodePdfHelper.hasNonAscii('$title $content')) {
+        final pngPages = await _UnicodePdfHelper.renderLinesToA4PngPages(
+          landscape: true,
+          blocks: [
+            {'text': '$title   (Slide ${i + 1}/${_slides.length})', 'size': 48.0, 'bold': true, 'color': const Color(0xFF2E7D32)},
+            {'divider': true},
+            {'text': content, 'size': 34.0},
+          ],
+        );
+        for (final pngBytes in pngPages) {
+          pdf.addPage(pw.Page(pageFormat: PdfPageFormat.a4.landscape, margin: pw.EdgeInsets.zero, build: (_) => pw.Image(pw.MemoryImage(pngBytes), fit: pw.BoxFit.contain)));
+        }
+      } else {
+        pdf.addPage(pw.Page(pageFormat: PdfPageFormat.a4.landscape, build: (_) => pw.Container(padding: const pw.EdgeInsets.all(36), child: pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [pw.Text(title, style: pw.TextStyle(fontSize: 26, fontWeight: pw.FontWeight.bold, color: PdfColors.green800)), pw.Text('Slide ${i + 1} of ${_slides.length}', style: const pw.TextStyle(color: PdfColors.grey600))]), pw.Divider(thickness: 2, color: PdfColors.green800), pw.SizedBox(height: 20), pw.Text(content, style: const pw.TextStyle(fontSize: 18, lineSpacing: 4))]))));
+      }
+    }
+    final file = File("${(await getTemporaryDirectory()).path}/Presentation_Slides.pdf");
+    await file.writeAsBytes(await pdf.save());
+    await Share.shareXFiles([XFile(file.path)], text: 'Presentation Slides');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Slides Maker'), actions: [LabeledIconButton(icon: Icons.share, label: 'Share PDF', onPressed: _exportDeck)]),
+      body: ListView.builder(
+        padding: const EdgeInsets.all(16),
+        itemCount: _slides.length,
+        itemBuilder: (ctx, i) => Card(
+          key: ObjectKey(_slides[i]),
+          margin: const EdgeInsets.only(bottom: 12),
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text('Slide ${i + 1}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.grey)),
+                    if (_slides.length > 1)
+                      IconButton(icon: const Icon(Icons.delete_outline, color: Colors.redAccent, size: 18), onPressed: () => setState(() => _slides.removeAt(i))),
+                  ],
+                ),
+                TextFormField(initialValue: _slides[i]['title'], decoration: const InputDecoration(labelText: 'Slide Title'), onChanged: (v) => _slides[i]['title'] = v),
+                TextFormField(initialValue: _slides[i]['content'], maxLines: 3, decoration: const InputDecoration(labelText: 'Bullets / Points'), onChanged: (v) => _slides[i]['content'] = v),
+              ],
+            ),
+          ),
+        ),
+      ),
+      floatingActionButton: FloatingActionButton.extended(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white, onPressed: () => setState(() => _slides.add({'title': 'New Slide', 'content': '• Point 1\n• Point 2'})), icon: const Icon(Icons.add), label: const Text('Add Slide')),
+    );
+  }
+}
+
+// 11. FORMAL LETTER TEMPLATES
+class LetterTemplatesScreen extends StatefulWidget {
+  const LetterTemplatesScreen({super.key});
+  @override
+  State<LetterTemplatesScreen> createState() => _LetterTemplatesScreenState();
+}
+
+class _LetterTemplatesScreenState extends State<LetterTemplatesScreen> {
+  final _ctrl = TextEditingController(text: "To,\nThe Branch Manager,\nSubject: Application for New Cheque Book\n\nRespected Sir/Madam,\nI hold a savings account in your branch (Account No: XXXXXXXX). I kindly request you to issue a new cheque book for my account.\n\nThanking You,\nYours Sincerely,\n[Your Name]");
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _exportLetter() async {
+    final pdf = pw.Document();
+    if (_UnicodePdfHelper.hasNonAscii(_ctrl.text)) {
+      final pngPages = await _UnicodePdfHelper.renderLinesToA4PngPages(blocks: [
+        {'text': _ctrl.text, 'size': 30.0},
+      ]);
+      for (final pngBytes in pngPages) {
+        pdf.addPage(pw.Page(pageFormat: PdfPageFormat.a4, margin: pw.EdgeInsets.zero, build: (_) => pw.Image(pw.MemoryImage(pngBytes), fit: pw.BoxFit.contain)));
+      }
+    } else {
+      pdf.addPage(pw.Page(pageFormat: PdfPageFormat.a4, build: (_) => pw.Padding(padding: const pw.EdgeInsets.all(36), child: pw.Text(_ctrl.text, style: const pw.TextStyle(fontSize: 14, lineSpacing: 4)))));
+    }
+    final file = File("${(await getTemporaryDirectory()).path}/Formal_Letter.pdf");
+    await file.writeAsBytes(await pdf.save());
+    await Share.shareXFiles([XFile(file.path)], text: 'Formal Letter PDF');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Letter Maker'), actions: [LabeledIconButton(icon: Icons.share, label: 'Share PDF', onPressed: _exportLetter)]),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            Wrap(
+              spacing: 8,
+              children: [
+                ActionChip(label: const Text('Leave Letter'), onPressed: () => setState(() => _ctrl.text = "To,\nThe HR Manager,\nSubject: Leave Application\n\nRespected Sir/Madam,\nI am writing to formally request 3 days of leave from [Start Date] to [End Date] due to urgent personal reasons.\n\nThank you.\nSincerely,\n[Your Name]")),
+                ActionChip(label: const Text('Resignation'), onPressed: () => setState(() => _ctrl.text = "To,\nThe Management,\nSubject: Notice of Resignation\n\nPlease accept this letter as formal notification that I am resigning from my position as [Designation]. My last working day will be [Date].\n\nRegards,\n[Your Name]")),
+                ActionChip(label: const Text('Bank Manager'), onPressed: () => setState(() => _ctrl.text = "To,\nThe Branch Manager,\nSubject: Request to Update Phone Number\n\nRespected Sir,\nKindly update my mobile number [New Number] in my bank account [Account No].\n\nThanking you,\n[Your Name]")),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Expanded(child: TextField(controller: _ctrl, maxLines: null, expands: true, decoration: const InputDecoration(border: OutlineInputBorder()))),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// 12. TXT & NOTES STUDIO
+class TxtEditorNotesScreen extends StatefulWidget {
+  const TxtEditorNotesScreen({super.key});
+  @override
+  State<TxtEditorNotesScreen> createState() => _TxtEditorNotesScreenState();
+}
+
+class _TxtEditorNotesScreenState extends State<TxtEditorNotesScreen> {
+  final _titleCtrl = TextEditingController(text: 'Quick Note');
+  final _bodyCtrl = TextEditingController();
+
+  @override
+  void dispose() {
+    _titleCtrl.dispose();
+    _bodyCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _exportTxt() async {
+    final file = File("${(await getTemporaryDirectory()).path}/${_titleCtrl.text.replaceAll(' ', '_')}.txt");
+    await file.writeAsString(_bodyCtrl.text);
+    await Share.shareXFiles([XFile(file.path)], text: 'Exported Note');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Notes & TXT Studio'), actions: [LabeledIconButton(icon: Icons.share, label: 'Share TXT', onPressed: _exportTxt)]),
+      body: Padding(padding: const EdgeInsets.all(16), child: Column(children: [TextField(controller: _titleCtrl, decoration: const InputDecoration(labelText: 'Title', border: OutlineInputBorder())), const SizedBox(height: 10), Expanded(child: TextField(controller: _bodyCtrl, maxLines: null, expands: true, decoration: const InputDecoration(hintText: 'Start writing notes...', border: OutlineInputBorder())))])),
+    );
+  }
+}
+
+// 13. PDF MERGE STUDIO
+class PdfStudioScreen extends StatefulWidget {
+  final List<Map<String, dynamic>> savedDocs;
+  const PdfStudioScreen({super.key, required this.savedDocs});
+  @override
+  State<PdfStudioScreen> createState() => _PdfStudioScreenState();
+}
+
+class _PdfStudioScreenState extends State<PdfStudioScreen> {
+  final List<String> _selectedIdsOrder = [];
+  bool _isMerging = false;
+
+  Future<void> _mergeDocs({required bool saveToPhone}) async {
+    if (_selectedIdsOrder.length < 2) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please select at least 2 documents to merge!')));
+      return;
+    }
+    setState(() => _isMerging = true);
+    try {
+      final pdf = pw.Document();
+      for (var id in _selectedIdsOrder) {
+        final doc = widget.savedDocs.firstWhere((d) => d['id'].toString() == id);
+        for (var p in (doc['images'] as List)) {
+          final f = File(p.toString());
+          if (await f.exists()) {
+            final bytes = await f.readAsBytes();
+            pdf.addPage(pw.Page(pageFormat: PdfPageFormat.a4, build: (_) => pw.Center(child: pw.Image(pw.MemoryImage(bytes), fit: pw.BoxFit.contain))));
+          }
+        }
+      }
+      final pdfBytes = await pdf.save();
+      if (saveToPhone) {
+        final res = await PhoneStorageManager.savePdfBytesToPublicDownloads(pdfBytes, 'Merged_${_selectedIdsOrder.length}_Docs');
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(res.savedPath != null ? '✅ Merged PDF saved to ${res.folderLabel}!' : '❌ Failed to save')));
+      } else {
+        final file = File("${(await getTemporaryDirectory()).path}/Merged_${DateTime.now().millisecondsSinceEpoch}.pdf");
+        await file.writeAsBytes(pdfBytes);
+        await Share.shareXFiles([XFile(file.path)], text: 'Merged PDF Document');
+      }
+    } finally {
+      if (mounted) setState(() => _isMerging = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Merge Documents (Ordered)')),
+      body: Stack(
+        children: [
+          ListView.builder(
+            itemCount: widget.savedDocs.length,
+            itemBuilder: (ctx, i) {
+              final doc = widget.savedDocs[i];
+              final docId = doc['id'].toString();
+              final orderIdx = _selectedIdsOrder.indexOf(docId);
+              final isSel = orderIdx != -1;
+              return CheckboxListTile(
+                value: isSel,
+                secondary: isSel ? CircleAvatar(radius: 13, backgroundColor: appPrimaryColor.value, child: Text('#${orderIdx + 1}', style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold))) : null,
+                title: Text(doc['title'] ?? 'Document'),
+                subtitle: Text('${doc['pages']} pages'),
+                onChanged: (v) => setState(() => v == true ? _selectedIdsOrder.add(docId) : _selectedIdsOrder.remove(docId)),
+              );
+            },
+          ),
+          if (_isMerging) const Center(child: CircularProgressIndicator()),
+        ],
+      ),
+      bottomNavigationBar: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            children: [
+              Expanded(child: ElevatedButton.icon(style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white, minimumSize: const Size.fromHeight(48)), icon: const Icon(Icons.download_for_offline_rounded), label: Text('Save PDF (${_selectedIdsOrder.length})'), onPressed: _isMerging ? null : () => _mergeDocs(saveToPhone: true))),
+              const SizedBox(width: 10),
+              Expanded(child: ElevatedButton.icon(style: ElevatedButton.styleFrom(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white, minimumSize: const Size.fromHeight(48)), icon: const Icon(Icons.picture_as_pdf), label: Text('Share PDF (${_selectedIdsOrder.length})'), onPressed: _isMerging ? null : () => _mergeDocs(saveToPhone: false))),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// 14. WATERMARK STUDIO
+class WatermarkToolScreen extends StatefulWidget {
+  final List<Map<String, dynamic>> savedDocs;
+  const WatermarkToolScreen({super.key, required this.savedDocs});
+  @override
+  State<WatermarkToolScreen> createState() => _WatermarkToolScreenState();
+}
+
+class _WatermarkToolScreenState extends State<WatermarkToolScreen> {
+  final _wmCtrl = TextEditingController(text: 'CONFIDENTIAL');
+  String? _selectedDocId;
+
+  @override
+  void dispose() {
+    _wmCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _exportWatermarkedPdf() async {
+    if (_selectedDocId == null) return;
+    final doc = widget.savedDocs.firstWhere((d) => d['id'].toString() == _selectedDocId);
+    final pdf = pw.Document();
+    final String wmText = _wmCtrl.text;
+    pw.MemoryImage? unicodeStamp;
+    if (_UnicodePdfHelper.hasNonAscii(wmText)) {
+      unicodeStamp = pw.MemoryImage(await _UnicodePdfHelper.renderRotatedWatermarkPng(wmText));
+    }
+
+    for (var path in (doc['images'] as List)) {
+      final f = File(path.toString());
+      if (await f.exists()) {
+        final imgMem = pw.MemoryImage(await f.readAsBytes());
+        pdf.addPage(
+          pw.Page(
+            pageFormat: PdfPageFormat.a4,
+            build: (_) => pw.Stack(
+              children: [
+                pw.Center(child: pw.Image(imgMem, fit: pw.BoxFit.contain)),
+                if (unicodeStamp != null)
+                  pw.Center(child: pw.Image(unicodeStamp, width: 420, height: 420))
+                else
+                  pw.Center(child: pw.Transform.rotate(angle: -0.6, child: pw.Text(wmText, style: pw.TextStyle(fontSize: 48, fontWeight: pw.FontWeight.bold, color: PdfColor.fromInt(0x35000000))))),
+              ],
+            ),
+          ),
+        );
+      }
+    }
+    final file = File("${(await getTemporaryDirectory()).path}/${doc['title']}_Watermarked.pdf");
+    await file.writeAsBytes(await pdf.save());
+    await Share.shareXFiles([XFile(file.path)], text: 'Watermarked PDF');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Add PDF Watermark')),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            DropdownButtonFormField<String>(value: _selectedDocId, hint: const Text('Choose Document'), items: widget.savedDocs.map((d) => DropdownMenuItem<String>(value: d['id'].toString(), child: Text(d['title'] ?? 'Document'))).toList(), onChanged: (v) => setState(() => _selectedDocId = v)),
+            const SizedBox(height: 12),
+            TextField(controller: _wmCtrl, decoration: const InputDecoration(labelText: 'Watermark Stamp Text', border: OutlineInputBorder())),
+            const SizedBox(height: 24),
+            ElevatedButton.icon(style: ElevatedButton.styleFrom(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white, minimumSize: const Size.fromHeight(48)), icon: const Icon(Icons.branding_watermark_outlined), label: const Text('Apply Stamp & Share PDF'), onPressed: _selectedDocId == null ? null : _exportWatermarkedPdf),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// 15. UNIVERSAL PHOTO ROTATE
+class UniversalImageToolScreen extends StatefulWidget {
+  const UniversalImageToolScreen({super.key});
+  @override
+  State<UniversalImageToolScreen> createState() => _UniversalImageToolScreenState();
+}
+
+class _UniversalImageToolScreenState extends State<UniversalImageToolScreen> {
+  String? _imgPath;
+  String? _lastTempRotatedPath;
+  bool _isRotating = false;
+
+  @override
+  void dispose() {
+    _deleteTempQuietly(_lastTempRotatedPath);
+    super.dispose();
+  }
+
+  void _deleteTempQuietly(String? p) {
+    if (p == null) return;
+    try {
+      final f = File(p);
+      if (f.existsSync()) f.deleteSync();
+    } catch (_) {}
+  }
+
+  Future<void> _pickImageGallery() async {
+    final x = await ImagePicker().pickImage(source: ImageSource.gallery);
+    if (x != null && mounted) {
+      _deleteTempQuietly(_lastTempRotatedPath);
+      _lastTempRotatedPath = null;
+      setState(() => _imgPath = normalizeLocalFilePath(x.path));
+    }
+  }
+
+  Future<void> _pickImageMlKit() async {
+    for (final mode in [ScannerMode.full, ScannerMode.base]) {
+      final scanner = DocumentScanner(options: DocumentScannerOptions(documentFormat: DocumentFormat.jpeg, mode: mode, isGalleryImport: true, pageLimit: 1));
+      try {
+        final res = await scanner.scanDocument();
+        if (res.images.isNotEmpty && mounted) {
+          _deleteTempQuietly(_lastTempRotatedPath);
+          _lastTempRotatedPath = null;
+          setState(() => _imgPath = normalizeLocalFilePath(res.images.first));
+        }
+        return;
+      } catch (e) {
+        debugPrint("Universal ML Kit ($mode) err: $e");
+      } finally {
+        await scanner.close();
+      }
+    }
+  }
+
+  Future<void> _pickImageCamera() async {
+    final captured = await Navigator.push<List<String>>(
+      context,
+      MaterialPageRoute(builder: (_) => const ProCameraScannerScreen(pageLimit: 1, allowAutoScanSwitch: true)),
+    );
+    if (!mounted || captured == null || captured.isEmpty) return;
+    if (captured.contains(ProCameraScannerScreen.switchToMlKitMarker)) {
+      await _pickImageMlKit();
+      return;
+    }
+    _deleteTempQuietly(_lastTempRotatedPath);
+    _lastTempRotatedPath = null;
+    setState(() => _imgPath = normalizeLocalFilePath(captured.first));
+  }
+
+  Future<void> _rotate90() async {
+    if (_imgPath == null || _isRotating) return;
+    setState(() => _isRotating = true);
+    try {
+      final tempDir = await getTemporaryDirectory();
+      final outPath = '${tempDir.path}/rot_${DateTime.now().millisecondsSinceEpoch}.jpg';
+      final rotatedPath = await ProDocImageProcessor.rotateImage90Fast(_imgPath!, outPath);
+      if (rotatedPath != _imgPath) {
+        final prevTemp = _lastTempRotatedPath;
+        _lastTempRotatedPath = rotatedPath;
+        if (mounted) setState(() => _imgPath = rotatedPath);
+        _deleteTempQuietly(prevTemp);
+      }
+    } finally {
+      if (mounted) setState(() => _isRotating = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Photo Rotate Studio'),
+        actions: [
+          if (_imgPath != null) LabeledIconButton(icon: Icons.rotate_right, label: 'Rotate 90°', onPressed: _isRotating ? null : _rotate90),
+          if (_imgPath != null) LabeledIconButton(icon: Icons.save_alt_rounded, label: AppLang.tr('save_jpg'), onPressed: () async { final res = await PhoneStorageManager.saveImagesToPublicGallery([_imgPath!], 'Rotated_Photo'); if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('✅ ${res.count} photo saved to ${res.folderLabel}!'))); }),
+          if (_imgPath != null) LabeledIconButton(icon: Icons.share, label: 'Share', onPressed: () => Share.shareXFiles([XFile(_imgPath!)])),
+        ],
+      ),
+      body: Stack(
+        children: [
+          Center(child: _imgPath == null ? Column(mainAxisSize: MainAxisSize.min, children: [ElevatedButton.icon(icon: const Icon(Icons.photo_library_rounded), label: const Text('Select Photo from Gallery'), onPressed: _pickImageGallery), const SizedBox(height: 12), ElevatedButton.icon(icon: const Icon(Icons.camera_alt_rounded), label: const Text('Scan Photo from Camera'), onPressed: _pickImageCamera)]) : Image.file(File(_imgPath!))),
+          if (_isRotating) const Center(child: CircularProgressIndicator()),
+        ],
+      ),
+    );
+  }
+}
+
+// 16. QR & BARCODE GENERATOR STUDIO
+class QrBarcodeStudioScreen extends StatefulWidget {
+  const QrBarcodeStudioScreen({super.key});
+  @override
+  State<QrBarcodeStudioScreen> createState() => _QrBarcodeStudioScreenState();
+}
+
+class _QrBarcodeStudioScreenState extends State<QrBarcodeStudioScreen> {
+  final _qrTextCtrl = TextEditingController(text: 'https://bharatdocscanner.app');
+  bool _qrTooLong = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _qrTextCtrl.addListener(() {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _qrTextCtrl.dispose();
+    super.dispose();
+  }
+
+  List<Rect> _buildQrRects(String text, double size) {
+    final List<Rect> rects = [];
+    _qrTooLong = false;
+    if (text.isEmpty) return rects;
+    try {
+      for (final elem in pw.Barcode.qrCode().make(text, width: size, height: size, drawText: false)) {
+        if (elem is pw.BarcodeBar && elem.black) {
+          rects.add(Rect.fromLTWH(
+            elem.left.toDouble(),
+            elem.top.toDouble(),
+            elem.width.toDouble(),
+            elem.height.toDouble(),
+          ));
+        }
+      }
+    } catch (_) {
+      _qrTooLong = true;
+    }
+    return rects;
+  }
+
+  Future<void> _shareQrCode() async {
+    final text = _qrTextCtrl.text.trim();
+    if (text.isEmpty) return;
+    const double imgSize = 600.0;
+    const double pad = 48.0;
+    final rects = _buildQrRects(text, imgSize - pad * 2);
+    if (rects.isEmpty) {
+      await Share.share(text);
+      return;
+    }
+
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder, const Rect.fromLTWH(0, 0, imgSize, imgSize));
+    canvas.drawRect(const Rect.fromLTWH(0, 0, imgSize, imgSize), Paint()..color = Colors.white);
+    final blackPaint = Paint()..color = Colors.black;
+    for (final r in rects) {
+      canvas.drawRect(r.shift(const Offset(pad, pad)), blackPaint);
+    }
+    final pic = recorder.endRecording();
+    final imgUi = await pic.toImage(imgSize.toInt(), imgSize.toInt());
+    final data = await imgUi.toByteData(format: ui.ImageByteFormat.png);
+    imgUi.dispose();
+    pic.dispose();
+
+    if (data != null) {
+      final file = File('${(await getTemporaryDirectory()).path}/QR_${DateTime.now().millisecondsSinceEpoch}.png');
+      await file.writeAsBytes(data.buffer.asUint8List());
+      await Share.shareXFiles([XFile(file.path)], text: text);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final qrText = _qrTextCtrl.text.trim();
+    final qrRects = _buildQrRects(qrText, 190.0);
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('QR & Barcode Studio')),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            TextField(controller: _qrTextCtrl, decoration: const InputDecoration(labelText: 'Enter Text / URL for QR', border: OutlineInputBorder())),
+            const SizedBox(height: 20),
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16), border: Border.all(color: Colors.grey.shade300)),
+              child: qrRects.isEmpty
+                  ? SizedBox(width: 190, height: 190, child: Center(child: Text(_qrTooLong ? 'Text too long for QR code' : 'Enter text to generate QR', textAlign: TextAlign.center, style: const TextStyle(color: Colors.grey))))
+                  : SizedBox(width: 190, height: 190, child: CustomPaint(painter: _QrRectPainter(qrRects))),
+            ),
+            const SizedBox(height: 20),
+            ElevatedButton.icon(style: ElevatedButton.styleFrom(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white, minimumSize: const Size.fromHeight(48)), icon: const Icon(Icons.share), label: const Text('Share QR Image'), onPressed: (qrText.isEmpty || _qrTooLong) ? null : _shareQrCode),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _QrRectPainter extends CustomPainter {
+  final List<Rect> rects;
+  _QrRectPainter(this.rects);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()..color = Colors.black;
+    for (final r in rects) {
+      canvas.drawRect(r, paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _QrRectPainter oldDelegate) => true;
+}
+// ==================== PART 4C-2 (3/3) END ====================
