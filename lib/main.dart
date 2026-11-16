@@ -26,6 +26,11 @@ final ValueNotifier<ThemeMode> appThemeMode = ValueNotifier(ThemeMode.light);
 final ValueNotifier<Color> appPrimaryColor = ValueNotifier(const Color(0xFF2E7D32));
 final ValueNotifier<bool> isHindiLanguage = ValueNotifier(false);
 
+// Safe delayed dispose to avoid "TextEditingController used after being disposed" during dialog close animations
+void safeDisposeController(TextEditingController ctrl) {
+  Future.delayed(const Duration(milliseconds: 450), ctrl.dispose);
+}
+
 class AppLang {
   static String tr(String key) {
     final bool hi = isHindiLanguage.value;
@@ -123,7 +128,7 @@ class DocFilterPreset {
   const DocFilterPreset({required this.id, required this.title, required this.icon, required this.badgeColor});
 }
 
-// PRO DOC SCANNER PRESET FILTERS (CamScanner / Oken Grade)
+// PRO DOC SCANNER PRESET FILTERS (Oken Scan / CamScanner Grade)
 final List<DocFilterPreset> kDocFilters = [
   const DocFilterPreset(id: 'original', title: 'Original', icon: Icons.image_outlined, badgeColor: Colors.blueGrey),
   const DocFilterPreset(id: 'magic_pro', title: 'Magic Color', icon: Icons.auto_awesome_rounded, badgeColor: Color(0xFF00B4D8)),
@@ -181,7 +186,7 @@ Future<void> cleanupOrphanScanFiles(List<Map<String, dynamic>> activeDocs) async
 }
 
 // ============================================================================
-// ULTRA-CLARITY PRO IMAGE PROCESSOR (CAMSCANNER / OKEN GRADE + CACHED PREVIEW)
+// ULTRA-CLARITY OKEN / DOC-SCAN GRADE IMAGE PROCESSOR
 // ============================================================================
 class ProDocImageProcessor {
   static List<int>? _readDimensionsFast(Uint8List rawBytes) {
@@ -207,6 +212,30 @@ class ProDocImageProcessor {
       return wh;
     } catch (_) {
       return null;
+    }
+  }
+
+  /// Bakes JPEG EXIF orientation into actual pixel layout so PDF exports & preview dimensions never rotate sideways.
+  static Future<String> bakeOrientationToFile(String sourcePath, String outputPath, {int maxDimension = 2600}) async {
+    try {
+      final srcFile = File(sourcePath);
+      if (!await srcFile.exists()) return sourcePath;
+      final rawBytes = await srcFile.readAsBytes();
+      final bakedBytes = await compute(_bakeOrientationIsolate, {'bytes': rawBytes, 'maxDim': maxDimension});
+      if (bakedBytes != null) {
+        await File(outputPath).writeAsBytes(bakedBytes);
+        return outputPath;
+      }
+      await srcFile.copy(outputPath);
+      return outputPath;
+    } catch (e) {
+      debugPrint("Bake orientation err: $e");
+      try {
+        await File(sourcePath).copy(outputPath);
+        return outputPath;
+      } catch (_) {
+        return sourcePath;
+      }
     }
   }
 
@@ -308,11 +337,10 @@ class ProDocImageProcessor {
         (sharpness - 0.6).abs() > 0.02 ||
         (eraserStrokes != null && eraserStrokes.isNotEmpty);
     if (filterId == 'original' && !hasAdjustments) {
-      await File(sourcePath).copy(outputPath);
-      return outputPath;
+      return bakeOrientationToFile(sourcePath, outputPath, maxDimension: 2600);
     }
     final wh = [0, 0];
-    final rgba = await decodeImageToRgba(sourcePath, maxDimension: 2200, outWidthHeight: wh);
+    final rgba = await decodeImageToRgba(sourcePath, maxDimension: 2600, outWidthHeight: wh);
     if (rgba == null) return sourcePath;
     final enhanced = await applyProFilterToRgba(
       rgba: rgba,
@@ -325,7 +353,7 @@ class ProDocImageProcessor {
       sharpness: sharpness,
       eraserStrokes: eraserStrokes,
     );
-    final jpgBytes = await compute(_encodeRgbaToJpgIsolate, {'rgba': enhanced, 'w': wh[0], 'h': wh[1], 'quality': 93});
+    final jpgBytes = await compute(_encodeRgbaToJpgIsolate, {'rgba': enhanced, 'w': wh[0], 'h': wh[1], 'quality': 94});
     await File(outputPath).writeAsBytes(jpgBytes);
     return outputPath;
   }
@@ -347,7 +375,7 @@ class ProDocImageProcessor {
   static Future<String> perspectiveCropImage(String sourcePath, List<Offset> normCorners, String outputPath) async {
     try {
       final wh = [0, 0];
-      final rgba = await decodeImageToRgba(sourcePath, maxDimension: 2200, outWidthHeight: wh);
+      final rgba = await decodeImageToRgba(sourcePath, maxDimension: 2600, outWidthHeight: wh);
       if (rgba == null) return sourcePath;
       final pts = normCorners.map((o) => [o.dx, o.dy]).toList();
       final jpgBytes = await compute(_perspectiveCropIsolate, {'rgba': rgba, 'w': wh[0], 'h': wh[1], 'pts': pts});
@@ -362,12 +390,26 @@ class ProDocImageProcessor {
   }
 }
 
+Uint8List? _bakeOrientationIsolate(Map<String, dynamic> params) {
+  final Uint8List rawBytes = params['bytes'];
+  final int maxDim = params['maxDim'] ?? 2600;
+  final decoded = img.decodeImage(rawBytes);
+  if (decoded == null) return null;
+  img.Image oriented = img.bakeOrientation(decoded);
+  if (oriented.width > maxDim || oriented.height > maxDim) {
+    oriented = oriented.width >= oriented.height
+        ? img.copyResize(oriented, width: maxDim, interpolation: img.Interpolation.cubic)
+        : img.copyResize(oriented, height: maxDim, interpolation: img.Interpolation.cubic);
+  }
+  return Uint8List.fromList(img.encodeJpg(oriented, quality: 94));
+}
+
 Uint8List? _rotate90Isolate(Uint8List rawBytes) {
   final decoded = img.decodeImage(rawBytes);
   if (decoded == null) return null;
   final oriented = img.bakeOrientation(decoded);
   final rotated = img.copyRotate(oriented, angle: 90);
-  return Uint8List.fromList(img.encodeJpg(rotated, quality: 93));
+  return Uint8List.fromList(img.encodeJpg(rotated, quality: 94));
 }
 
 Uint8List _encodeRgbaToJpgIsolate(Map<String, dynamic> params) {
@@ -395,6 +437,7 @@ Uint8List? _perspectiveCropIsolate(Map<String, dynamic> params) {
 
   final int outW = max(20, max(wTop, wBot).round());
   final int outH = max(20, max(hLeft, hRight).round());
+  if (outW > 5000 || outH > 5000) return null;
 
   // Solve 8-DOF homography mapping unit square (u,v) -> quad (x0..x3, y0..y3)
   final List<List<double>> a = List.generate(8, (_) => List.filled(9, 0.0));
@@ -414,8 +457,9 @@ Uint8List? _perspectiveCropIsolate(Map<String, dynamic> params) {
     for (int r = col + 1; r < 8; r++) {
       if (a[r][col].abs() > a[piv][col].abs()) piv = r;
     }
+    if (a[piv][col].abs() < 1e-9) return null;
     final tmp = a[col]; a[col] = a[piv]; a[piv] = tmp;
-    final double div = a[col][col].abs() < 1e-9 ? 1e-9 : a[col][col];
+    final double div = a[col][col];
     for (int j = col; j <= 8; j++) a[col][j] /= div;
     for (int r = 0; r < 8; r++) {
       if (r == col) continue;
@@ -427,7 +471,7 @@ Uint8List? _perspectiveCropIsolate(Map<String, dynamic> params) {
   final double h3 = a[3][8], h4 = a[4][8], h5 = a[5][8];
   final double h6 = a[6][8], h7 = a[7][8];
 
-  final Uint8List out = Uint8List(outW * outH * 4);
+  final Uint8List out = Uint8List(outW * outH * 4)..fillRange(0, outW * outH * 4, 255);
   for (int oy = 0; oy < outH; oy++) {
     final double v = oy / max(1, outH - 1);
     final double bx = h1 * v + h2;
@@ -436,8 +480,10 @@ Uint8List? _perspectiveCropIsolate(Map<String, dynamic> params) {
     for (int ox = 0; ox < outW; ox++) {
       final double u = ox / max(1, outW - 1);
       final double denom = h6 * u + bd;
+      if (denom.abs() < 1e-6) continue;
       final double px = ((h0 * u + bx) / denom).clamp(0.0, (w - 1).toDouble());
       final double py = ((h3 * u + by) / denom).clamp(0.0, (h - 1).toDouble());
+      if (px.isNaN || py.isNaN) continue;
 
       final int ix = px.floor().clamp(0, w - 2);
       final int iy = py.floor().clamp(0, h - 2);
@@ -453,7 +499,7 @@ Uint8List? _perspectiveCropIsolate(Map<String, dynamic> params) {
     }
   }
   final im = img.Image.fromBytes(width: outW, height: outH, bytes: out.buffer, numChannels: 4, order: img.ChannelOrder.rgba);
-  return Uint8List.fromList(img.encodeJpg(im, quality: 93));
+  return Uint8List.fromList(img.encodeJpg(im, quality: 94));
 }
 
 PrecomputedBgMap _buildBgMapIsolate(Map<String, dynamic> params) {
@@ -465,8 +511,9 @@ PrecomputedBgMap _buildBgMapIsolate(Map<String, dynamic> params) {
 
 PrecomputedBgMap _computeFineBgMap(Uint8List src, int w, int h) {
   final int total = w * h;
-  const int gridCols = 64;
-  const int gridRows = 64;
+  // 80x80 ultra-fine illumination grid for Oken Scan / Doc Scan shadow & fold removal
+  const int gridCols = 80;
+  const int gridRows = 80;
   const int gridCount = gridCols * gridRows;
   final Float32List bgRGrid = Float32List(gridCount);
   final Float32List bgGGrid = Float32List(gridCount);
@@ -474,7 +521,7 @@ PrecomputedBgMap _computeFineBgMap(Uint8List src, int w, int h) {
 
   final Int32List gHistR = Int32List(256), gHistG = Int32List(256), gHistB = Int32List(256), lumHist = Int32List(256);
   int gSamples = 0;
-  final int gStep = max(1, total ~/ 20000);
+  final int gStep = max(1, total ~/ 24000);
   for (int i = 0; i < total; i += gStep) {
     final int p = i * 4;
     final int r = src[p], g = src[p + 1], b = src[p + 2];
@@ -517,14 +564,13 @@ PrecomputedBgMap _computeFineBgMap(Uint8List src, int w, int h) {
     highClip = 250;
   }
 
-  // Lower floor allows true shadow removal in dim/night photos while blocking pure black ink patches
-  final double minFloorR = max(36.0, percentileHigh(gHistR, 0.15) * 0.30);
-  final double minFloorG = max(36.0, percentileHigh(gHistG, 0.15) * 0.30);
-  final double minFloorB = max(36.0, percentileHigh(gHistB, 0.15) * 0.30);
+  final double minFloorR = max(28.0, percentileHigh(gHistR, 0.15) * 0.24);
+  final double minFloorG = max(28.0, percentileHigh(gHistG, 0.15) * 0.24);
+  final double minFloorB = max(28.0, percentileHigh(gHistB, 0.15) * 0.24);
 
   final Int32List blkHist = Int32List(256);
   final Int32List blkSumR = Int32List(256), blkSumG = Int32List(256), blkSumB = Int32List(256);
-  final int step = (w > 1000 || h > 1000) ? 2 : 1;
+  final int step = (w > 1100 || h > 1100) ? 2 : 1;
 
   for (int gy = 0; gy < gridRows; gy++) {
     final int y0 = (gy * h) ~/ gridRows, y1 = max(y0 + 1, ((gy + 1) * h) ~/ gridRows);
@@ -555,8 +601,8 @@ PrecomputedBgMap _computeFineBgMap(Uint8List src, int w, int h) {
         bgBGrid[gIdx] = 255.0;
         continue;
       }
-      // Top 15% brightest pixels inside each fine cell cleanly ignore dark text ink
-      final int target = max(1, (samples * 0.15).round());
+      // Top 18% brightest pixels cleanly represent local paper color while ignoring ink strokes
+      final int target = max(1, (samples * 0.18).round());
       int bAcc = 0, sR = 0, sG = 0, sB = 0;
       for (int bin = 255; bin >= 0; bin--) {
         final int c = blkHist[bin];
@@ -568,9 +614,9 @@ PrecomputedBgMap _computeFineBgMap(Uint8List src, int w, int h) {
           if (bAcc >= target) break;
         }
       }
-      bgRGrid[gIdx] = max(sR / bAcc, minFloorR).clamp(32.0, 255.0);
-      bgGGrid[gIdx] = max(sG / bAcc, minFloorG).clamp(32.0, 255.0);
-      bgBGrid[gIdx] = max(sB / bAcc, minFloorB).clamp(32.0, 255.0);
+      bgRGrid[gIdx] = max(sR / bAcc, minFloorR).clamp(28.0, 255.0);
+      bgGGrid[gIdx] = max(sG / bAcc, minFloorG).clamp(28.0, 255.0);
+      bgBGrid[gIdx] = max(sB / bAcc, minFloorB).clamp(28.0, 255.0);
     }
   }
 
@@ -591,7 +637,7 @@ PrecomputedBgMap _computeFineBgMap(Uint8List src, int w, int h) {
             if (bgBGrid[nIdx] > mB) mB = bgBGrid[nIdx];
           }
         }
-        final double wCur = dPass == 0 ? 0.35 : 0.50;
+        final double wCur = dPass == 0 ? 0.25 : 0.45;
         tmpR[idx] = bgRGrid[idx] * wCur + mR * (1.0 - wCur);
         tmpG[idx] = bgGGrid[idx] * wCur + mG * (1.0 - wCur);
         tmpB[idx] = bgBGrid[idx] * wCur + mB * (1.0 - wCur);
@@ -662,8 +708,8 @@ Uint8List _processRgbaIsolate(Map<String, dynamic> params) {
         bgR: params['bgR'],
         bgG: params['bgG'],
         bgB: params['bgB'],
-        gridCols: params['gridCols'] ?? 64,
-        gridRows: params['gridRows'] ?? 64,
+        gridCols: params['gridCols'] ?? 80,
+        gridRows: params['gridRows'] ?? 80,
         lowClip: params['lowClip'] ?? 6,
         highClip: params['highClip'] ?? 249,
       );
@@ -672,8 +718,8 @@ Uint8List _processRgbaIsolate(Map<String, dynamic> params) {
     }
   }
 
-  final int gridCols = bgMap?.gridCols ?? 64;
-  final int gridRows = bgMap?.gridRows ?? 64;
+  final int gridCols = bgMap?.gridCols ?? 80;
+  final int gridRows = bgMap?.gridRows ?? 80;
   final double cellW = w / gridCols, cellH = h / gridRows;
   final bool hasManualTone = brightness.abs() > 0.005 || (contrast - 1.0).abs() > 0.005;
 
@@ -690,7 +736,7 @@ Uint8List _processRgbaIsolate(Map<String, dynamic> params) {
 
   final Uint8List lumCache = Uint8List(total);
 
-  // STEP 3A: BACKGROUND-NORMALIZED SAUVOLA LASER B&W (B&W Pro)
+  // STEP 3A: HOLLOW-PROOF SAUVOLA LASER B&W (B&W Pro)
   if (filter == 'super_bw' && bgMap != null) {
     final Uint8List normLum = Uint8List(total);
     final int iw = w + 1;
@@ -704,9 +750,9 @@ Uint8List _processRgbaIsolate(Map<String, dynamic> params) {
       for (int x = 0; x < w; x++) {
         final double gx = ((x + 0.5) / cellW - 0.5).clamp(0.0, gridCols - 1.0001);
         final int p = (rb + x) * 4;
-        final double gR = min(254.0 / max(sampleGrid(bgMap.bgR, gx, gy), 32.0), 3.6);
-        final double gG = min(254.0 / max(sampleGrid(bgMap.bgG, gx, gy), 32.0), 3.6);
-        final double gB = min(254.0 / max(sampleGrid(bgMap.bgB, gx, gy), 32.0), 3.6);
+        final double gR = min(255.0 / max(sampleGrid(bgMap.bgR, gx, gy), 28.0), 4.2);
+        final double gG = min(255.0 / max(sampleGrid(bgMap.bgG, gx, gy), 28.0), 4.2);
+        final double gB = min(255.0 / max(sampleGrid(bgMap.bgB, gx, gy), 28.0), 4.2);
         final int nL = (0.299 * src[p] * gR + 0.587 * src[p + 1] * gG + 0.114 * src[p + 2] * gB).round().clamp(0, 255);
         normLum[rb + x] = nL;
         rowSum += nL;
@@ -716,9 +762,9 @@ Uint8List _processRgbaIsolate(Map<String, dynamic> params) {
       }
     }
 
-    final int rad = max(12, min(w, h) ~/ 30);
-    final double kSauvola = 0.16 + 0.24 * (1.0 - intensity);
-    const double band = 12.0;
+    final int rad = max(14, min(w, h) ~/ 26);
+    final double kSauvola = 0.15 + 0.22 * (1.0 - intensity);
+    const double band = 9.0;
 
     for (int y = 0; y < h; y++) {
       final int y1 = max(0, y - rad), y2 = min(h - 1, y + rad), rowOff = y * w;
@@ -733,10 +779,11 @@ Uint8List _processRgbaIsolate(Map<String, dynamic> params) {
         final int cur = normLum[rowOff + x];
 
         int bw;
-        if (cur > 224 && stdDev < 22.0) {
+        if (cur > 220 && stdDev < 24.0) {
           bw = 255;
-        } else if (mean < 32.0 && stdDev < 14.0) {
-          bw = 6;
+        } else if (cur < 56 || (mean < 54.0 && cur <= mean + 14.0)) {
+          // Prevents bold black headings from turning hollow inside
+          bw = 4;
         } else {
           final double thresh = mean * (1.0 + kSauvola * (stdDev / 128.0 - 1.0));
           final double t = ((cur - (thresh - band)) / (2.0 * band)).clamp(0.0, 1.0);
@@ -754,44 +801,52 @@ Uint8List _processRgbaIsolate(Map<String, dynamic> params) {
       }
     }
   } else {
-    // STEP 3B: CAMSCANNER / OKEN GRADE TONE CURVE LUT
+    // STEP 3B: OKEN SCAN / DOC SCAN INK-ANCHORED S-CURVE LUT
     final Float32List toneLut = Float32List(256);
     if (filter == 'magic_pro' || filter == 'auto_pro' || filter == 'dark_ink' || filter == 'ocv_crisp') {
+      final double blackAnchor = filter == 'dark_ink'
+          ? (62.0 + 24.0 * intensity)
+          : filter == 'magic_pro'
+              ? (48.0 + 18.0 * intensity)
+              : filter == 'ocv_crisp'
+                  ? (46.0 + 18.0 * intensity)
+                  : (38.0 + 14.0 * intensity);
       final double paperSnap = filter == 'dark_ink'
-          ? (204.0 - 30.0 * intensity)
+          ? (204.0 - 26.0 * intensity)
           : filter == 'magic_pro'
-              ? (216.0 - 34.0 * intensity)
+              ? (216.0 - 26.0 * intensity)
               : filter == 'ocv_crisp'
-                  ? (212.0 - 30.0 * intensity)
-                  : (224.0 - 24.0 * intensity);
+                  ? (214.0 - 26.0 * intensity)
+                  : (224.0 - 22.0 * intensity);
       final double inkGamma = filter == 'dark_ink'
-          ? (1.45 + 0.55 * intensity)
+          ? (1.52 + 0.50 * intensity)
           : filter == 'magic_pro'
-              ? (1.28 + 0.42 * intensity)
+              ? (1.36 + 0.42 * intensity)
               : filter == 'ocv_crisp'
-                  ? (1.30 + 0.38 * intensity)
-                  : (1.14 + 0.25 * intensity);
-      final double blackFloor = (filter == 'dark_ink' || filter == 'magic_pro') ? 26.0 : 14.0;
+                  ? (1.36 + 0.40 * intensity)
+                  : (1.24 + 0.30 * intensity);
+      const double deepInkFloor = 12.0;
 
       for (int v = 0; v < 256; v++) {
         final double dv = v.toDouble();
-        if (dv <= blackFloor) {
-          toneLut[v] = dv * 0.42;
+        if (dv <= blackAnchor) {
+          final double r = (dv / max(1.0, blackAnchor)).clamp(0.0, 1.0);
+          toneLut[v] = (pow(r, 1.35) * deepInkFloor).clamp(0.0, deepInkFloor);
         } else {
-          final double normalized = ((dv - blackFloor) / max(1.0, paperSnap - blackFloor)).clamp(0.0, 1.0);
-          final double inkVal = pow(normalized, inkGamma) * paperSnap;
-          final double kneeStart = paperSnap - 32.0;
-          final double kneeEnd = min(253.0, paperSnap + 12.0);
+          final double normalized = ((dv - blackAnchor) / max(1.0, paperSnap - blackAnchor)).clamp(0.0, 1.0);
+          final double inkVal = deepInkFloor + pow(normalized, inkGamma) * (paperSnap - deepInkFloor);
+          final double kneeStart = paperSnap - 30.0;
+          final double kneeEnd = min(252.0, paperSnap + 10.0);
           final double t = ((dv - kneeStart) / max(1.0, kneeEnd - kneeStart)).clamp(0.0, 1.0);
           final double smoothWhite = t * t * (3.0 - 2.0 * t);
           toneLut[v] = (inkVal + (255.0 - inkVal) * smoothWhite).clamp(0.0, 255.0);
         }
       }
     } else if (filter == 'lighten_pro') {
-      final double liftGamma = 0.84 - 0.22 * intensity;
+      final double liftGamma = 0.80 - 0.24 * intensity;
       for (int v = 0; v < 256; v++) {
         final double val = pow(v / 255.0, liftGamma) * 255.0;
-        toneLut[v] = (val > 236 ? 255.0 : val).clamp(0.0, 255.0);
+        toneLut[v] = (val > 232 ? 255.0 : val).clamp(0.0, 255.0);
       }
     } else {
       for (int v = 0; v < 256; v++) {
@@ -801,14 +856,14 @@ Uint8List _processRgbaIsolate(Map<String, dynamic> params) {
 
     final int lowClip = bgMap?.lowClip ?? 6;
     final int highClip = bgMap?.highClip ?? 249;
-    final double maxGain = (filter == 'magic_pro' || filter == 'dark_ink') ? 3.55 : 3.05;
+    final double maxGain = (filter == 'magic_pro' || filter == 'dark_ink' || filter == 'auto_pro') ? 4.2 : 3.2;
     final double satBoost = filter == 'magic_pro'
-        ? (1.28 + 0.26 * intensity)
+        ? (1.34 + 0.28 * intensity)
         : filter == 'auto_pro'
-            ? (1.15 + 0.14 * intensity)
+            ? (1.18 + 0.16 * intensity)
             : filter == 'vivid_color'
-                ? (1.30 + 0.35 * intensity)
-                : 1.08;
+                ? (1.32 + 0.36 * intensity)
+                : 1.10;
 
     for (int y = 0; y < h; y++) {
       final double gy = ((y + 0.5) / cellH - 0.5).clamp(0.0, gridRows - 1.0001);
@@ -828,9 +883,9 @@ Uint8List _processRgbaIsolate(Map<String, dynamic> params) {
           ng = (lum + (ng - lum) * satBoost).clamp(0.0, 255.0);
           nb = (lum + (nb - lum) * satBoost).clamp(0.0, 255.0);
         } else if (filter != 'original' && bgMap != null) {
-          final double gR = min(254.0 / max(sampleGrid(bgMap.bgR, gx, gy), 32.0), maxGain);
-          final double gG = min(254.0 / max(sampleGrid(bgMap.bgG, gx, gy), 32.0), maxGain);
-          final double gB = min(254.0 / max(sampleGrid(bgMap.bgB, gx, gy), 32.0), maxGain);
+          final double gR = min(255.0 / max(sampleGrid(bgMap.bgR, gx, gy), 28.0), maxGain);
+          final double gG = min(255.0 / max(sampleGrid(bgMap.bgG, gx, gy), 28.0), maxGain);
+          final double gB = min(255.0 / max(sampleGrid(bgMap.bgB, gx, gy), 28.0), maxGain);
 
           final double wbR = (nr * gR).clamp(0.0, 255.0);
           final double wbG = (ng * gG).clamp(0.0, 255.0);
@@ -843,7 +898,7 @@ Uint8List _processRgbaIsolate(Map<String, dynamic> params) {
             ng = targetL;
             nb = targetL;
           } else if (filter == 'lighten_pro') {
-            final double blend = 0.65 + 0.35 * intensity;
+            final double blend = 0.72 + 0.28 * intensity;
             final double lR = nr + (wbR - nr) * blend;
             final double lG = ng + (wbG - ng) * blend;
             final double lB = nb + (wbB - nb) * blend;
@@ -857,12 +912,13 @@ Uint8List _processRgbaIsolate(Map<String, dynamic> params) {
             final double sg = (wbG * ratio).clamp(0.0, 255.0);
             final double sb = (wbB * ratio).clamp(0.0, 255.0);
 
-            // Preserve bold vibrant colors (blue ink / red stamps) while keeping paper pure white
+            // Preserve vibrant ink/stamps (blue pen, red stamp) while keeping noisy paper snow-white
             final double chroma = max(sr, max(sg, sb)) - min(sr, min(sg, sb));
-            final double colorWeight = ((chroma - 14.0) / 36.0).clamp(0.0, 1.0);
-            final double paperFade = ((255.0 - targetL) / 48.0).clamp(0.0, 1.0);
-            final double effSat = 1.0 + (satBoost - 1.0) * colorWeight * paperFade;
-            final double satFactor = paperFade < 0.22 ? paperFade * 4.5 : effSat;
+            final double colorWeight = ((chroma - 16.0) / 34.0).clamp(0.0, 1.0);
+            final double paperFade = ((255.0 - targetL) / 44.0).clamp(0.0, 1.0);
+            final double satFactor = (wbLum > 195.0 && chroma < 24.0)
+                ? 0.0
+                : (paperFade < 0.20 ? paperFade * 4.2 : (1.0 + (satBoost - 1.0) * colorWeight * paperFade));
 
             nr = (targetL + (sr - targetL) * satFactor).clamp(0.0, 255.0);
             ng = (targetL + (sg - targetL) * satFactor).clamp(0.0, 255.0);
@@ -886,35 +942,37 @@ Uint8List _processRgbaIsolate(Map<String, dynamic> params) {
     }
   }
 
-  // STEP 5: HALO-FREE CRISP UNSHARP MASK (NOW WORKS ON ALL FILTERS INCLUDING ORIGINAL & B&W PRO)
+  // STEP 5: 5x5 SEPARABLE EDGE-AWARE CRISP UNSHARP MASK (LASER SHARP TEXT WITHOUT PAPER GRAIN)
   final double baseSharp = filter == 'dark_ink'
-      ? (0.55 + 0.45 * intensity)
+      ? (0.65 + 0.45 * intensity)
       : (filter == 'magic_pro' || filter == 'auto_pro' || filter == 'ocv_crisp' || filter == 'super_bw')
-          ? (0.45 + 0.40 * intensity)
-          : (filter == 'original' ? 0.45 : 0.30);
-  final double effectiveUser = filter == 'original' ? max(0.0, (userSharpness - 0.6) * 1.8) : (0.35 + userSharpness * 1.25);
-  final double sharpAmt = (baseSharp * effectiveUser).clamp(0.0, 1.45);
+          ? (0.55 + 0.42 * intensity)
+          : (filter == 'original' ? 0.45 : 0.35);
+  final double effectiveUser = filter == 'original' ? max(0.0, (userSharpness - 0.6) * 1.8) : (0.40 + userSharpness * 1.25);
+  final double sharpAmt = (baseSharp * effectiveUser).clamp(0.0, 1.55);
 
-  if (sharpAmt > 0.05 && w > 3 && h > 3) {
-    for (int y = 1; y < h - 1; y++) {
-      final int r0 = (y - 1) * w, r1 = y * w, r2 = (y + 1) * w;
-      for (int x = 1; x < w - 1; x++) {
-        final int center = lumCache[r1 + x];
-        if (center >= 246) continue;
-        final int blur = (lumCache[r0 + x - 1] +
-                2 * lumCache[r0 + x] +
-                lumCache[r0 + x + 1] +
-                2 * lumCache[r1 + x - 1] +
-                4 * center +
-                2 * lumCache[r1 + x + 1] +
-                lumCache[r2 + x - 1] +
-                2 * lumCache[r2 + x] +
-                lumCache[r2 + x + 1]) >>
-            4;
+  if (sharpAmt > 0.05 && w > 5 && h > 5) {
+    final Uint8List tmpBlur = Uint8List(total);
+    for (int y = 0; y < h; y++) {
+      final int rb = y * w;
+      tmpBlur[rb] = lumCache[rb];
+      tmpBlur[rb + 1] = lumCache[rb + 1];
+      tmpBlur[rb + w - 2] = lumCache[rb + w - 2];
+      tmpBlur[rb + w - 1] = lumCache[rb + w - 1];
+      for (int x = 2; x < w - 2; x++) {
+        tmpBlur[rb + x] = (lumCache[rb + x - 2] + 4 * lumCache[rb + x - 1] + 6 * lumCache[rb + x] + 4 * lumCache[rb + x + 1] + lumCache[rb + x + 2]) >> 4;
+      }
+    }
+    for (int y = 2; y < h - 2; y++) {
+      final int r0 = (y - 2) * w, r1 = (y - 1) * w, r2 = y * w, r3 = (y + 1) * w, r4 = (y + 2) * w;
+      for (int x = 2; x < w - 2; x++) {
+        final int center = lumCache[r2 + x];
+        if (center >= 242) continue;
+        final int blur = (tmpBlur[r0 + x] + 4 * tmpBlur[r1 + x] + 6 * tmpBlur[r2 + x] + 4 * tmpBlur[r3 + x] + tmpBlur[r4 + x]) >> 4;
         final int diff = center - blur;
-        if (diff.abs() > 4) {
-          final int delta = (diff * sharpAmt).round().clamp(-55, 55);
-          final int p = (r1 + x) * 4;
+        if (diff.abs() > 6) {
+          final int delta = (diff * sharpAmt).round().clamp(-65, 65);
+          final int p = (r2 + x) * 4;
           out[p] = (out[p] + delta).clamp(0, 255);
           out[p + 1] = (out[p + 1] + delta).clamp(0, 255);
           out[p + 2] = (out[p + 2] + delta).clamp(0, 255);
@@ -1029,7 +1087,7 @@ Uint8List? _rotateArbitraryIsolate(Map<String, dynamic> params) {
   if (decoded == null) return null;
   final oriented = img.bakeOrientation(decoded);
   final double angleDeg = (params['angle'] as num).toDouble();
-  if (angleDeg.abs() < 0.05) return Uint8List.fromList(img.encodeJpg(oriented, quality: 93));
+  if (angleDeg.abs() < 0.05) return Uint8List.fromList(img.encodeJpg(oriented, quality: 94));
 
   final int w = oriented.width;
   final int h = oriented.height;
@@ -1071,10 +1129,10 @@ Uint8List? _rotateArbitraryIsolate(Map<String, dynamic> params) {
     }
   }
   final outIm = img.Image.fromBytes(width: outW, height: outH, bytes: outBytes.buffer, numChannels: 3, order: img.ChannelOrder.rgb);
-  return Uint8List.fromList(img.encodeJpg(outIm, quality: 93));
+  return Uint8List.fromList(img.encodeJpg(outIm, quality: 94));
 }
 // ==================== PART 1 END ====================
-// ==================== PART 2 START ====================
+// ==================== PART 2A START ====================
 // PHONE STORAGE MANAGER
 class StorageSaveResult {
   final int count;
@@ -1157,14 +1215,16 @@ Uint8List _compressSingleImageIsolate(Map<String, dynamic> params) {
   final oriented = img.bakeOrientation(decoded);
 
   int maxDim = 1650;
-  if (targetBytes < 20 * 1024) {
-    maxDim = 480;
-  } else if (targetBytes < 45 * 1024) {
-    maxDim = 680;
-  } else if (targetBytes < 100 * 1024) {
-    maxDim = 980;
-  } else if (targetBytes < 240 * 1024) {
-    maxDim = 1350;
+  if (targetBytes < 12 * 1024) {
+    maxDim = 360;
+  } else if (targetBytes < 24 * 1024) {
+    maxDim = 500;
+  } else if (targetBytes < 50 * 1024) {
+    maxDim = 720;
+  } else if (targetBytes < 110 * 1024) {
+    maxDim = 1020;
+  } else if (targetBytes < 250 * 1024) {
+    maxDim = 1380;
   }
 
   img.Image working = oriented;
@@ -1173,8 +1233,8 @@ Uint8List _compressSingleImageIsolate(Map<String, dynamic> params) {
   }
 
   Uint8List binarySearchJpg(img.Image im) {
-    int lo = 10, hi = 92;
-    Uint8List best = Uint8List.fromList(img.encodeJpg(im, quality: 45));
+    int lo = 8, hi = 92;
+    Uint8List best = Uint8List.fromList(img.encodeJpg(im, quality: 42));
     for (int iter = 0; iter < 6; iter++) {
       final int mid = (lo + hi) ~/ 2;
       final candidate = Uint8List.fromList(img.encodeJpg(im, quality: mid));
@@ -1191,8 +1251,8 @@ Uint8List _compressSingleImageIsolate(Map<String, dynamic> params) {
 
   Uint8List best = binarySearchJpg(working);
   int downscaleTry = 0;
-  while (best.length > targetBytes && working.width > 220 && working.height > 220 && downscaleTry < 3) {
-    working = img.copyResize(working, width: (working.width * 0.72).round());
+  while (best.length > targetBytes && working.width > 120 && working.height > 120 && downscaleTry < 6) {
+    working = img.copyResize(working, width: max(120, (working.width * 0.72).round()));
     best = binarySearchJpg(working);
     downscaleTry++;
   }
@@ -1205,7 +1265,7 @@ class ProCompressionEngine {
     final safeName = docTitle.replaceAll(RegExp(r'[^\w\s\-]'), '_').trim();
     final tempDir = await getTemporaryDirectory();
     final int totalTargetBytes = max(10 * 1024, targetKb * 1024);
-    final int perPageTargetBytes = max(4 * 1024, (totalTargetBytes * 0.88) ~/ orderedImagePaths.length);
+    final int perPageTargetBytes = max(3 * 1024, (totalTargetBytes * 0.85) ~/ orderedImagePaths.length);
 
     final pdf = pw.Document();
     final List<File> jpgFiles = [];
@@ -1272,9 +1332,16 @@ class ProCompressionEngine {
   }
 
   static Future<void> _runCompressionWithResultSheet({required BuildContext context, required List<String> orderedPaths, required int targetKb, required String title}) async {
-    showDialog(context: context, barrierDismissible: false, builder: (_) => const AlertDialog(content: Row(children: [CircularProgressIndicator(), SizedBox(width: 16), Expanded(child: Text('Compressing PDF & JPG...'))])));
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const PopScope(
+        canPop: false,
+        child: AlertDialog(content: Row(children: [CircularProgressIndicator(), SizedBox(width: 16), Expanded(child: Text('Compressing PDF & JPG...'))])),
+      ),
+    );
     final bundle = await compressOrderedPages(orderedImagePaths: orderedPaths, targetKb: targetKb, docTitle: title);
-    if (context.mounted) Navigator.pop(context);
+    if (context.mounted) Navigator.of(context, rootNavigator: true).pop();
     if (bundle == null || !context.mounted) return;
 
     showModalBottomSheet(
@@ -1469,7 +1536,8 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
     );
   }
 }
-
+// ==================== PART 2A END ====================
+// ==================== PART 2B START ====================
 // ============================================================================
 // NIGHT PRO CAMERA SCANNER (BACK/FRONT SWITCH + FLASH AUTO/ON/OFF/TORCH)
 // ============================================================================
@@ -1490,6 +1558,7 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
   bool _isCapturing = false;
   bool _showGrid = true;
   bool _showNightScreenFlash = false;
+  bool _returnedResult = false;
   String? _cameraError;
 
   // Flash modes cycle: Auto -> On -> Torch (Night Light) -> Off
@@ -1515,7 +1584,20 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _controller?.dispose();
+    _controller = null;
+    if (!_returnedResult && _capturedPaths.isNotEmpty) {
+      for (final p in _capturedPaths) {
+        _deleteFileQuietly(p);
+      }
+    }
     super.dispose();
+  }
+
+  void _deleteFileQuietly(String path) {
+    try {
+      final f = File(path);
+      if (f.existsSync()) f.deleteSync();
+    } catch (_) {}
   }
 
   @override
@@ -1523,6 +1605,8 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
     final camCtrl = _controller;
     if (camCtrl == null || !camCtrl.value.isInitialized) return;
     if (state == AppLifecycleState.inactive) {
+      _controller = null;
+      if (mounted) setState(() {});
       camCtrl.dispose();
     } else if (state == AppLifecycleState.resumed) {
       _startSelectedCamera();
@@ -1544,7 +1628,12 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
 
   Future<void> _startSelectedCamera() async {
     if (_cameras.isEmpty) return;
+    final oldCtrl = _controller;
+    _controller = null;
     if (mounted) setState(() { _isInitializing = true; _cameraError = null; });
+    if (oldCtrl != null) {
+      await oldCtrl.dispose();
+    }
 
     final desired = _isFrontCamera ? CameraLensDirection.front : CameraLensDirection.back;
     final CameraDescription chosen = _cameras.firstWhere(
@@ -1552,35 +1641,46 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
       orElse: () => _cameras.first,
     );
 
-    final oldCtrl = _controller;
-    _controller = null;
-    if (oldCtrl != null) {
-      await oldCtrl.dispose();
+    // Use max sensor resolution for razor-sharp document text, with safe fallback
+    CameraController? initializedCtrl;
+    Object? lastErr;
+    for (final preset in [ResolutionPreset.max, ResolutionPreset.veryHigh, ResolutionPreset.high]) {
+      final candidate = CameraController(chosen, preset, enableAudio: false, imageFormatGroup: ImageFormatGroup.jpeg);
+      try {
+        await candidate.initialize();
+        initializedCtrl = candidate;
+        break;
+      } catch (e) {
+        lastErr = e;
+        await candidate.dispose();
+      }
     }
 
-    final ctrl = CameraController(chosen, ResolutionPreset.high, enableAudio: false, imageFormatGroup: ImageFormatGroup.jpeg);
+    if (initializedCtrl == null) {
+      if (mounted) setState(() { _cameraError = 'Failed to open camera: $lastErr'; _isInitializing = false; });
+      return;
+    }
+
     try {
-      await ctrl.initialize();
-      try {
-        await ctrl.setFlashMode(_flashCycle[_flashIndex]);
-      } catch (_) {}
-      try {
-        _minExposure = await ctrl.getMinExposureOffset();
-        _maxExposure = await ctrl.getMaxExposureOffset();
-        _exposureOffset = _exposureOffset.clamp(_minExposure, _maxExposure);
-        await ctrl.setExposureOffset(_exposureOffset);
-      } catch (_) {}
-      if (mounted) {
-        setState(() {
-          _controller = ctrl;
-          _isInitializing = false;
-        });
-      } else {
-        await ctrl.dispose();
-      }
-    } catch (e) {
-      await ctrl.dispose();
-      if (mounted) setState(() { _cameraError = 'Failed to open camera: $e'; _isInitializing = false; });
+      await initializedCtrl.setFlashMode(_flashCycle[_flashIndex]);
+    } catch (_) {}
+    try {
+      await initializedCtrl.setFocusMode(FocusMode.auto);
+    } catch (_) {}
+    try {
+      _minExposure = await initializedCtrl.getMinExposureOffset();
+      _maxExposure = await initializedCtrl.getMaxExposureOffset();
+      _exposureOffset = _exposureOffset.clamp(_minExposure, _maxExposure);
+      await initializedCtrl.setExposureOffset(_exposureOffset);
+    } catch (_) {}
+
+    if (mounted) {
+      setState(() {
+        _controller = initializedCtrl;
+        _isInitializing = false;
+      });
+    } else {
+      await initializedCtrl.dispose();
     }
   }
 
@@ -1662,7 +1762,7 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
       final scansDir = Directory('${appDir.path}/scans');
       if (!await scansDir.exists()) await scansDir.create(recursive: true);
       final destPath = '${scansDir.path}/cam_${DateTime.now().millisecondsSinceEpoch}_${_capturedPaths.length}.jpg';
-      await File(shot.path).copy(destPath);
+      await ProDocImageProcessor.bakeOrientationToFile(shot.path, destPath, maxDimension: 3000);
 
       if (mounted) {
         setState(() => _capturedPaths.add(destPath));
@@ -1691,15 +1791,30 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
       final f = File(picked[i].path);
       if (await f.exists()) {
         final dest = '${scansDir.path}/camgal_${DateTime.now().millisecondsSinceEpoch}_$i.jpg';
-        await f.copy(dest);
+        await ProDocImageProcessor.bakeOrientationToFile(f.path, dest, maxDimension: 3000);
         _capturedPaths.add(dest);
       }
     }
     if (mounted) setState(() {});
   }
 
+  Future<void> _switchToAutoScan() async {
+    if (widget.onSwitchToMlKitAutoScan == null) return;
+    final oldCtrl = _controller;
+    _controller = null;
+    if (mounted) setState(() => _isInitializing = true);
+    if (oldCtrl != null) {
+      await oldCtrl.dispose();
+    }
+    await Future.delayed(const Duration(milliseconds: 220));
+    if (!mounted) return;
+    Navigator.pop(context);
+    widget.onSwitchToMlKitAutoScan!();
+  }
+
   void _finishCapture() {
     if (_capturedPaths.isEmpty) return;
+    _returnedResult = true;
     Navigator.pop(context, List<String>.from(_capturedPaths));
   }
 
@@ -1711,7 +1826,6 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
       body: SafeArea(
         child: Stack(
           children: [
-            // Camera Preview Area
             Column(
               children: [
                 // Top Control Bar (Close, Flash Auto/On/Torch/Off, Night Boost, Grid, Front/Back Switch)
@@ -1801,32 +1915,47 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
                               ),
                             )
                           : LayoutBuilder(
-                              builder: (ctx, box) => GestureDetector(
-                                onTapDown: (details) async {
-                                  final nx = (details.localPosition.dx / box.maxWidth).clamp(0.0, 1.0);
-                                  final ny = (details.localPosition.dy / box.maxHeight).clamp(0.0, 1.0);
-                                  setState(() => _focusPoint = details.localPosition);
-                                  try {
-                                    await ctrl.setFocusPoint(Offset(nx, ny));
-                                  } catch (_) {}
-                                  Future.delayed(const Duration(milliseconds: 900), () {
-                                    if (mounted) setState(() => _focusPoint = null);
-                                  });
-                                },
-                                child: Stack(
-                                  fit: StackFit.expand,
-                                  children: [
-                                    Center(child: CameraPreview(ctrl)),
-                                    if (_showGrid) CustomPaint(painter: _CameraGridPainter()),
-                                    if (_focusPoint != null)
-                                      Positioned(
-                                        left: _focusPoint!.dx - 24,
-                                        top: _focusPoint!.dy - 24,
-                                        child: Container(width: 48, height: 48, decoration: BoxDecoration(border: Border.all(color: Colors.amberAccent, width: 2), borderRadius: BorderRadius.circular(8))),
-                                      ),
-                                  ],
-                                ),
-                              ),
+                              builder: (ctx, box) {
+                                final double rawAr = ctrl.value.aspectRatio;
+                                final bool isPortrait = MediaQuery.orientationOf(ctx) == Orientation.portrait;
+                                final double previewAr = isPortrait && rawAr > 0 ? (1.0 / rawAr) : (rawAr > 0 ? rawAr : 0.75);
+                                double prevW = box.maxWidth;
+                                double prevH = prevW / previewAr;
+                                if (prevH > box.maxHeight) {
+                                  prevH = box.maxHeight;
+                                  prevW = prevH * previewAr;
+                                }
+                                final double left = (box.maxWidth - prevW) / 2.0;
+                                final double top = (box.maxHeight - prevH) / 2.0;
+
+                                return GestureDetector(
+                                  onTapDown: (details) async {
+                                    final nx = ((details.localPosition.dx - left) / max(1.0, prevW)).clamp(0.0, 1.0);
+                                    final ny = ((details.localPosition.dy - top) / max(1.0, prevH)).clamp(0.0, 1.0);
+                                    setState(() => _focusPoint = details.localPosition);
+                                    try {
+                                      await ctrl.setFocusPoint(Offset(nx, ny));
+                                      await ctrl.setExposurePoint(Offset(nx, ny));
+                                    } catch (_) {}
+                                    Future.delayed(const Duration(milliseconds: 900), () {
+                                      if (mounted) setState(() => _focusPoint = null);
+                                    });
+                                  },
+                                  child: Stack(
+                                    fit: StackFit.expand,
+                                    children: [
+                                      Center(child: CameraPreview(ctrl)),
+                                      if (_showGrid) CustomPaint(painter: _CameraGridPainter()),
+                                      if (_focusPoint != null)
+                                        Positioned(
+                                          left: _focusPoint!.dx - 24,
+                                          top: _focusPoint!.dy - 24,
+                                          child: Container(width: 48, height: 48, decoration: BoxDecoration(border: Border.all(color: Colors.amberAccent, width: 2), borderRadius: BorderRadius.circular(8))),
+                                        ),
+                                    ],
+                                  ),
+                                );
+                              },
                             ),
                 ),
 
@@ -1849,7 +1978,11 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
                               top: 1,
                               right: 1,
                               child: GestureDetector(
-                                onTap: () => setState(() => _capturedPaths.removeAt(i)),
+                                onTap: () {
+                                  final removed = _capturedPaths.removeAt(i);
+                                  setState(() {});
+                                  _deleteFileQuietly(removed);
+                                },
                                 child: const CircleAvatar(radius: 9, backgroundColor: Colors.red, child: Icon(Icons.close, size: 11, color: Colors.white)),
                               ),
                             ),
@@ -1878,10 +2011,7 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
                           label: 'Auto Scan',
                           color: Colors.greenAccent,
                           iconSize: 24,
-                          onPressed: () {
-                            Navigator.pop(context);
-                            widget.onSwitchToMlKitAutoScan!();
-                          },
+                          onPressed: _switchToAutoScan,
                         ),
                       GestureDetector(
                         onTap: _capturePhoto,
@@ -1930,7 +2060,8 @@ class _CameraGridPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
-
+// ==================== PART 2B END ====================
+// ==================== PART 3A START ====================
 // 2. MAIN DASHBOARD SCREEN
 class MainDashboardScreen extends StatefulWidget {
   const MainDashboardScreen({super.key});
@@ -2010,6 +2141,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
         debugPrint("Error loading docs: $e");
       }
     }
+    unawaited(cleanupOrphanScanFiles(_savedDocs));
   }
 
   Future<void> _commitDocsToPrefs() async {
@@ -2102,7 +2234,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
           ],
         ),
       ),
-    ).whenComplete(() => newFolderCtrl.dispose());
+    ).whenComplete(() => safeDisposeController(newFolderCtrl));
   }
 
   Future<void> _transferPagesBetweenDocs({
@@ -2220,9 +2352,10 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
           ],
         ),
       ),
-    ).whenComplete(() => nameCtrl.dispose());
+    ).whenComplete(() => safeDisposeController(nameCtrl));
   }
-
+// ==================== PART 3A END ====================
+// ==================== PART 3B START ====================
   Future<void> _importFromGalleryDirectly({String category = 'General', String prefix = 'Gallery'}) async {
     try {
       final List<XFile> picked = await ImagePicker().pickMultiImage();
@@ -2235,8 +2368,9 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       for (int i = 0; i < picked.length; i++) {
         final f = File(picked[i].path);
         if (await f.exists()) {
-          final target = await f.copy('${scansDir.path}/gal_${DateTime.now().millisecondsSinceEpoch}_$i.jpg');
-          persistentRawPaths.add(target.path);
+          final targetPath = '${scansDir.path}/gal_${DateTime.now().millisecondsSinceEpoch}_$i.jpg';
+          await ProDocImageProcessor.bakeOrientationToFile(f.path, targetPath, maxDimension: 3000);
+          persistentRawPaths.add(targetPath);
         }
       }
       if (!mounted || persistentRawPaths.isEmpty) return;
@@ -2273,8 +2407,9 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       for (int i = 0; i < result.images.length; i++) {
         final f = File(result.images[i]);
         if (await f.exists()) {
-          final target = await f.copy('${scansDir.path}/raw_${DateTime.now().millisecondsSinceEpoch}_$i.jpg');
-          persistentRawPaths.add(target.path);
+          final targetPath = '${scansDir.path}/raw_${DateTime.now().millisecondsSinceEpoch}_$i.jpg';
+          await ProDocImageProcessor.bakeOrientationToFile(f.path, targetPath, maxDimension: 3000);
+          persistentRawPaths.add(targetPath);
         }
       }
       if (!mounted || persistentRawPaths.isEmpty) return;
@@ -2355,7 +2490,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
           'rgba': byteData.buffer.asUint8List(),
           'w': a4Width.toInt(),
           'h': a4Height.toInt(),
-          'quality': 93,
+          'quality': 94,
         });
         final appDir = await getApplicationDocumentsDirectory();
         final scansDir = Directory('${appDir.path}/scans');
@@ -2419,7 +2554,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
           ),
         ],
       ),
-    ).whenComplete(() => nameCtrl.dispose());
+    ).whenComplete(() => safeDisposeController(nameCtrl));
   }
 
   void _createNewFolderDialog() {
@@ -2447,13 +2582,13 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
           ),
         ],
       ),
-    ).whenComplete(() => folderCtrl.dispose());
+    ).whenComplete(() => safeDisposeController(folderCtrl));
   }
 
   List<String> _getOrderedImagesFromSelectedDocs() {
     final List<String> orderedPaths = [];
     for (final docId in _selectedDocIdsOrder) {
-      final doc = _savedDocs.firstWhere((d) => d['id'] == docId, orElse: () => {});
+      final doc = _savedDocs.firstWhere((d) => d['id'].toString() == docId, orElse: () => {});
       if (doc.isNotEmpty && doc['images'] != null) orderedPaths.addAll(List<String>.from(doc['images']));
     }
     return orderedPaths;
@@ -2514,7 +2649,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
             onPressed: () {
               Navigator.pop(ctx);
               setState(() {
-                _savedDocs.removeWhere((d) => _selectedDocIdsOrder.contains(d['id']));
+                _savedDocs.removeWhere((d) => _selectedDocIdsOrder.contains(d['id'].toString()));
                 _selectedDocIdsOrder.clear();
                 _isDocSelectionMode = false;
                 _filterDocs();
@@ -2618,7 +2753,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
             ],
           ),
         ),
-      ).whenComplete(() => textCtrl.dispose());
+      ).whenComplete(() => safeDisposeController(textCtrl));
     } catch (e) {
       debugPrint("OCR Err: $e");
     } finally {
@@ -2658,7 +2793,8 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       ),
     );
   }
-
+// ==================== PART 3B END ====================
+// ==================== PART 3C START ====================
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
@@ -2678,7 +2814,8 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                       _selectedDocIdsOrder.clear();
                     } else {
                       for (final doc in _filteredDocs) {
-                        if (!_selectedDocIdsOrder.contains(doc['id'])) _selectedDocIdsOrder.add(doc['id']);
+                        final id = doc['id'].toString();
+                        if (!_selectedDocIdsOrder.contains(id)) _selectedDocIdsOrder.add(id);
                       }
                     }
                   }),
@@ -3074,7 +3211,15 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
             _buildToolCard('From Gallery', 'Phone Photos', Icons.photo_library_outlined, const Color(0xFFD81B60), () => _importFromGalleryDirectly(prefix: 'Gallery')),
             _buildToolCard('Target Compress', '10KB - 5MB', Icons.compress_rounded, Colors.teal, () {
               if (_savedDocs.isNotEmpty) {
-                _pickDocForTool(title: 'Choose Document to Compress', onPicked: _openDocDetail);
+                _pickDocForTool(
+                  title: 'Choose Document to Compress',
+                  onPicked: (d) {
+                    final imgs = List<String>.from(d['images'] ?? []);
+                    if (imgs.isNotEmpty) {
+                      ProCompressionEngine.showCompressorDialog(context: context, orderedPaths: imgs, title: d['title'] ?? 'Document');
+                    }
+                  },
+                );
               } else {
                 ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please scan or create a document first!')));
               }
@@ -3135,8 +3280,8 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     );
   }
 }
-// ==================== PART 2 END ====================
-// ==================== PART 3 START ====================
+// ==================== PART 3C END ====================
+// ==================== PART 4A START ====================
 // ============================================================================
 // 3. PRO SCAN FILTER, CROP, MANUAL ADJUST & ERASER SCREEN
 // ============================================================================
@@ -3151,6 +3296,8 @@ class ScanFilterReviewScreen extends StatefulWidget {
 }
 
 class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
+  static const int _maxCachedPreviewPages = 4;
+
   int _curPageIndex = 0;
   bool _isSaving = false;
   bool _isRenderingPreview = false;
@@ -3166,24 +3313,27 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
   late Map<int, double> _pageSharpness;
   late Map<int, double> _pageDeskewAngles;
   late Map<int, List<Map<String, dynamic>>> _pageEraserStrokes;
+  late Map<int, List<Offset>> _pageCropCorners;
 
   double _eraserRadiusNorm = 0.035;
   List<List<double>>? _activeEraserPoints;
-
-  // 4-Corner Manual Perspective Crop state (topLeft, topRight, bottomRight, bottomLeft)
-  List<Offset> _cropCorners = [
-    const Offset(0.05, 0.05),
-    const Offset(0.95, 0.05),
-    const Offset(0.95, 0.95),
-    const Offset(0.05, 0.95),
-  ];
   int? _draggingCornerIndex;
 
+  final List<int> _lruPageOrder = [];
   final Map<int, Uint8List> _cachedBasePreviewRgba = {};
   final Map<int, List<int>> _cachedBasePreviewWH = {};
   final Map<int, PrecomputedBgMap> _cachedBgMaps = {};
   final Map<int, ui.Image> _renderedPreviewImages = {};
+  final Set<String> _tempCreatedPaths = {};
+  final Set<String> _finalExportedPaths = {};
   int _renderRequestToken = 0;
+
+  static List<Offset> _defaultCropCorners() => [
+        const Offset(0.05, 0.05),
+        const Offset(0.95, 0.05),
+        const Offset(0.95, 0.95),
+        const Offset(0.05, 0.95),
+      ];
 
   @override
   void initState() {
@@ -3196,6 +3346,7 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
     _pageSharpness = {for (var i = 0; i < widget.rawImagePaths.length; i++) i: 0.60};
     _pageDeskewAngles = {for (var i = 0; i < widget.rawImagePaths.length; i++) i: 0.0};
     _pageEraserStrokes = {for (var i = 0; i < widget.rawImagePaths.length; i++) i: []};
+    _pageCropCorners = {for (var i = 0; i < widget.rawImagePaths.length; i++) i: _defaultCropCorners()};
     _renderCurrentPagePreview();
   }
 
@@ -3207,7 +3358,17 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
     _renderedPreviewImages.clear();
     _cachedBasePreviewRgba.clear();
     _cachedBgMaps.clear();
+    for (final p in _tempCreatedPaths) {
+      if (!_finalExportedPaths.contains(p)) _deleteFileQuietly(p);
+    }
     super.dispose();
+  }
+
+  void _deleteFileQuietly(String path) {
+    try {
+      final f = File(path);
+      if (f.existsSync()) f.deleteSync();
+    } catch (_) {}
   }
 
   DocFilterPreset get _currentPreset => kDocFilters.firstWhere((f) => f.id == (_pageFilterSelections[_curPageIndex] ?? 'magic_pro'), orElse: () => kDocFilters[1]);
@@ -3217,10 +3378,25 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
   double get _currentSharpness => _pageSharpness[_curPageIndex] ?? 0.60;
   double get _currentTiltAngle => _pageDeskewAngles[_curPageIndex] ?? 0.0;
   List<Map<String, dynamic>> get _currentEraserStrokes => _pageEraserStrokes[_curPageIndex] ?? const [];
+  List<Offset> get _currentCropCorners => _pageCropCorners[_curPageIndex] ??= _defaultCropCorners();
 
   void _disposeOldPreviewSafely(ui.Image? oldImg) {
     if (oldImg == null) return;
     WidgetsBinding.instance.addPostFrameCallback((_) => oldImg.dispose());
+  }
+
+  void _touchPageLruAndEvictIfNeeded(int pageIdx) {
+    _lruPageOrder.remove(pageIdx);
+    _lruPageOrder.add(pageIdx);
+    while (_lruPageOrder.length > _maxCachedPreviewPages) {
+      final evictIdx = _lruPageOrder.first;
+      if (evictIdx == _curPageIndex) break;
+      _lruPageOrder.removeAt(0);
+      _cachedBasePreviewRgba.remove(evictIdx);
+      _cachedBgMaps.remove(evictIdx);
+      final oldImg = _renderedPreviewImages.remove(evictIdx);
+      _disposeOldPreviewSafely(oldImg);
+    }
   }
 
   Future<void> _ensureBaseDimensionsLoaded(int pageIdx) async {
@@ -3257,12 +3433,15 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
 
     if (!_cachedBasePreviewRgba.containsKey(pageIdx)) {
       final wh = [0, 0];
-      final rgba = await ProDocImageProcessor.decodeImageToRgba(_workingPaths[pageIdx], maxDimension: 650, outWidthHeight: wh);
+      final rgba = await ProDocImageProcessor.decodeImageToRgba(_workingPaths[pageIdx], maxDimension: 900, outWidthHeight: wh);
       if (rgba != null) {
         _cachedBasePreviewRgba[pageIdx] = rgba;
         _cachedBasePreviewWH[pageIdx] = wh;
         _cachedBgMaps[pageIdx] = await ProDocImageProcessor.computeBgMap(rgba, wh[0], wh[1]);
+        _touchPageLruAndEvictIfNeeded(pageIdx);
       }
+    } else {
+      _touchPageLruAndEvictIfNeeded(pageIdx);
     }
     final baseRgba = _cachedBasePreviewRgba[pageIdx];
     final wh = _cachedBasePreviewWH[pageIdx];
@@ -3331,21 +3510,29 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
     final detectedAngle = await AIDeskewEngine.detectSkewAngle(curImg);
     if (detectedAngle.abs() > 0.4) {
       final straightened = await AIDeskewEngine.rotateAndDeskewImage(curImg, -detectedAngle);
+      if (straightened != curImg) _tempCreatedPaths.add(straightened);
       _cachedBasePreviewRgba.remove(_curPageIndex);
       _cachedBasePreviewWH.remove(_curPageIndex);
       _cachedBgMaps.remove(_curPageIndex);
       final oldImg = _renderedPreviewImages.remove(_curPageIndex);
+      if (mounted) {
+        setState(() {
+          _workingPaths[_curPageIndex] = straightened;
+          _pageDeskewAngles[_curPageIndex] = 0.0;
+          _pageEraserStrokes[_curPageIndex] = [];
+          _pageCropCorners[_curPageIndex] = _defaultCropCorners();
+          _activeTopTab = 1;
+          _isSaving = false;
+        });
+        _disposeOldPreviewSafely(oldImg);
+        _renderCurrentPagePreview();
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('✨ AI Straightened by ${detectedAngle.toStringAsFixed(1)}°')));
+      }
+    } else if (mounted) {
       setState(() {
-        _workingPaths[_curPageIndex] = straightened;
-        _pageDeskewAngles[_curPageIndex] = 0.0;
-        _pageEraserStrokes[_curPageIndex] = [];
+        _activeTopTab = 1;
         _isSaving = false;
       });
-      _disposeOldPreviewSafely(oldImg);
-      _renderCurrentPagePreview();
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('✨ AI Straightened by ${detectedAngle.toStringAsFixed(1)}°')));
-    } else if (mounted) {
-      setState(() => _isSaving = false);
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('✅ Page is already straight!')));
     }
   }
@@ -3355,7 +3542,9 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
     final appDir = await getApplicationDocumentsDirectory();
     final scansDir = Directory('${appDir.path}/scans');
     if (!await scansDir.exists()) await scansDir.create(recursive: true);
-    final rotatedPath = await ProDocImageProcessor.rotateImage90Fast(_workingPaths[_curPageIndex], '${scansDir.path}/rot_${DateTime.now().millisecondsSinceEpoch}.jpg');
+    final outPath = '${scansDir.path}/rot_${DateTime.now().millisecondsSinceEpoch}.jpg';
+    final rotatedPath = await ProDocImageProcessor.rotateImage90Fast(_workingPaths[_curPageIndex], outPath);
+    if (rotatedPath != _workingPaths[_curPageIndex]) _tempCreatedPaths.add(rotatedPath);
     _cachedBasePreviewRgba.remove(_curPageIndex);
     _cachedBasePreviewWH.remove(_curPageIndex);
     _cachedBgMaps.remove(_curPageIndex);
@@ -3364,6 +3553,7 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
       setState(() {
         _workingPaths[_curPageIndex] = rotatedPath;
         _pageEraserStrokes[_curPageIndex] = [];
+        _pageCropCorners[_curPageIndex] = _defaultCropCorners();
         _isSaving = false;
       });
       _disposeOldPreviewSafely(oldImg);
@@ -3376,11 +3566,13 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
     final appDir = await getApplicationDocumentsDirectory();
     final scansDir = Directory('${appDir.path}/scans');
     if (!await scansDir.exists()) await scansDir.create(recursive: true);
+    final outPath = '${scansDir.path}/crop_${DateTime.now().millisecondsSinceEpoch}.jpg';
     final croppedPath = await ProDocImageProcessor.perspectiveCropImage(
       _workingPaths[_curPageIndex],
-      _cropCorners,
-      '${scansDir.path}/crop_${DateTime.now().millisecondsSinceEpoch}.jpg',
+      _currentCropCorners,
+      outPath,
     );
+    if (croppedPath != _workingPaths[_curPageIndex]) _tempCreatedPaths.add(croppedPath);
     _cachedBasePreviewRgba.remove(_curPageIndex);
     _cachedBasePreviewWH.remove(_curPageIndex);
     _cachedBgMaps.remove(_curPageIndex);
@@ -3389,12 +3581,7 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
       setState(() {
         _workingPaths[_curPageIndex] = croppedPath;
         _pageEraserStrokes[_curPageIndex] = [];
-        _cropCorners = [
-          const Offset(0.05, 0.05),
-          const Offset(0.95, 0.05),
-          const Offset(0.95, 0.95),
-          const Offset(0.05, 0.95),
-        ];
+        _pageCropCorners[_curPageIndex] = _defaultCropCorners();
         _activeTopTab = 1;
         _isSaving = false;
       });
@@ -3408,14 +3595,12 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
     final appDir = await getApplicationDocumentsDirectory();
     final scansDir = Directory('${appDir.path}/scans');
     if (!await scansDir.exists()) await scansDir.create(recursive: true);
-    List<String> enhancedPaths = [];
+    final List<String> enhancedPaths = [];
     for (int i = 0; i < _workingPaths.length; i++) {
-      String sourceImg = _workingPaths[i];
-      final double tilt = _pageDeskewAngles[i] ?? 0.0;
-      if (tilt.abs() > 0.5) sourceImg = await AIDeskewEngine.rotateAndDeskewImage(sourceImg, tilt);
       final outPath = '${scansDir.path}/pro_${DateTime.now().millisecondsSinceEpoch}_p$i.jpg';
-      enhancedPaths.add(await ProDocImageProcessor.processAndSaveHighRes(
-        sourcePath: sourceImg,
+      // Apply filter + adjustments + eraser on un-tilted image FIRST so eraser coordinates match live preview 100%
+      String processedPath = await ProDocImageProcessor.processAndSaveHighRes(
+        sourcePath: _workingPaths[i],
         filterId: _pageFilterSelections[i] ?? 'magic_pro',
         intensity: _pageFilterIntensities[i] ?? 0.65,
         outputPath: outPath,
@@ -3423,7 +3608,17 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
         contrast: _pageContrast[i] ?? 1.0,
         sharpness: _pageSharpness[i] ?? 0.60,
         eraserStrokes: _pageEraserStrokes[i],
-      ));
+      );
+      final double tilt = _pageDeskewAngles[i] ?? 0.0;
+      if (tilt.abs() > 0.5) {
+        final tiltedPath = await AIDeskewEngine.rotateAndDeskewImage(processedPath, tilt);
+        if (tiltedPath != processedPath) {
+          if (processedPath == outPath) _deleteFileQuietly(processedPath);
+          processedPath = tiltedPath;
+        }
+      }
+      _finalExportedPaths.add(processedPath);
+      enhancedPaths.add(processedPath);
     }
     if (mounted) {
       setState(() => _isSaving = false);
@@ -3431,13 +3626,15 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
       widget.onApplyAndProceed(enhancedPaths);
     }
   }
-
+// ==================== PART 4A END ====================
+// ==================== PART 4B START ====================
   @override
   Widget build(BuildContext context) {
     final activePreset = _currentPreset;
     final curImg = File(_workingPaths[_curPageIndex]);
     final previewUiImg = _renderedPreviewImages[_curPageIndex];
     final wh = _cachedBasePreviewWH[_curPageIndex];
+    final cropCorners = _currentCropCorners;
 
     return Scaffold(
       backgroundColor: const Color(0xFF14161B),
@@ -3508,7 +3705,7 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
                                       int? bestIdx;
                                       double bestDist = 42.0;
                                       for (int i = 0; i < 4; i++) {
-                                        final pt = Offset(_cropCorners[i].dx * dispW, _cropCorners[i].dy * dispH);
+                                        final pt = Offset(cropCorners[i].dx * dispW, cropCorners[i].dy * dispH);
                                         final dist = (pt - pos).distance;
                                         if (dist < bestDist) {
                                           bestDist = dist;
@@ -3522,14 +3719,14 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
                                       if (idx == null) return;
                                       final nx = (d.localPosition.dx / dispW).clamp(0.0, 1.0);
                                       final ny = (d.localPosition.dy / dispH).clamp(0.0, 1.0);
-                                      setState(() => _cropCorners[idx] = Offset(nx, ny));
+                                      setState(() => cropCorners[idx] = Offset(nx, ny));
                                     },
                                     onPanEnd: (_) => setState(() => _draggingCornerIndex = null),
                                     child: Stack(
                                       fit: StackFit.expand,
                                       children: [
                                         docImageWidget,
-                                        CustomPaint(painter: _CropQuadPainter(corners: _cropCorners)),
+                                        CustomPaint(painter: _CropQuadPainter(corners: cropCorners)),
                                       ],
                                     ),
                                   ),
@@ -3609,14 +3806,7 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
                         TextButton.icon(
                           icon: const Icon(Icons.refresh_rounded, size: 16, color: Colors.white70),
                           label: const Text('Reset', style: TextStyle(color: Colors.white70, fontSize: 12)),
-                          onPressed: () => setState(() {
-                            _cropCorners = [
-                              const Offset(0.05, 0.05),
-                              const Offset(0.95, 0.05),
-                              const Offset(0.95, 0.95),
-                              const Offset(0.05, 0.95),
-                            ];
-                          }),
+                          onPressed: () => setState(() => _pageCropCorners[_curPageIndex] = _defaultCropCorners()),
                         ),
                         const SizedBox(width: 8),
                         ElevatedButton.icon(
@@ -3876,7 +4066,8 @@ class _LiveEraserStrokePainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _LiveEraserStrokePainter oldDelegate) => true;
 }
-
+// ==================== PART 4B END ====================
+// ==================== PART 4C START ====================
 // 4. DOCUMENT DETAIL SCREEN (MOVE/COPY PAGES BETWEEN DOCS & FOLDERS)
 class DocumentDetailScreen extends StatefulWidget {
   final Map<String, dynamic> doc;
@@ -3948,7 +4139,7 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
           ElevatedButton.icon(style: ElevatedButton.styleFrom(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white), icon: const Icon(Icons.save, size: 16), label: Text(AppLang.tr('save')), onPressed: () { Navigator.pop(ctx); setState(() => _title = ctrl.text.trim().isEmpty ? _title : ctrl.text.trim()); _syncDocChanges(); }),
         ],
       ),
-    ).whenComplete(() => ctrl.dispose());
+    ).whenComplete(() => safeDisposeController(ctrl));
   }
 
   void _changeFolderDialog() {
@@ -3975,7 +4166,7 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
           ],
         ),
       ),
-    ).whenComplete(() => newFolderCtrl.dispose());
+    ).whenComplete(() => safeDisposeController(newFolderCtrl));
   }
 
   void _openMoveCopySheet() {
@@ -4108,7 +4299,7 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
           ],
         ),
       ),
-    ).whenComplete(() => nameCtrl.dispose());
+    ).whenComplete(() => safeDisposeController(nameCtrl));
   }
 
   void _reEditSelectedPages() {
@@ -4197,7 +4388,7 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
       final f = File(rawPaths[i]);
       if (await f.exists()) {
         final target = '${scansDir.path}/add_${DateTime.now().millisecondsSinceEpoch}_$i.jpg';
-        await f.copy(target);
+        await ProDocImageProcessor.bakeOrientationToFile(f.path, target, maxDimension: 3000);
         copiedRaw.add(target);
       }
     }
@@ -4345,9 +4536,18 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
                                   originalImages: _originalImages,
                                   initialIndex: idx,
                                   title: _title,
-                                  onPageReplaced: (pageIdx, newPath) {
+                                  onPageReplaced: (pageIdx, newPath) async {
+                                    if (!mounted) return;
                                     setState(() { if (pageIdx >= 0 && pageIdx < _images.length) _images[pageIdx] = newPath; });
-                                    _syncDocChanges();
+                                    // Keep original image rotated in sync when rotating (so Edit keeps rotation)
+                                    if (pageIdx >= 0 && pageIdx < _originalImages.length && newPath != _originalImages[pageIdx]) {
+                                      final appDir = await getApplicationDocumentsDirectory();
+                                      final scansDir = Directory('${appDir.path}/scans');
+                                      if (!await scansDir.exists()) await scansDir.create(recursive: true);
+                                      final rotOrig = await ProDocImageProcessor.rotateImage90Fast(_originalImages[pageIdx], '${scansDir.path}/rot_orig_${DateTime.now().millisecondsSinceEpoch}.jpg');
+                                      if (mounted) _originalImages[pageIdx] = rotOrig;
+                                    }
+                                    if (mounted) _syncDocChanges();
                                   },
                                   onExtractText: widget.onExtractText,
                                   onReEditPage: (pageIdx) {
@@ -4524,1027 +4724,4 @@ class _FullScreenPhotoViewerState extends State<FullScreenPhotoViewer> {
     );
   }
 }
-// ==================== PART 3 END ====================
-// ==================== PART 4 START ====================
-// HELPER FOR HINDI / UNICODE / RUPEE SYMBOL PDF RENDERING (NO EXTRA FONT ASSET NEEDED)
-class _UnicodePdfHelper {
-  static bool hasNonAscii(String s) => s.runes.any((r) => r > 127);
-
-  static Future<Uint8List> renderLinesToA4Png({
-    required List<Map<String, dynamic>> blocks,
-    bool landscape = false,
-  }) async {
-    final double pageW = landscape ? 1754.0 : 1240.0;
-    final double pageH = landscape ? 1240.0 : 1754.0;
-    const double pad = 80.0;
-
-    final recorder = ui.PictureRecorder();
-    final canvas = Canvas(recorder, Rect.fromLTWH(0, 0, pageW, pageH));
-    canvas.drawRect(Rect.fromLTWH(0, 0, pageW, pageH), Paint()..color = Colors.white);
-
-    double y = pad;
-    for (final b in blocks) {
-      if (b['divider'] == true) {
-        y += 8;
-        canvas.drawLine(Offset(pad, y), Offset(pageW - pad, y), Paint()..color = const Color(0xFF2E7D32)..strokeWidth = 3);
-        y += 18;
-        continue;
-      }
-      final String text = (b['text'] ?? '').toString();
-      if (text.isEmpty) continue;
-      final double fontSize = (b['size'] as num?)?.toDouble() ?? 26.0;
-      final bool bold = b['bold'] == true;
-      final Color color = (b['color'] as Color?) ?? Colors.black87;
-
-      final tp = TextPainter(
-        text: TextSpan(
-          text: text,
-          style: TextStyle(fontSize: fontSize, fontWeight: bold ? FontWeight.bold : FontWeight.normal, color: color, height: 1.4),
-        ),
-        textDirection: ui.TextDirection.ltr,
-      )..layout(maxWidth: pageW - pad * 2);
-
-      if (y + tp.height > pageH - pad) break;
-      tp.paint(canvas, Offset(pad, y));
-      y += tp.height + ((b['space'] as num?)?.toDouble() ?? 14.0);
-    }
-
-    final pic = recorder.endRecording();
-    final imgUi = await pic.toImage(pageW.toInt(), pageH.toInt());
-    final data = await imgUi.toByteData(format: ui.ImageByteFormat.png);
-    imgUi.dispose();
-    pic.dispose();
-    return data!.buffer.asUint8List();
-  }
-
-  static Future<Uint8List> renderRotatedWatermarkPng(String text) async {
-    const double size = 900.0;
-    final recorder = ui.PictureRecorder();
-    final canvas = Canvas(recorder, const Rect.fromLTWH(0, 0, size, size));
-    canvas.save();
-    canvas.translate(size / 2, size / 2);
-    canvas.rotate(-0.6);
-    final tp = TextPainter(
-      text: TextSpan(
-        text: text,
-        style: TextStyle(fontSize: 82, fontWeight: FontWeight.bold, color: Colors.black.withOpacity(0.22)),
-      ),
-      textAlign: TextAlign.center,
-      textDirection: ui.TextDirection.ltr,
-    )..layout(maxWidth: size * 0.9);
-    tp.paint(canvas, Offset(-tp.width / 2, -tp.height / 2));
-    canvas.restore();
-
-    final pic = recorder.endRecording();
-    final imgUi = await pic.toImage(size.toInt(), size.toInt());
-    final data = await imgUi.toByteData(format: ui.ImageByteFormat.png);
-    imgUi.dispose();
-    pic.dispose();
-    return data!.buffer.asUint8List();
-  }
-}
-
-// 6. PASSPORT PHOTO STUDIO
-class PassportPhotoStudioScreen extends StatefulWidget {
-  const PassportPhotoStudioScreen({super.key});
-  @override
-  State<PassportPhotoStudioScreen> createState() => _PassportPhotoStudioScreenState();
-}
-
-class _PassportPhotoStudioScreenState extends State<PassportPhotoStudioScreen> {
-  String? _photoPath;
-  int _copies = 8;
-  String _presetSize = 'Indian Passport (3.5x4.5 cm)';
-  String _bgChoice = 'White';
-
-  Future<void> _pickPhotoFromGallery() async {
-    final x = await ImagePicker().pickImage(source: ImageSource.gallery);
-    if (x != null && mounted) setState(() => _photoPath = x.path);
-  }
-
-  Future<void> _scanPhotoMlKit() async {
-    final scanner = DocumentScanner(options: DocumentScannerOptions(documentFormat: DocumentFormat.jpeg, mode: ScannerMode.base, isGalleryImport: true, pageLimit: 1));
-    try {
-      final res = await scanner.scanDocument();
-      if (res.images.isNotEmpty && mounted) setState(() => _photoPath = res.images.first);
-    } finally {
-      await scanner.close();
-    }
-  }
-
-  Future<void> _scanPhotoCamera() async {
-    final captured = await Navigator.push<List<String>>(
-      context,
-      MaterialPageRoute(builder: (_) => ProCameraScannerScreen(pageLimit: 1, onSwitchToMlKitAutoScan: _scanPhotoMlKit)),
-    );
-    if (captured != null && captured.isNotEmpty && mounted) {
-      setState(() => _photoPath = captured.first);
-    }
-  }
-
-  Future<void> _exportPassportSheet() async {
-    if (_photoPath == null) return;
-    final pdf = pw.Document();
-    final passImg = pw.MemoryImage(await File(_photoPath!).readAsBytes());
-    double w = 110, h = 145;
-    if (_presetSize.contains('US Visa')) { w = 140; h = 140; } else if (_presetSize.contains('PAN Card')) { w = 95; h = 130; } else if (_presetSize.contains('Stamp')) { w = 80; h = 100; }
-    PdfColor bgColor = PdfColors.white;
-    if (_bgChoice == 'Studio Blue') bgColor = PdfColor.fromInt(0xFFBBDEFB);
-    if (_bgChoice == 'Light Grey') bgColor = PdfColor.fromInt(0xFFECEFF1);
-
-    pdf.addPage(
-      pw.Page(
-        pageFormat: PdfPageFormat.a4,
-        build: (_) => pw.Container(
-          padding: const pw.EdgeInsets.all(24),
-          child: pw.Wrap(
-            spacing: 16,
-            runSpacing: 20,
-            children: List.generate(
-              _copies,
-              (_) => pw.Container(
-                width: w,
-                height: h,
-                color: bgColor,
-                padding: const pw.EdgeInsets.all(2),
-                child: pw.Container(
-                  decoration: pw.BoxDecoration(border: pw.Border.all(color: PdfColors.grey400, width: 1)),
-                  child: pw.ClipRect(child: pw.Image(passImg, fit: pw.BoxFit.cover)),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-    final file = File("${(await getTemporaryDirectory()).path}/Passport_Sheet_${_copies}_Prints.pdf");
-    await file.writeAsBytes(await pdf.save());
-    await Share.shareXFiles([XFile(file.path)], text: 'Passport Photos Print Sheet');
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Passport Photo Studio')),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          children: [
-            Center(child: _photoPath != null ? ClipRRect(borderRadius: BorderRadius.circular(8), child: Image.file(File(_photoPath!), height: 180, width: 140, fit: BoxFit.cover)) : Container(height: 180, width: 140, decoration: BoxDecoration(color: Colors.grey.shade200, borderRadius: BorderRadius.circular(8)), child: const Icon(Icons.portrait, size: 60, color: Colors.grey))),
-            const SizedBox(height: 12),
-            Row(mainAxisAlignment: MainAxisAlignment.center, children: [ElevatedButton.icon(icon: const Icon(Icons.photo_library_rounded), label: const Text('From Gallery'), onPressed: _pickPhotoFromGallery), const SizedBox(width: 10), ElevatedButton.icon(icon: const Icon(Icons.camera_alt_rounded), label: const Text('Camera Scan'), onPressed: _scanPhotoCamera)]),
-            const SizedBox(height: 16),
-            DropdownButtonFormField<String>(value: _presetSize, decoration: const InputDecoration(labelText: 'Standard Photo Size', border: OutlineInputBorder()), items: const [DropdownMenuItem(value: 'Indian Passport (3.5x4.5 cm)', child: Text('Indian Passport (3.5x4.5 cm)')), DropdownMenuItem(value: 'PAN Card (2.5x3.5 cm)', child: Text('PAN Card (2.5x3.5 cm)')), DropdownMenuItem(value: 'US Visa / OCI (2x2 inch)', child: Text('US Visa / OCI (2x2 inch)')), DropdownMenuItem(value: 'Stamp Size (2x2.5 cm)', child: Text('Stamp Size (2x2.5 cm)'))], onChanged: (v) { if (v != null) setState(() => _presetSize = v); }),
-            const SizedBox(height: 12),
-            DropdownButtonFormField<String>(value: _bgChoice, decoration: const InputDecoration(labelText: 'Background Color', border: OutlineInputBorder()), items: const [DropdownMenuItem(value: 'White', child: Text('Pure White')), DropdownMenuItem(value: 'Studio Blue', child: Text('Studio Light Blue')), DropdownMenuItem(value: 'Light Grey', child: Text('Light Grey'))], onChanged: (v) { if (v != null) setState(() => _bgChoice = v); }),
-            const SizedBox(height: 16),
-            const Align(alignment: Alignment.centerLeft, child: Text('Number of Copies on A4:', style: TextStyle(fontWeight: FontWeight.bold))),
-            const SizedBox(height: 6),
-            SegmentedButton<int>(segments: const [ButtonSegment(value: 4, label: Text('4')), ButtonSegment(value: 8, label: Text('8')), ButtonSegment(value: 16, label: Text('16')), ButtonSegment(value: 32, label: Text('32'))], selected: {_copies}, onSelectionChanged: (s) => setState(() => _copies = s.first)),
-            const SizedBox(height: 24),
-            SizedBox(width: double.infinity, height: 48, child: ElevatedButton.icon(style: ElevatedButton.styleFrom(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white), icon: const Icon(Icons.picture_as_pdf), label: const Text('Export Printable A4 Sheet PDF'), onPressed: _photoPath == null ? null : _exportPassportSheet)),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-// 7. DIGITAL SIGNATURE
-class DigitalSignatureScreen extends StatefulWidget {
-  const DigitalSignatureScreen({super.key});
-  @override
-  State<DigitalSignatureScreen> createState() => _DigitalSignatureScreenState();
-}
-
-class _DigitalSignatureScreenState extends State<DigitalSignatureScreen> {
-  final List<List<Offset>> _strokes = [];
-  Color _inkColor = Colors.black;
-  double _strokeWidth = 3.5;
-
-  Future<void> _exportSignaturePng() async {
-    if (_strokes.isEmpty) return;
-    double minX = 10000, maxX = 0, minY = 10000, maxY = 0;
-    for (var stroke in _strokes) {
-      for (var p in stroke) {
-        if (p.dx < minX) minX = p.dx;
-        if (p.dx > maxX) maxX = p.dx;
-        if (p.dy < minY) minY = p.dy;
-        if (p.dy > maxY) maxY = p.dy;
-      }
-    }
-    const pad = 20.0;
-    minX = (minX - pad).clamp(0, 5000);
-    minY = (minY - pad).clamp(0, 5000);
-    final width = (maxX - minX + pad * 2).clamp(60.0, 5000.0);
-    final height = (maxY - minY + pad * 2).clamp(60.0, 5000.0);
-
-    ui.Picture? pic;
-    ui.Image? imgUi;
-    try {
-      final recorder = ui.PictureRecorder();
-      final canvas = Canvas(recorder, Rect.fromLTWH(0, 0, width, height));
-      canvas.translate(-minX, -minY);
-      final paint = Paint()..color = _inkColor..strokeWidth = _strokeWidth..strokeCap = StrokeCap.round..strokeJoin = StrokeJoin.round;
-      for (var stroke in _strokes) {
-        for (int i = 0; i < stroke.length - 1; i++) {
-          canvas.drawLine(stroke[i], stroke[i + 1], paint);
-        }
-      }
-      pic = recorder.endRecording();
-      imgUi = await pic.toImage(width.toInt(), height.toInt());
-      final data = await imgUi.toByteData(format: ui.ImageByteFormat.png);
-      if (data != null) {
-        final file = File("${(await getTemporaryDirectory()).path}/Signature_${DateTime.now().millisecondsSinceEpoch}.png");
-        await file.writeAsBytes(data.buffer.asUint8List());
-        await Share.shareXFiles([XFile(file.path)], text: 'My Transparent Signature');
-      }
-    } finally {
-      imgUi?.dispose();
-      pic?.dispose();
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Digital Signature'), actions: [LabeledIconButton(icon: Icons.undo, label: 'Undo', onPressed: () { if (_strokes.isNotEmpty) setState(() => _strokes.removeLast()); }), LabeledIconButton(icon: Icons.clear_all, label: 'Clear', onPressed: () => setState(() => _strokes.clear()))]),
-      body: Column(
-        children: [
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            color: Colors.grey.shade100,
-            child: Row(
-              children: [
-                const Text('Ink: ', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black87)),
-                ...[Colors.black, const Color(0xFF0D47A1), const Color(0xFFB71C1C), const Color(0xFF1B5E20)].map((c) => GestureDetector(onTap: () => setState(() => _inkColor = c), child: Container(margin: const EdgeInsets.symmetric(horizontal: 4), width: 26, height: 26, decoration: BoxDecoration(color: c, shape: BoxShape.circle, border: Border.all(color: _inkColor == c ? Colors.amber : Colors.transparent, width: 2))))),
-                const Spacer(),
-                const Text('Size: ', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black87)),
-                Slider(value: _strokeWidth, min: 1.5, max: 8.0, onChanged: (v) => setState(() => _strokeWidth = v)),
-              ],
-            ),
-          ),
-          Expanded(
-            child: Container(
-              margin: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.grey.shade300),
-              ),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(12),
-                child: GestureDetector(
-                  onPanStart: (d) => setState(() => _strokes.add([d.localPosition])),
-                  onPanUpdate: (d) => setState(() => _strokes.last.add(d.localPosition)),
-                  child: CustomPaint(painter: _SignPainter(_strokes, _inkColor, _strokeWidth), size: Size.infinite),
-                ),
-              ),
-            ),
-          ),
-          Padding(padding: const EdgeInsets.all(16), child: SizedBox(width: double.infinity, height: 48, child: ElevatedButton.icon(style: ElevatedButton.styleFrom(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white), icon: const Icon(Icons.download_rounded), label: const Text('Export Transparent PNG Sign'), onPressed: _strokes.isEmpty ? null : _exportSignaturePng))),
-        ],
-      ),
-    );
-  }
-}
-
-class _SignPainter extends CustomPainter {
-  final List<List<Offset>> strokes;
-  final Color color;
-  final double strokeWidth;
-  _SignPainter(this.strokes, this.color, this.strokeWidth);
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()..color = color..strokeWidth = strokeWidth..strokeCap = StrokeCap.round..strokeJoin = StrokeJoin.round;
-    for (var stroke in strokes) {
-      for (int i = 0; i < stroke.length - 1; i++) {
-        canvas.drawLine(stroke[i], stroke[i + 1], paint);
-      }
-    }
-  }
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
-}
-
-// 8. GST TAX INVOICE MAKER
-class InvoiceMakerProScreen extends StatefulWidget {
-  const InvoiceMakerProScreen({super.key});
-  @override
-  State<InvoiceMakerProScreen> createState() => _InvoiceMakerProScreenState();
-}
-
-class _InvoiceMakerProScreenState extends State<InvoiceMakerProScreen> {
-  final _sellerCtrl = TextEditingController(text: 'My Business / Shop Name');
-  final _clientCtrl = TextEditingController(text: 'Customer / Client Name');
-  final _invNumCtrl = TextEditingController(text: 'INV-001');
-  final _itemCtrl = TextEditingController();
-  final _priceCtrl = TextEditingController();
-  final _qtyCtrl = TextEditingController(text: '1');
-  double _gstRate = 0.18;
-  final List<Map<String, dynamic>> _items = [{'name': 'Professional Consulting', 'price': 1200.0, 'qty': 1}];
-
-  @override
-  void dispose() {
-    _sellerCtrl.dispose();
-    _clientCtrl.dispose();
-    _invNumCtrl.dispose();
-    _itemCtrl.dispose();
-    _priceCtrl.dispose();
-    _qtyCtrl.dispose();
-    super.dispose();
-  }
-
-  Future<void> _exportInvoicePdf() async {
-    final pdf = pw.Document();
-    double subtotal = _items.fold(0.0, (s, i) => s + ((i['price'] as double) * (i['qty'] as int)));
-    double gstAmount = subtotal * _gstRate;
-    double grandTotal = subtotal + gstAmount;
-    final String allText = '${_sellerCtrl.text} ${_clientCtrl.text} ${_invNumCtrl.text} ${_items.map((e) => e['name']).join(' ')}';
-
-    if (_UnicodePdfHelper.hasNonAscii(allText)) {
-      final blocks = <Map<String, dynamic>>[
-        {'text': 'TAX INVOICE (${_invNumCtrl.text})', 'size': 40.0, 'bold': true, 'color': const Color(0xFF2E7D32), 'space': 16.0},
-        {'text': 'Seller: ${_sellerCtrl.text}', 'size': 26.0},
-        {'text': 'Billed To: ${_clientCtrl.text}', 'size': 26.0},
-        {'text': 'Date: ${DateFormat('dd MMM yyyy').format(DateTime.now())}', 'size': 24.0, 'color': Colors.grey.shade700},
-        {'divider': true},
-        ..._items.map((it) => {
-          'text': '• ${it['name']}  |  Qty: ${it['qty']} × ₹${it['price']}  =  ₹${(it['price'] * it['qty']).toStringAsFixed(2)}',
-          'size': 25.0,
-        }),
-        {'divider': true},
-        {'text': 'Subtotal: ₹${subtotal.toStringAsFixed(2)}', 'size': 26.0},
-        {'text': 'GST (${(_gstRate * 100).toInt()}%): ₹${gstAmount.toStringAsFixed(2)}', 'size': 26.0},
-        {'text': 'Grand Total: ₹${grandTotal.toStringAsFixed(2)}', 'size': 32.0, 'bold': true, 'color': const Color(0xFF2E7D32)},
-      ];
-      final pngBytes = await _UnicodePdfHelper.renderLinesToA4Png(blocks: blocks);
-      pdf.addPage(pw.Page(pageFormat: PdfPageFormat.a4, margin: pw.EdgeInsets.zero, build: (_) => pw.Image(pw.MemoryImage(pngBytes), fit: pw.BoxFit.contain)));
-    } else {
-      pdf.addPage(
-        pw.Page(
-          pageFormat: PdfPageFormat.a4,
-          build: (_) => pw.Padding(
-            padding: const pw.EdgeInsets.all(28),
-            child: pw.Column(
-              crossAxisAlignment: pw.CrossAxisAlignment.start,
-              children: [
-                pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [pw.Text('TAX INVOICE', style: pw.TextStyle(fontSize: 22, fontWeight: pw.FontWeight.bold, color: PdfColors.green800)), pw.Text('Invoice #: ${_invNumCtrl.text}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold))]),
-                pw.SizedBox(height: 6),
-                pw.Text('Seller: ${_sellerCtrl.text}'),
-                pw.Text('Billed To: ${_clientCtrl.text}'),
-                pw.Text('Date: ${DateFormat('dd MMM yyyy').format(DateTime.now())}'),
-                pw.Divider(thickness: 1.5, color: PdfColors.green800),
-                pw.SizedBox(height: 10),
-                pw.TableHelper.fromTextArray(headers: ['Item / Service', 'Qty', 'Rate (INR)', 'Total (INR)'], data: _items.map((it) => [it['name'], '${it['qty']}', '${it['price']}', '${(it['price'] * it['qty']).toStringAsFixed(2)}']).toList()),
-                pw.SizedBox(height: 16),
-                pw.Align(alignment: pw.Alignment.centerRight, child: pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.end, children: [pw.Text('Subtotal: INR ${subtotal.toStringAsFixed(2)}'), pw.Text('GST (${(_gstRate * 100).toInt()}%): INR ${gstAmount.toStringAsFixed(2)}'), pw.Divider(), pw.Text('Grand Total: INR ${grandTotal.toStringAsFixed(2)}', style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold, color: PdfColors.green800))])),
-              ],
-            ),
-          ),
-        ),
-      );
-    }
-    final file = File("${(await getTemporaryDirectory()).path}/Tax_Invoice.pdf");
-    await file.writeAsBytes(await pdf.save());
-    await Share.shareXFiles([XFile(file.path)], text: 'Tax Invoice PDF');
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('GST Tax Invoice Maker')),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          children: [
-            TextField(controller: _sellerCtrl, decoration: const InputDecoration(labelText: 'Seller / Business Name', border: OutlineInputBorder())),
-            const SizedBox(height: 8),
-            TextField(controller: _clientCtrl, decoration: const InputDecoration(labelText: 'Customer / Client Name', border: OutlineInputBorder())),
-            const SizedBox(height: 8),
-            TextField(controller: _invNumCtrl, decoration: const InputDecoration(labelText: 'Invoice Number', border: OutlineInputBorder())),
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                Expanded(flex: 3, child: TextField(controller: _itemCtrl, decoration: const InputDecoration(labelText: 'Item Name', border: OutlineInputBorder()))),
-                const SizedBox(width: 6),
-                Expanded(flex: 1, child: TextField(controller: _qtyCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Qty', border: OutlineInputBorder()))),
-                const SizedBox(width: 6),
-                Expanded(flex: 2, child: TextField(controller: _priceCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Price', border: OutlineInputBorder()))),
-                LabeledIconButton(icon: Icons.add_circle, label: 'Add Item', color: Colors.green, iconSize: 30, onPressed: () { if (_itemCtrl.text.isNotEmpty && _priceCtrl.text.isNotEmpty) { setState(() { _items.add({'name': _itemCtrl.text.trim(), 'qty': int.tryParse(_qtyCtrl.text.trim()) ?? 1, 'price': double.tryParse(_priceCtrl.text.trim()) ?? 0.0}); _itemCtrl.clear(); _priceCtrl.clear(); }); } }),
-              ],
-            ),
-            const SizedBox(height: 12),
-            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('GST Slab Rate:'), DropdownButton<double>(value: _gstRate, items: const [DropdownMenuItem(value: 0.0, child: Text('0% Exempt')), DropdownMenuItem(value: 0.05, child: Text('5% GST')), DropdownMenuItem(value: 0.12, child: Text('12% GST')), DropdownMenuItem(value: 0.18, child: Text('18% Standard')), DropdownMenuItem(value: 0.28, child: Text('28% Luxury'))], onChanged: (v) { if (v != null) setState(() => _gstRate = v); })]),
-            const Divider(),
-            ...List.generate(_items.length, (i) {
-              final it = _items[i];
-              return ListTile(
-                title: Text(it['name']),
-                subtitle: Text('Qty: ${it['qty']} × INR ${it['price']}'),
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text('INR ${(it['qty'] * it['price']).toStringAsFixed(2)}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-                    IconButton(
-                      icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent, size: 20),
-                      onPressed: () => setState(() => _items.removeAt(i)),
-                    ),
-                  ],
-                ),
-              );
-            }),
-            const SizedBox(height: 20),
-            ElevatedButton.icon(style: ElevatedButton.styleFrom(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white, minimumSize: const Size.fromHeight(48)), icon: const Icon(Icons.picture_as_pdf), label: const Text('Export Official Tax Invoice PDF'), onPressed: _items.isEmpty ? null : _exportInvoicePdf),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-// 9. RESUME / CV BUILDER
-class ResumeBuilderScreen extends StatefulWidget {
-  const ResumeBuilderScreen({super.key});
-  @override
-  State<ResumeBuilderScreen> createState() => _ResumeBuilderScreenState();
-}
-
-class _ResumeBuilderScreenState extends State<ResumeBuilderScreen> {
-  final _name = TextEditingController(text: 'Rahul Sharma');
-  final _contact = TextEditingController(text: '+91 98765 43210 | rahul.sharma@email.com | New Delhi');
-  final _summary = TextEditingController(text: 'Motivated professional with expertise in operations, documentation, and team leadership.');
-  final _experience = TextEditingController(text: '• 3+ Years experience in Team Coordination & IT Documentation.\n• Managed client communications and delivery targets.');
-  final _education = TextEditingController(text: '• Bachelor of Science / Graduate (2021)\n• Higher Secondary Certificate (2018)');
-  final _skills = TextEditingController(text: 'MS Office, Communication, Team Leadership, Problem Solving');
-
-  @override
-  void dispose() {
-    _name.dispose();
-    _contact.dispose();
-    _summary.dispose();
-    _experience.dispose();
-    _education.dispose();
-    _skills.dispose();
-    super.dispose();
-  }
-
-  Future<void> _exportCv() async {
-    final pdf = pw.Document();
-    final String allText = '${_name.text} ${_contact.text} ${_summary.text} ${_experience.text} ${_education.text} ${_skills.text}';
-    if (_UnicodePdfHelper.hasNonAscii(allText)) {
-      final pngBytes = await _UnicodePdfHelper.renderLinesToA4Png(blocks: [
-        {'text': _name.text, 'size': 44.0, 'bold': true, 'color': const Color(0xFF2E7D32), 'space': 6.0},
-        {'text': _contact.text, 'size': 22.0, 'color': Colors.grey.shade700},
-        {'divider': true},
-        {'text': 'PROFESSIONAL SUMMARY', 'size': 28.0, 'bold': true},
-        {'text': _summary.text, 'size': 24.0, 'space': 22.0},
-        {'text': 'WORK EXPERIENCE', 'size': 28.0, 'bold': true},
-        {'text': _experience.text, 'size': 24.0, 'space': 22.0},
-        {'text': 'EDUCATION', 'size': 28.0, 'bold': true},
-        {'text': _education.text, 'size': 24.0, 'space': 22.0},
-        {'text': 'KEY SKILLS', 'size': 28.0, 'bold': true},
-        {'text': _skills.text, 'size': 24.0},
-      ]);
-      pdf.addPage(pw.Page(pageFormat: PdfPageFormat.a4, margin: pw.EdgeInsets.zero, build: (_) => pw.Image(pw.MemoryImage(pngBytes), fit: pw.BoxFit.contain)));
-    } else {
-      pdf.addPage(pw.Page(pageFormat: PdfPageFormat.a4, build: (_) => pw.Padding(padding: const pw.EdgeInsets.all(32), child: pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [pw.Text(_name.text, style: pw.TextStyle(fontSize: 22, fontWeight: pw.FontWeight.bold, color: PdfColors.green800)), pw.Text(_contact.text, style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey700)), pw.Divider(thickness: 1.5, color: PdfColors.green800), pw.SizedBox(height: 8), pw.Text('PROFESSIONAL SUMMARY', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12)), pw.Text(_summary.text, style: const pw.TextStyle(fontSize: 10)), pw.SizedBox(height: 12), pw.Text('WORK EXPERIENCE', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12)), pw.Text(_experience.text, style: const pw.TextStyle(fontSize: 10)), pw.SizedBox(height: 12), pw.Text('EDUCATION', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12)), pw.Text(_education.text, style: const pw.TextStyle(fontSize: 10)), pw.SizedBox(height: 12), pw.Text('KEY SKILLS', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12)), pw.Text(_skills.text, style: const pw.TextStyle(fontSize: 10))]))));
-    }
-    final file = File("${(await getTemporaryDirectory()).path}/Resume_${_name.text.replaceAll(' ', '_')}.pdf");
-    await file.writeAsBytes(await pdf.save());
-    await Share.shareXFiles([XFile(file.path)], text: 'Professional Resume');
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Resume / CV Maker')),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          children: [
-            TextField(controller: _name, decoration: const InputDecoration(labelText: 'Full Name', border: OutlineInputBorder())),
-            const SizedBox(height: 8),
-            TextField(controller: _contact, decoration: const InputDecoration(labelText: 'Contact (Phone, Email, City)', border: OutlineInputBorder())),
-            const SizedBox(height: 8),
-            TextField(controller: _summary, maxLines: 2, decoration: const InputDecoration(labelText: 'Profile Summary', border: OutlineInputBorder())),
-            const SizedBox(height: 8),
-            TextField(controller: _experience, maxLines: 3, decoration: const InputDecoration(labelText: 'Work Experience', border: OutlineInputBorder())),
-            const SizedBox(height: 8),
-            TextField(controller: _education, maxLines: 2, decoration: const InputDecoration(labelText: 'Education', border: OutlineInputBorder())),
-            const SizedBox(height: 8),
-            TextField(controller: _skills, decoration: const InputDecoration(labelText: 'Skills', border: OutlineInputBorder())),
-            const SizedBox(height: 16),
-            ElevatedButton.icon(style: ElevatedButton.styleFrom(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white, minimumSize: const Size.fromHeight(48)), icon: const Icon(Icons.picture_as_pdf), label: const Text('Generate Resume PDF'), onPressed: _exportCv),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-// 10. POWERPOINT / SLIDES MAKER
-class PowerPointStudioScreen extends StatefulWidget {
-  const PowerPointStudioScreen({super.key});
-  @override
-  State<PowerPointStudioScreen> createState() => _PowerPointStudioScreenState();
-}
-
-class _PowerPointStudioScreenState extends State<PowerPointStudioScreen> {
-  final List<Map<String, String>> _slides = [
-    {'title': 'Project Overview', 'content': '• Goals and Milestones\n• Target Audience\n• Timeline'},
-    {'title': 'Key Execution Steps', 'content': '• Step 1: Research & Discovery\n• Step 2: Implementation\n• Step 3: Launch'},
-  ];
-
-  Future<void> _exportDeck() async {
-    final pdf = pw.Document();
-    for (int i = 0; i < _slides.length; i++) {
-      final s = _slides[i];
-      final title = s['title'] ?? '';
-      final content = s['content'] ?? '';
-      if (_UnicodePdfHelper.hasNonAscii('$title $content')) {
-        final pngBytes = await _UnicodePdfHelper.renderLinesToA4Png(
-          landscape: true,
-          blocks: [
-            {'text': '$title   (Slide ${i + 1}/${_slides.length})', 'size': 48.0, 'bold': true, 'color': const Color(0xFF2E7D32)},
-            {'divider': true},
-            {'text': content, 'size': 34.0},
-          ],
-        );
-        pdf.addPage(pw.Page(pageFormat: PdfPageFormat.a4.landscape, margin: pw.EdgeInsets.zero, build: (_) => pw.Image(pw.MemoryImage(pngBytes), fit: pw.BoxFit.contain)));
-      } else {
-        pdf.addPage(pw.Page(pageFormat: PdfPageFormat.a4.landscape, build: (_) => pw.Container(padding: const pw.EdgeInsets.all(36), child: pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [pw.Text(title, style: pw.TextStyle(fontSize: 26, fontWeight: pw.FontWeight.bold, color: PdfColors.green800)), pw.Text('Slide ${i + 1} of ${_slides.length}', style: const pw.TextStyle(color: PdfColors.grey600))]), pw.Divider(thickness: 2, color: PdfColors.green800), pw.SizedBox(height: 20), pw.Text(content, style: const pw.TextStyle(fontSize: 18, lineSpacing: 4))]))));
-      }
-    }
-    final file = File("${(await getTemporaryDirectory()).path}/Presentation_Slides.pdf");
-    await file.writeAsBytes(await pdf.save());
-    await Share.shareXFiles([XFile(file.path)], text: 'Presentation Slides');
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Slides Maker'), actions: [LabeledIconButton(icon: Icons.share, label: 'Share PDF', onPressed: _exportDeck)]),
-      body: ListView.builder(
-        padding: const EdgeInsets.all(16),
-        itemCount: _slides.length,
-        itemBuilder: (ctx, i) => Card(
-          key: ObjectKey(_slides[i]),
-          margin: const EdgeInsets.only(bottom: 12),
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: Column(
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text('Slide ${i + 1}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.grey)),
-                    if (_slides.length > 1)
-                      IconButton(icon: const Icon(Icons.delete_outline, color: Colors.redAccent, size: 18), onPressed: () => setState(() => _slides.removeAt(i))),
-                  ],
-                ),
-                TextFormField(initialValue: _slides[i]['title'], decoration: const InputDecoration(labelText: 'Slide Title'), onChanged: (v) => _slides[i]['title'] = v),
-                TextFormField(initialValue: _slides[i]['content'], maxLines: 3, decoration: const InputDecoration(labelText: 'Bullets / Points'), onChanged: (v) => _slides[i]['content'] = v),
-              ],
-            ),
-          ),
-        ),
-      ),
-      floatingActionButton: FloatingActionButton.extended(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white, onPressed: () => setState(() => _slides.add({'title': 'New Slide', 'content': '• Point 1\n• Point 2'})), icon: const Icon(Icons.add), label: const Text('Add Slide')),
-    );
-  }
-}
-
-// 11. FORMAL LETTER TEMPLATES
-class LetterTemplatesScreen extends StatefulWidget {
-  const LetterTemplatesScreen({super.key});
-  @override
-  State<LetterTemplatesScreen> createState() => _LetterTemplatesScreenState();
-}
-
-class _LetterTemplatesScreenState extends State<LetterTemplatesScreen> {
-  final _ctrl = TextEditingController(text: "To,\nThe Branch Manager,\nSubject: Application for New Cheque Book\n\nRespected Sir/Madam,\nI hold a savings account in your branch (Account No: XXXXXXXX). I kindly request you to issue a new cheque book for my account.\n\nThanking You,\nYours Sincerely,\n[Your Name]");
-
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
-
-  Future<void> _exportLetter() async {
-    final pdf = pw.Document();
-    if (_UnicodePdfHelper.hasNonAscii(_ctrl.text)) {
-      final pngBytes = await _UnicodePdfHelper.renderLinesToA4Png(blocks: [
-        {'text': _ctrl.text, 'size': 30.0},
-      ]);
-      pdf.addPage(pw.Page(pageFormat: PdfPageFormat.a4, margin: pw.EdgeInsets.zero, build: (_) => pw.Image(pw.MemoryImage(pngBytes), fit: pw.BoxFit.contain)));
-    } else {
-      pdf.addPage(pw.Page(pageFormat: PdfPageFormat.a4, build: (_) => pw.Padding(padding: const pw.EdgeInsets.all(36), child: pw.Text(_ctrl.text, style: const pw.TextStyle(fontSize: 14, lineSpacing: 4)))));
-    }
-    final file = File("${(await getTemporaryDirectory()).path}/Formal_Letter.pdf");
-    await file.writeAsBytes(await pdf.save());
-    await Share.shareXFiles([XFile(file.path)], text: 'Formal Letter PDF');
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Letter Maker'), actions: [LabeledIconButton(icon: Icons.share, label: 'Share PDF', onPressed: _exportLetter)]),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          children: [
-            Wrap(
-              spacing: 8,
-              children: [
-                ActionChip(label: const Text('Leave Letter'), onPressed: () => setState(() => _ctrl.text = "To,\nThe HR Manager,\nSubject: Leave Application\n\nRespected Sir/Madam,\nI am writing to formally request 3 days of leave from [Start Date] to [End Date] due to urgent personal reasons.\n\nThank you.\nSincerely,\n[Your Name]")),
-                ActionChip(label: const Text('Resignation'), onPressed: () => setState(() => _ctrl.text = "To,\nThe Management,\nSubject: Notice of Resignation\n\nPlease accept this letter as formal notification that I am resigning from my position as [Designation]. My last working day will be [Date].\n\nRegards,\n[Your Name]")),
-                ActionChip(label: const Text('Bank Manager'), onPressed: () => setState(() => _ctrl.text = "To,\nThe Branch Manager,\nSubject: Request to Update Phone Number\n\nRespected Sir,\nKindly update my mobile number [New Number] in my bank account [Account No].\n\nThanking you,\n[Your Name]")),
-              ],
-            ),
-            const SizedBox(height: 10),
-            Expanded(child: TextField(controller: _ctrl, maxLines: null, expands: true, decoration: const InputDecoration(border: OutlineInputBorder()))),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-// 12. TXT & NOTES STUDIO
-class TxtEditorNotesScreen extends StatefulWidget {
-  const TxtEditorNotesScreen({super.key});
-  @override
-  State<TxtEditorNotesScreen> createState() => _TxtEditorNotesScreenState();
-}
-
-class _TxtEditorNotesScreenState extends State<TxtEditorNotesScreen> {
-  final _titleCtrl = TextEditingController(text: 'Quick Note');
-  final _bodyCtrl = TextEditingController();
-
-  @override
-  void dispose() {
-    _titleCtrl.dispose();
-    _bodyCtrl.dispose();
-    super.dispose();
-  }
-
-  Future<void> _exportTxt() async {
-    final file = File("${(await getTemporaryDirectory()).path}/${_titleCtrl.text.replaceAll(' ', '_')}.txt");
-    await file.writeAsString(_bodyCtrl.text);
-    await Share.shareXFiles([XFile(file.path)], text: 'Exported Note');
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Notes & TXT Studio'), actions: [LabeledIconButton(icon: Icons.share, label: 'Share TXT', onPressed: _exportTxt)]),
-      body: Padding(padding: const EdgeInsets.all(16), child: Column(children: [TextField(controller: _titleCtrl, decoration: const InputDecoration(labelText: 'Title', border: OutlineInputBorder())), const SizedBox(height: 10), Expanded(child: TextField(controller: _bodyCtrl, maxLines: null, expands: true, decoration: const InputDecoration(hintText: 'Start writing notes...', border: OutlineInputBorder())))])),
-    );
-  }
-}
-
-// 13. PDF MERGE STUDIO
-class PdfStudioScreen extends StatefulWidget {
-  final List<Map<String, dynamic>> savedDocs;
-  const PdfStudioScreen({super.key, required this.savedDocs});
-  @override
-  State<PdfStudioScreen> createState() => _PdfStudioScreenState();
-}
-
-class _PdfStudioScreenState extends State<PdfStudioScreen> {
-  final List<String> _selectedIdsOrder = [];
-  bool _isMerging = false;
-
-  Future<void> _mergeDocs({required bool saveToPhone}) async {
-    if (_selectedIdsOrder.length < 2) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please select at least 2 documents to merge!')));
-      return;
-    }
-    setState(() => _isMerging = true);
-    try {
-      final pdf = pw.Document();
-      for (var id in _selectedIdsOrder) {
-        final doc = widget.savedDocs.firstWhere((d) => d['id'] == id);
-        for (var p in (doc['images'] as List)) {
-          final f = File(p);
-          if (await f.exists()) {
-            final bytes = await f.readAsBytes();
-            pdf.addPage(pw.Page(pageFormat: PdfPageFormat.a4, build: (_) => pw.Center(child: pw.Image(pw.MemoryImage(bytes), fit: pw.BoxFit.contain))));
-          }
-        }
-      }
-      final pdfBytes = await pdf.save();
-      if (saveToPhone) {
-        final res = await PhoneStorageManager.savePdfBytesToPublicDownloads(pdfBytes, 'Merged_${_selectedIdsOrder.length}_Docs');
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(res.savedPath != null ? '✅ Merged PDF saved to ${res.folderLabel}!' : '❌ Failed to save')));
-      } else {
-        final file = File("${(await getTemporaryDirectory()).path}/Merged_${DateTime.now().millisecondsSinceEpoch}.pdf");
-        await file.writeAsBytes(pdfBytes);
-        await Share.shareXFiles([XFile(file.path)], text: 'Merged PDF Document');
-      }
-    } finally {
-      if (mounted) setState(() => _isMerging = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Merge Documents (Ordered)')),
-      body: Stack(
-        children: [
-          ListView.builder(
-            itemCount: widget.savedDocs.length,
-            itemBuilder: (ctx, i) {
-              final doc = widget.savedDocs[i];
-              final orderIdx = _selectedIdsOrder.indexOf(doc['id']);
-              final isSel = orderIdx != -1;
-              return CheckboxListTile(
-                value: isSel,
-                secondary: isSel ? CircleAvatar(radius: 13, backgroundColor: appPrimaryColor.value, child: Text('#${orderIdx + 1}', style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold))) : null,
-                title: Text(doc['title']),
-                subtitle: Text('${doc['pages']} pages'),
-                onChanged: (v) => setState(() => v == true ? _selectedIdsOrder.add(doc['id']) : _selectedIdsOrder.remove(doc['id'])),
-              );
-            },
-          ),
-          if (_isMerging) const Center(child: CircularProgressIndicator()),
-        ],
-      ),
-      bottomNavigationBar: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Row(
-            children: [
-              Expanded(child: ElevatedButton.icon(style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white, minimumSize: const Size.fromHeight(48)), icon: const Icon(Icons.download_for_offline_rounded), label: Text('Save PDF (${_selectedIdsOrder.length})'), onPressed: _isMerging ? null : () => _mergeDocs(saveToPhone: true))),
-              const SizedBox(width: 10),
-              Expanded(child: ElevatedButton.icon(style: ElevatedButton.styleFrom(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white, minimumSize: const Size.fromHeight(48)), icon: const Icon(Icons.picture_as_pdf), label: Text('Share PDF (${_selectedIdsOrder.length})'), onPressed: _isMerging ? null : () => _mergeDocs(saveToPhone: false))),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// 14. WATERMARK STUDIO
-class WatermarkToolScreen extends StatefulWidget {
-  final List<Map<String, dynamic>> savedDocs;
-  const WatermarkToolScreen({super.key, required this.savedDocs});
-  @override
-  State<WatermarkToolScreen> createState() => _WatermarkToolScreenState();
-}
-
-class _WatermarkToolScreenState extends State<WatermarkToolScreen> {
-  final _wmCtrl = TextEditingController(text: 'CONFIDENTIAL');
-  String? _selectedDocId;
-
-  @override
-  void dispose() {
-    _wmCtrl.dispose();
-    super.dispose();
-  }
-
-  Future<void> _exportWatermarkedPdf() async {
-    if (_selectedDocId == null) return;
-    final doc = widget.savedDocs.firstWhere((d) => d['id'] == _selectedDocId);
-    final pdf = pw.Document();
-    final String wmText = _wmCtrl.text;
-    pw.MemoryImage? unicodeStamp;
-    if (_UnicodePdfHelper.hasNonAscii(wmText)) {
-      unicodeStamp = pw.MemoryImage(await _UnicodePdfHelper.renderRotatedWatermarkPng(wmText));
-    }
-
-    for (var path in (doc['images'] as List)) {
-      final f = File(path);
-      if (await f.exists()) {
-        final imgMem = pw.MemoryImage(await f.readAsBytes());
-        pdf.addPage(
-          pw.Page(
-            pageFormat: PdfPageFormat.a4,
-            build: (_) => pw.Stack(
-              children: [
-                pw.Center(child: pw.Image(imgMem, fit: pw.BoxFit.contain)),
-                if (unicodeStamp != null)
-                  pw.Center(child: pw.Image(unicodeStamp, width: 420, height: 420))
-                else
-                  pw.Center(child: pw.Transform.rotate(angle: -0.6, child: pw.Text(wmText, style: pw.TextStyle(fontSize: 48, fontWeight: pw.FontWeight.bold, color: PdfColor.fromInt(0x35000000))))),
-              ],
-            ),
-          ),
-        );
-      }
-    }
-    final file = File("${(await getTemporaryDirectory()).path}/${doc['title']}_Watermarked.pdf");
-    await file.writeAsBytes(await pdf.save());
-    await Share.shareXFiles([XFile(file.path)], text: 'Watermarked PDF');
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Add PDF Watermark')),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          children: [
-            DropdownButtonFormField<String>(value: _selectedDocId, hint: const Text('Choose Document'), items: widget.savedDocs.map((d) => DropdownMenuItem<String>(value: d['id'].toString(), child: Text(d['title']))).toList(), onChanged: (v) => setState(() => _selectedDocId = v)),
-            const SizedBox(height: 12),
-            TextField(controller: _wmCtrl, decoration: const InputDecoration(labelText: 'Watermark Stamp Text', border: OutlineInputBorder())),
-            const SizedBox(height: 24),
-            ElevatedButton.icon(style: ElevatedButton.styleFrom(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white, minimumSize: const Size.fromHeight(48)), icon: const Icon(Icons.branding_watermark_outlined), label: const Text('Apply Stamp & Share PDF'), onPressed: _selectedDocId == null ? null : _exportWatermarkedPdf),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-// 15. UNIVERSAL PHOTO ROTATE
-class UniversalImageToolScreen extends StatefulWidget {
-  const UniversalImageToolScreen({super.key});
-  @override
-  State<UniversalImageToolScreen> createState() => _UniversalImageToolScreenState();
-}
-
-class _UniversalImageToolScreenState extends State<UniversalImageToolScreen> {
-  String? _imgPath;
-  bool _isRotating = false;
-
-  Future<void> _pickImageGallery() async {
-    final x = await ImagePicker().pickImage(source: ImageSource.gallery);
-    if (x != null && mounted) setState(() => _imgPath = x.path);
-  }
-
-  Future<void> _pickImageMlKit() async {
-    final scanner = DocumentScanner(options: DocumentScannerOptions(documentFormat: DocumentFormat.jpeg, mode: ScannerMode.base, isGalleryImport: true, pageLimit: 1));
-    try {
-      final res = await scanner.scanDocument();
-      if (res.images.isNotEmpty && mounted) setState(() => _imgPath = res.images.first);
-    } finally {
-      await scanner.close();
-    }
-  }
-
-  Future<void> _pickImageCamera() async {
-    final captured = await Navigator.push<List<String>>(
-      context,
-      MaterialPageRoute(builder: (_) => ProCameraScannerScreen(pageLimit: 1, onSwitchToMlKitAutoScan: _pickImageMlKit)),
-    );
-    if (captured != null && captured.isNotEmpty && mounted) {
-      setState(() => _imgPath = captured.first);
-    }
-  }
-
-  Future<void> _rotate90() async {
-    if (_imgPath == null || _isRotating) return;
-    setState(() => _isRotating = true);
-    try {
-      final appDir = await getApplicationDocumentsDirectory();
-      final rotatedPath = await ProDocImageProcessor.rotateImage90Fast(_imgPath!, '${appDir.path}/rot_${DateTime.now().millisecondsSinceEpoch}.jpg');
-      if (mounted) setState(() => _imgPath = rotatedPath);
-    } finally {
-      if (mounted) setState(() => _isRotating = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Photo Rotate Studio'),
-        actions: [
-          if (_imgPath != null) LabeledIconButton(icon: Icons.rotate_right, label: 'Rotate 90°', onPressed: _isRotating ? null : _rotate90),
-          if (_imgPath != null) LabeledIconButton(icon: Icons.save_alt_rounded, label: AppLang.tr('save_jpg'), onPressed: () async { final res = await PhoneStorageManager.saveImagesToPublicGallery([_imgPath!], 'Rotated_Photo'); if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('✅ ${res.count} photo saved to ${res.folderLabel}!'))); }),
-          if (_imgPath != null) LabeledIconButton(icon: Icons.share, label: 'Share', onPressed: () => Share.shareXFiles([XFile(_imgPath!)])),
-        ],
-      ),
-      body: Stack(
-        children: [
-          Center(child: _imgPath == null ? Column(mainAxisSize: MainAxisSize.min, children: [ElevatedButton.icon(icon: const Icon(Icons.photo_library_rounded), label: const Text('Select Photo from Gallery'), onPressed: _pickImageGallery), const SizedBox(height: 12), ElevatedButton.icon(icon: const Icon(Icons.camera_alt_rounded), label: const Text('Scan Photo from Camera'), onPressed: _pickImageCamera)]) : Image.file(File(_imgPath!))),
-          if (_isRotating) const Center(child: CircularProgressIndicator()),
-        ],
-      ),
-    );
-  }
-}
-
-// 16. QR & BARCODE GENERATOR STUDIO (REAL SCANNABLE QR CODE + PNG EXPORT)
-class QrBarcodeStudioScreen extends StatefulWidget {
-  const QrBarcodeStudioScreen({super.key});
-  @override
-  State<QrBarcodeStudioScreen> createState() => _QrBarcodeStudioScreenState();
-}
-
-class _QrBarcodeStudioScreenState extends State<QrBarcodeStudioScreen> {
-  final _qrTextCtrl = TextEditingController(text: 'https://bharatdocscanner.app');
-
-  @override
-  void initState() {
-    super.initState();
-    _qrTextCtrl.addListener(() {
-      if (mounted) setState(() {});
-    });
-  }
-
-  @override
-  void dispose() {
-    _qrTextCtrl.dispose();
-    super.dispose();
-  }
-
-  List<Rect> _buildQrRects(String text, double size) {
-    final List<Rect> rects = [];
-    if (text.isEmpty) return rects;
-    try {
-      for (final dynamic elem in pw.Barcode.qrCode().make(text, width: size, height: size, drawText: false)) {
-        if (elem.black == true) {
-          rects.add(Rect.fromLTWH(
-            (elem.left as num).toDouble(),
-            (elem.top as num).toDouble(),
-            (elem.width as num).toDouble(),
-            (elem.height as num).toDouble(),
-          ));
-        }
-      }
-    } catch (_) {}
-    return rects;
-  }
-
-  Future<void> _shareQrCode() async {
-    final text = _qrTextCtrl.text.trim();
-    if (text.isEmpty) return;
-    const double imgSize = 600.0;
-    const double pad = 48.0;
-    final rects = _buildQrRects(text, imgSize - pad * 2);
-    if (rects.isEmpty) {
-      await Share.share(text);
-      return;
-    }
-
-    final recorder = ui.PictureRecorder();
-    final canvas = Canvas(recorder, const Rect.fromLTWH(0, 0, imgSize, imgSize));
-    canvas.drawRect(const Rect.fromLTWH(0, 0, imgSize, imgSize), Paint()..color = Colors.white);
-    final blackPaint = Paint()..color = Colors.black;
-    for (final r in rects) {
-      canvas.drawRect(r.shift(const Offset(pad, pad)), blackPaint);
-    }
-    final pic = recorder.endRecording();
-    final imgUi = await pic.toImage(imgSize.toInt(), imgSize.toInt());
-    final data = await imgUi.toByteData(format: ui.ImageByteFormat.png);
-    imgUi.dispose();
-    pic.dispose();
-
-    if (data != null) {
-      final file = File('${(await getTemporaryDirectory()).path}/QR_${DateTime.now().millisecondsSinceEpoch}.png');
-      await file.writeAsBytes(data.buffer.asUint8List());
-      await Share.shareXFiles([XFile(file.path)], text: text);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final qrText = _qrTextCtrl.text.trim();
-    final qrRects = _buildQrRects(qrText, 190.0);
-
-    return Scaffold(
-      appBar: AppBar(title: const Text('QR & Barcode Studio')),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          children: [
-            TextField(controller: _qrTextCtrl, decoration: const InputDecoration(labelText: 'Enter Text / URL for QR', border: OutlineInputBorder())),
-            const SizedBox(height: 20),
-            Container(
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16), border: Border.all(color: Colors.grey.shade300)),
-              child: qrRects.isEmpty
-                  ? const SizedBox(width: 190, height: 190, child: Center(child: Text('Enter text to generate QR', style: TextStyle(color: Colors.grey))))
-                  : SizedBox(width: 190, height: 190, child: CustomPaint(painter: _QrRectPainter(qrRects))),
-            ),
-            const SizedBox(height: 20),
-            ElevatedButton.icon(style: ElevatedButton.styleFrom(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white, minimumSize: const Size.fromHeight(48)), icon: const Icon(Icons.share), label: const Text('Share QR Image'), onPressed: qrText.isEmpty ? null : _shareQrCode),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _QrRectPainter extends CustomPainter {
-  final List<Rect> rects;
-  _QrRectPainter(this.rects);
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()..color = Colors.black;
-    for (final r in rects) {
-      canvas.drawRect(r, paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _QrRectPainter oldDelegate) => true;
-}
-// ==================== PART 4 END ====================
+// ==================== PART 4C END ====================
