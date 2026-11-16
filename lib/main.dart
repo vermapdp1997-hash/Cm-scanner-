@@ -1,4 +1,4 @@
-// ==================== PART 1 OF 4 START ====================
+// ==================== PART 1A OF 4 START ====================
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -43,6 +43,31 @@ String normalizeLocalFilePath(String raw) {
     }
   }
   return s;
+}
+
+// Safe multi-image import helper (supports direct file paths AND Android Photo Picker content URIs/bytes)
+Future<String?> importXFileSafely(XFile xfile, String destPath, {int maxDimension = 2500}) async {
+  try {
+    final cleanPath = normalizeLocalFilePath(xfile.path);
+    final f = File(cleanPath);
+    if (await f.exists()) {
+      return await ProDocImageProcessor.bakeOrientationToFile(f.path, destPath, maxDimension: maxDimension);
+    }
+    final bytes = await xfile.readAsBytes();
+    if (bytes.isEmpty) return null;
+    final tempFile = File('${destPath}_raw_tmp.jpg');
+    await tempFile.writeAsBytes(bytes);
+    final res = await ProDocImageProcessor.bakeOrientationToFile(tempFile.path, destPath, maxDimension: maxDimension);
+    try {
+      if (res != tempFile.path && await tempFile.exists()) {
+        await tempFile.delete();
+      }
+    } catch (_) {}
+    return res;
+  } catch (e) {
+    debugPrint("importXFileSafely err: $e");
+    return null;
+  }
 }
 
 class AppLang {
@@ -142,11 +167,11 @@ class DocFilterPreset {
   const DocFilterPreset({required this.id, required this.title, required this.icon, required this.badgeColor});
 }
 
-// PRO DOC SCANNER PRESET FILTERS (Oken Scan / CamScanner Grade)
+// PRO DOC SCANNER PRESET FILTERS (Natural Clarity + Shadow Removal + Color Protection)
 final List<DocFilterPreset> kDocFilters = [
   const DocFilterPreset(id: 'original', title: 'Original', icon: Icons.image_outlined, badgeColor: Colors.blueGrey),
-  const DocFilterPreset(id: 'magic_pro', title: 'Magic Color', icon: Icons.auto_awesome_rounded, badgeColor: Color(0xFF00B4D8)),
   const DocFilterPreset(id: 'auto_pro', title: 'Auto AI', icon: Icons.auto_fix_high_rounded, badgeColor: Color(0xFF2E7D32)),
+  const DocFilterPreset(id: 'magic_pro', title: 'Magic Color', icon: Icons.auto_awesome_rounded, badgeColor: Color(0xFF00B4D8)),
   const DocFilterPreset(id: 'lighten_pro', title: 'Lighten Pro', icon: Icons.wb_sunny_outlined, badgeColor: Colors.orange),
   const DocFilterPreset(id: 'super_bw', title: 'B&W Pro', icon: Icons.contrast_rounded, badgeColor: Colors.black87),
   const DocFilterPreset(id: 'dark_ink', title: 'Dark Ink', icon: Icons.draw_rounded, badgeColor: Color(0xFF4CAF50)),
@@ -162,6 +187,9 @@ class PrecomputedBgMap {
   final int gridRows;
   final int lowClip;
   final int highClip;
+  final bool isAlreadyClean;
+  final double paperMedianLum;
+
   const PrecomputedBgMap({
     required this.bgR,
     required this.bgG,
@@ -170,6 +198,8 @@ class PrecomputedBgMap {
     required this.gridRows,
     required this.lowClip,
     required this.highClip,
+    required this.isAlreadyClean,
+    required this.paperMedianLum,
   });
 }
 
@@ -200,7 +230,7 @@ Future<void> cleanupOrphanScanFiles(List<Map<String, dynamic>> activeDocs) async
 }
 
 // ============================================================================
-// TURBO ULTRA-CLARITY OKEN / DOC-SCAN GRADE IMAGE PROCESSOR
+// PRO-LEVEL ADAPTIVE DOCUMENT IMAGE PROCESSOR (PHOTO-SAFE & HALO-FREE)
 // ============================================================================
 class ProDocImageProcessor {
   static List<int>? _readDimensionsFast(Uint8List rawBytes) {
@@ -212,8 +242,6 @@ class ProDocImageProcessor {
     return null;
   }
 
-  /// Reads JPEG EXIF orientation tag (1..8) from header bytes in <0.1ms without decoding pixels.
-  /// Returns 0 if unknown/non-JPEG.
   static int _readJpegExifOrientation(Uint8List bytes) {
     try {
       if (bytes.length < 12 || bytes[0] != 0xFF || bytes[1] != 0xD8) return 0;
@@ -222,7 +250,7 @@ class ProDocImageProcessor {
       while (offset + 4 <= limit) {
         if (bytes[offset] != 0xFF) break;
         final int marker = bytes[offset + 1];
-        if (marker == 0xD9 || marker == 0xDA) return 1; // EOI or SOS before APP1 -> orientation 1
+        if (marker == 0xD9 || marker == 0xDA) return 1;
         if (marker == 0x00 || (marker >= 0xD0 && marker <= 0xD7)) {
           offset += 2;
           continue;
@@ -269,17 +297,29 @@ class ProDocImageProcessor {
     }
   }
 
-  /// Reads image width & height via header descriptor with ZERO pixel RAM allocation.
+  /// EXIF-aware dimension reader with zero pixel RAM allocation (fixes Crop/Eraser alignment on rotated photos).
   static Future<List<int>?> readImageDimensions(String path) async {
     ui.ImmutableBuffer? buffer;
     ui.ImageDescriptor? descriptor;
     try {
       final file = File(path);
       if (!await file.exists()) return null;
+      int exifOrient = 1;
+      try {
+        final raf = await file.open();
+        try {
+          final int len = min(await raf.length(), 65536);
+          final header = await raf.read(len);
+          exifOrient = _readJpegExifOrientation(header);
+        } finally {
+          await raf.close();
+        }
+      } catch (_) {}
       buffer = await ui.ImmutableBuffer.fromFilePath(path);
       descriptor = await ui.ImageDescriptor.encoded(buffer);
       if (descriptor.width > 0 && descriptor.height > 0) {
-        return [descriptor.width, descriptor.height];
+        final bool swapAxes = exifOrient >= 5 && exifOrient <= 8;
+        return swapAxes ? [descriptor.height, descriptor.width] : [descriptor.width, descriptor.height];
       }
       return null;
     } catch (_) {
@@ -290,9 +330,7 @@ class ProDocImageProcessor {
     }
   }
 
-  /// Fast native C++/Skia orientation-baking & smart scaling (5x faster than pure-Dart decodeImage).
-  /// Copies file directly in ~2ms if image is already upright and within maxDimension.
-  static Future<String> bakeOrientationToFile(String sourcePath, String outputPath, {int maxDimension = 2200}) async {
+  static Future<String> bakeOrientationToFile(String sourcePath, String outputPath, {int maxDimension = 2500}) async {
     ui.Codec? codec;
     ui.Image? targetImg;
     try {
@@ -302,7 +340,6 @@ class ProDocImageProcessor {
       final dims = _readDimensionsFast(rawBytes);
       final int exifOrient = _readJpegExifOrientation(rawBytes);
 
-      // Fast path: already upright (orientation == 1) and within maxDimension -> instant copy!
       if (exifOrient == 1 && dims != null && dims[0] <= maxDimension && dims[1] <= maxDimension) {
         if (sourcePath != outputPath) await srcFile.copy(outputPath);
         return outputPath;
@@ -329,7 +366,7 @@ class ProDocImageProcessor {
         final int w = targetImg.width;
         final int h = targetImg.height;
         final ttd = TransferableTypedData.fromList([byteData.buffer.asUint8List()]);
-        final jpgBytes = await Isolate.run(() => _encodeRgbaToJpgFast(ttd, w, h, 90));
+        final jpgBytes = await Isolate.run(() => _encodeRgbaToJpgFast(ttd, w, h, 92));
         await File(outputPath).writeAsBytes(jpgBytes);
         return outputPath;
       }
@@ -461,10 +498,10 @@ class ProDocImageProcessor {
         (sharpness - 0.72).abs() > 0.02 ||
         (eraserStrokes != null && eraserStrokes.isNotEmpty);
     if (filterId == 'original' && !hasAdjustments) {
-      return bakeOrientationToFile(sourcePath, outputPath, maxDimension: 2200);
+      return bakeOrientationToFile(sourcePath, outputPath, maxDimension: 2500);
     }
     final wh = [0, 0];
-    final rgba = await decodeImageToRgba(sourcePath, maxDimension: 2150, outWidthHeight: wh);
+    final rgba = await decodeImageToRgba(sourcePath, maxDimension: 2450, outWidthHeight: wh);
     if (rgba == null) return sourcePath;
 
     final ttd = TransferableTypedData.fromList([rgba]);
@@ -488,7 +525,7 @@ class ProDocImageProcessor {
         cachedBg: cachedBg,
       );
       final im = img.Image.fromBytes(width: w, height: h, bytes: enhanced.buffer, numChannels: 4, order: img.ChannelOrder.rgba);
-      return Uint8List.fromList(img.encodeJpg(im, quality: 89));
+      return Uint8List.fromList(img.encodeJpg(im, quality: 92));
     });
 
     await File(outputPath).writeAsBytes(jpgBytes);
@@ -513,7 +550,7 @@ class ProDocImageProcessor {
   static Future<String> perspectiveCropImage(String sourcePath, List<Offset> normCorners, String outputPath) async {
     try {
       final wh = [0, 0];
-      final rgba = await decodeImageToRgba(sourcePath, maxDimension: 2200, outWidthHeight: wh);
+      final rgba = await decodeImageToRgba(sourcePath, maxDimension: 2500, outWidthHeight: wh);
       if (rgba == null) return sourcePath;
       final pts = normCorners.map((o) => [o.dx, o.dy]).toList();
       final ttd = TransferableTypedData.fromList([rgba]);
@@ -529,17 +566,12 @@ class ProDocImageProcessor {
     return sourcePath;
   }
 }
-
+// ==================== PART 1A OF 4 END ====================
+// ==================== PART 1B OF 4 START ====================
 Uint8List _encodeRgbaToJpgFast(TransferableTypedData ttd, int w, int h, int quality) {
   final rgba = ttd.materialize().asUint8List();
   final im = img.Image.fromBytes(width: w, height: h, bytes: rgba.buffer, numChannels: 4, order: img.ChannelOrder.rgba);
   return Uint8List.fromList(img.encodeJpg(im, quality: quality));
-}
-
-Uint8List _encodeRgbaToJpgIsolate(Map<String, dynamic> params) {
-  final Uint8List rgba = params['rgba'];
-  final im = img.Image.fromBytes(width: params['w'], height: params['h'], bytes: Uint8List.fromList(rgba).buffer, numChannels: 4, order: img.ChannelOrder.rgba);
-  return Uint8List.fromList(img.encodeJpg(im, quality: params['quality']));
 }
 
 Uint8List? _rotate90Isolate(Uint8List rawBytes) {
@@ -547,7 +579,7 @@ Uint8List? _rotate90Isolate(Uint8List rawBytes) {
   if (decoded == null) return null;
   final oriented = img.bakeOrientation(decoded);
   final rotated = img.copyRotate(oriented, angle: 90);
-  return Uint8List.fromList(img.encodeJpg(rotated, quality: 90));
+  return Uint8List.fromList(img.encodeJpg(rotated, quality: 92));
 }
 
 Uint8List? _perspectiveCropIsolate(Uint8List src, int w, int h, List<List<double>> pts) {
@@ -626,13 +658,14 @@ Uint8List? _perspectiveCropIsolate(Uint8List src, int w, int h, List<List<double
     }
   }
   final im = img.Image.fromBytes(width: outW, height: outH, bytes: out.buffer, numChannels: 4, order: img.ChannelOrder.rgba);
-  return Uint8List.fromList(img.encodeJpg(im, quality: 90));
+  return Uint8List.fromList(img.encodeJpg(im, quality: 92));
 }
 
 PrecomputedBgMap _computeFineBgMap(Uint8List src, int w, int h) {
   final int total = w * h;
-  const int gridCols = 80;
-  const int gridRows = 80;
+  // 24x24 macro illumination grid: removes shadows/yellow tint cleanly WITHOUT blowing out ID photos, stamps, or logos
+  const int gridCols = 24;
+  const int gridRows = 24;
   const int gridCount = gridCols * gridRows;
   final Float32List bgRGrid = Float32List(gridCount);
   final Float32List bgGGrid = Float32List(gridCount);
@@ -661,11 +694,11 @@ PrecomputedBgMap _computeFineBgMap(Uint8List src, int w, int h) {
     return 205.0;
   }
 
-  int lowClip = 6, highClip = 249;
+  int lowClip = 5, highClip = 250;
   int acc = 0;
   for (int b = 0; b < 256; b++) {
     acc += lumHist[b];
-    if (acc >= gSamples * 0.015) {
+    if (acc >= gSamples * 0.01) {
       lowClip = b;
       break;
     }
@@ -673,23 +706,23 @@ PrecomputedBgMap _computeFineBgMap(Uint8List src, int w, int h) {
   acc = 0;
   for (int b = 255; b >= 0; b--) {
     acc += lumHist[b];
-    if (acc >= gSamples * 0.015) {
+    if (acc >= gSamples * 0.01) {
       highClip = b;
       break;
     }
   }
-  if (highClip - lowClip < 40) {
+  if (highClip - lowClip < 45) {
     lowClip = 5;
     highClip = 250;
   }
 
-  final double minFloorR = max(28.0, percentileHigh(gHistR, 0.15) * 0.24);
-  final double minFloorG = max(28.0, percentileHigh(gHistG, 0.15) * 0.24);
-  final double minFloorB = max(28.0, percentileHigh(gHistB, 0.15) * 0.24);
+  // Safe floor prevents dark photos/borders from getting artificially amplified
+  final double minFloorR = max(52.0, percentileHigh(gHistR, 0.15) * 0.42);
+  final double minFloorG = max(52.0, percentileHigh(gHistG, 0.15) * 0.42);
+  final double minFloorB = max(52.0, percentileHigh(gHistB, 0.15) * 0.42);
 
   final Int32List blkHist = Int32List(256);
   final Int32List blkSumR = Int32List(256), blkSumG = Int32List(256), blkSumB = Int32List(256);
-  // Fast strided sampling (~360px grid density): 4x faster with identical smooth illumination
   final int step = max(1, min(w, h) ~/ 360);
 
   for (int gy = 0; gy < gridRows; gy++) {
@@ -733,9 +766,9 @@ PrecomputedBgMap _computeFineBgMap(Uint8List src, int w, int h) {
           if (bAcc >= target) break;
         }
       }
-      bgRGrid[gIdx] = max(sR / bAcc, minFloorR).clamp(28.0, 255.0);
-      bgGGrid[gIdx] = max(sG / bAcc, minFloorG).clamp(28.0, 255.0);
-      bgBGrid[gIdx] = max(sB / bAcc, minFloorB).clamp(28.0, 255.0);
+      bgRGrid[gIdx] = max(sR / bAcc, minFloorR).clamp(48.0, 255.0);
+      bgGGrid[gIdx] = max(sG / bAcc, minFloorG).clamp(48.0, 255.0);
+      bgBGrid[gIdx] = max(sB / bAcc, minFloorB).clamp(48.0, 255.0);
     }
   }
 
@@ -755,7 +788,7 @@ PrecomputedBgMap _computeFineBgMap(Uint8List src, int w, int h) {
             if (bgBGrid[nIdx] > mB) mB = bgBGrid[nIdx];
           }
         }
-        final double wCur = dPass == 0 ? 0.25 : 0.45;
+        final double wCur = dPass == 0 ? 0.20 : 0.40;
         tmpR[idx] = bgRGrid[idx] * wCur + mR * (1.0 - wCur);
         tmpG[idx] = bgGGrid[idx] * wCur + mG * (1.0 - wCur);
         tmpB[idx] = bgBGrid[idx] * wCur + mB * (1.0 - wCur);
@@ -766,7 +799,7 @@ PrecomputedBgMap _computeFineBgMap(Uint8List src, int w, int h) {
     bgBGrid.setAll(0, tmpB);
   }
 
-  for (int pass = 0; pass < 2; pass++) {
+  for (int pass = 0; pass < 3; pass++) {
     for (int gy = 0; gy < gridRows; gy++) {
       for (int gx = 0; gx < gridCols; gx++) {
         double sR = 0, sG = 0, sB = 0;
@@ -793,6 +826,16 @@ PrecomputedBgMap _computeFineBgMap(Uint8List src, int w, int h) {
     bgBGrid.setAll(0, tmpB);
   }
 
+  // Measure paper uniformity to avoid over-processing already clean/digital documents
+  final List<double> cellLums = List<double>.generate(
+    gridCount,
+    (i) => 0.299 * bgRGrid[i] + 0.587 * bgGGrid[i] + 0.114 * bgBGrid[i],
+  )..sort();
+  final double p15 = cellLums[(gridCount * 0.15).floor()];
+  final double p50 = cellLums[gridCount ~/ 2];
+  final double p85 = cellLums[(gridCount * 0.85).floor()];
+  final bool isAlreadyClean = p50 >= 205.0 && (p85 - p15) <= 28.0;
+
   return PrecomputedBgMap(
     bgR: bgRGrid,
     bgG: bgGGrid,
@@ -801,6 +844,8 @@ PrecomputedBgMap _computeFineBgMap(Uint8List src, int w, int h) {
     gridRows: gridRows,
     lowClip: lowClip,
     highClip: highClip,
+    isAlreadyClean: isAlreadyClean,
+    paperMedianLum: p50,
   );
 }
 
@@ -830,14 +875,13 @@ Uint8List _processRgbaCore({
     bgMap = cachedBg ?? _computeFineBgMap(src, w, h);
   }
 
-  final int gridCols = bgMap?.gridCols ?? 80;
-  final int gridRows = bgMap?.gridRows ?? 80;
+  final int gridCols = bgMap?.gridCols ?? 24;
+  final int gridRows = bgMap?.gridRows ?? 24;
   final double cellW = w / gridCols;
   final double cellH = h / gridRows;
   final bool hasManualTone = clampedBright.abs() > 0.005 || (clampedContrast - 1.0).abs() > 0.005;
   final double brightOffset = clampedBright * 255.0;
 
-  // Precomputed X coordinate LUT for 3x faster bilinear illumination lookup
   final Int32List x0Lut = Int32List(w);
   final Int32List x1Lut = Int32List(w);
   final Float32List fxLut = Float32List(w);
@@ -851,7 +895,7 @@ Uint8List _processRgbaCore({
 
   final Uint8List lumCache = Uint8List(total);
 
-  // HOLLOW-PROOF SAUVOLA LASER B&W (B&W Pro)
+  // SMOOTH ANTI-ALIASED HOLLOW-PROOF SAUVOLA B&W (B&W Pro)
   if (filter == 'super_bw' && bgMap != null) {
     final Uint8List normLum = Uint8List(total);
     final int iw = w + 1;
@@ -878,9 +922,9 @@ Uint8List _processRgbaCore({
         final double estB = (bgB[i00] + (bgB[i10] - bgB[i00]) * fx) * (1.0 - fy) + (bgB[i01] + (bgB[i11] - bgB[i01]) * fx) * fy;
 
         final int p = (rb + x) * 4;
-        final double gR = min(255.0 / max(estR, 28.0), 4.4);
-        final double gG = min(255.0 / max(estG, 28.0), 4.4);
-        final double gB = min(255.0 / max(estB, 28.0), 4.4);
+        final double gR = min(255.0 / max(estR, 48.0), 2.65);
+        final double gG = min(255.0 / max(estG, 48.0), 2.65);
+        final double gB = min(255.0 / max(estB, 48.0), 2.65);
         final int nL = (0.299 * src[p] * gR + 0.587 * src[p + 1] * gG + 0.114 * src[p + 2] * gB).round().clamp(0, 255);
         normLum[rb + x] = nL;
         rowSum += nL;
@@ -890,9 +934,9 @@ Uint8List _processRgbaCore({
       }
     }
 
-    final int rad = max(14, min(w, h) ~/ 26);
-    final double kSauvola = 0.15 + 0.22 * (1.0 - clampedIntensity);
-    const double band = 9.0;
+    final int rad = max(14, min(w, h) ~/ 28);
+    final double kSauvola = 0.14 + 0.18 * (1.0 - clampedIntensity);
+    const double band = 12.0;
 
     for (int y = 0; y < h; y++) {
       final int y1 = max(0, y - rad), y2 = min(h - 1, y + rad), rowOff = y * w;
@@ -908,14 +952,14 @@ Uint8List _processRgbaCore({
         final int cur = normLum[rowOff + x];
 
         int bw;
-        if (cur > 218 && stdDev < 25.0) {
+        if (cur > 224 && stdDev < 18.0) {
           bw = 255;
-        } else if (cur < 58 || (mean < 56.0 && cur <= mean + 14.0)) {
-          bw = 4;
+        } else if (cur < 54 || (mean < 52.0 && cur <= mean + 12.0)) {
+          bw = 6;
         } else {
           final double thresh = mean * (1.0 + kSauvola * (stdDev / 128.0 - 1.0));
           final double t = ((cur - (thresh - band)) / (2.0 * band)).clamp(0.0, 1.0);
-          bw = (4 + (t * t * (3.0 - 2.0 * t)) * 251).round().clamp(0, 255);
+          bw = (6 + (t * t * (3.0 - 2.0 * t)) * 249).round().clamp(0, 255);
         }
         if (hasManualTone) {
           bw = ((bw - 128.0) * clampedContrast + 128.0 + brightOffset).round().clamp(0, 255);
@@ -929,52 +973,60 @@ Uint8List _processRgbaCore({
       }
     }
   } else {
-    // OKEN / CAMSCANNER PRO INK-ANCHORED S-CURVE LUT
+    // NATURAL PRO TONE LUT (Protects photos, stamps & fine text while whitening paper smoothly)
+    final bool isCleanDoc = bgMap?.isAlreadyClean ?? false;
+    final double cleanScale = isCleanDoc ? 0.65 : 1.0;
+
     final Float32List toneLut = Float32List(256);
     if (filter == 'magic_pro' || filter == 'auto_pro' || filter == 'dark_ink' || filter == 'ocv_crisp') {
-      final double blackAnchor = filter == 'dark_ink'
-          ? (64.0 + 24.0 * clampedIntensity)
-          : filter == 'magic_pro'
-              ? (52.0 + 20.0 * clampedIntensity)
-              : filter == 'ocv_crisp'
-                  ? (48.0 + 18.0 * clampedIntensity)
-                  : (42.0 + 16.0 * clampedIntensity);
+      final double blackAnchor = (filter == 'dark_ink'
+              ? (16.0 + 18.0 * clampedIntensity)
+              : filter == 'magic_pro'
+                  ? (12.0 + 14.0 * clampedIntensity)
+                  : filter == 'ocv_crisp'
+                      ? (12.0 + 16.0 * clampedIntensity)
+                      : (8.0 + 10.0 * clampedIntensity)) *
+          cleanScale;
       final double paperSnap = filter == 'dark_ink'
-          ? (202.0 - 26.0 * clampedIntensity)
+          ? (224.0 - 22.0 * clampedIntensity * cleanScale)
           : filter == 'magic_pro'
-              ? (214.0 - 28.0 * clampedIntensity)
+              ? (230.0 - 20.0 * clampedIntensity * cleanScale)
               : filter == 'ocv_crisp'
-                  ? (212.0 - 26.0 * clampedIntensity)
-                  : (222.0 - 24.0 * clampedIntensity);
-      final double inkGamma = filter == 'dark_ink'
-          ? (1.55 + 0.50 * clampedIntensity)
-          : filter == 'magic_pro'
-              ? (1.40 + 0.42 * clampedIntensity)
-              : filter == 'ocv_crisp'
-                  ? (1.38 + 0.40 * clampedIntensity)
-                  : (1.28 + 0.32 * clampedIntensity);
-      final double deepInkFloor = filter == 'magic_pro' ? 8.0 : 10.0;
+                  ? (228.0 - 20.0 * clampedIntensity * cleanScale)
+                  : (238.0 - 16.0 * clampedIntensity * cleanScale);
+      final double inkGamma = 1.0 +
+          ((filter == 'dark_ink'
+                  ? (0.25 + 0.32 * clampedIntensity)
+                  : filter == 'magic_pro'
+                      ? (0.18 + 0.24 * clampedIntensity)
+                      : filter == 'ocv_crisp'
+                          ? (0.20 + 0.24 * clampedIntensity)
+                          : (0.12 + 0.16 * clampedIntensity)) *
+              cleanScale);
+      const double deepInkFloor = 4.0;
 
       for (int v = 0; v < 256; v++) {
         final double dv = v.toDouble();
-        if (dv <= blackAnchor) {
-          final double r = (dv / max(1.0, blackAnchor)).clamp(0.0, 1.0);
-          toneLut[v] = (pow(r, 1.35) * deepInkFloor).clamp(0.0, deepInkFloor);
+        if (dv <= blackAnchor && blackAnchor > 0.5) {
+          final double r = (dv / blackAnchor).clamp(0.0, 1.0);
+          toneLut[v] = (pow(r, 1.25) * deepInkFloor).clamp(0.0, deepInkFloor);
         } else {
           final double normalized = ((dv - blackAnchor) / max(1.0, paperSnap - blackAnchor)).clamp(0.0, 1.0);
           final double inkVal = deepInkFloor + pow(normalized, inkGamma) * (paperSnap - deepInkFloor);
-          final double kneeStart = paperSnap - 30.0;
-          final double kneeEnd = min(252.0, paperSnap + 10.0);
+          final double kneeStart = paperSnap - 28.0;
+          final double kneeEnd = min(253.0, paperSnap + 12.0);
           final double t = ((dv - kneeStart) / max(1.0, kneeEnd - kneeStart)).clamp(0.0, 1.0);
           final double smoothWhite = t * t * (3.0 - 2.0 * t);
           toneLut[v] = (inkVal + (255.0 - inkVal) * smoothWhite).clamp(0.0, 255.0);
         }
       }
     } else if (filter == 'lighten_pro') {
-      final double liftGamma = 0.78 - 0.24 * clampedIntensity;
+      final double liftGamma = 0.84 - 0.18 * clampedIntensity;
       for (int v = 0; v < 256; v++) {
         final double val = pow(v / 255.0, liftGamma) * 255.0;
-        toneLut[v] = (val > 230 ? 255.0 : val).clamp(0.0, 255.0);
+        final double t = ((val - 228.0) / 24.0).clamp(0.0, 1.0);
+        final double roll = t * t * (3.0 - 2.0 * t);
+        toneLut[v] = (val + (255.0 - val) * roll).clamp(0.0, 255.0);
       }
     } else {
       for (int v = 0; v < 256; v++) {
@@ -982,17 +1034,27 @@ Uint8List _processRgbaCore({
       }
     }
 
-    final int lowClip = bgMap?.lowClip ?? 6;
-    final int highClip = bgMap?.highClip ?? 249;
+    final int lowClip = bgMap?.lowClip ?? 5;
+    final int highClip = bgMap?.highClip ?? 250;
     final double vividScale = 255.0 / max(1, highClip - lowClip);
-    final double maxGain = (filter == 'magic_pro' || filter == 'dark_ink' || filter == 'auto_pro') ? 4.4 : 3.2;
+    final double vividBlend = 0.30 + 0.25 * clampedIntensity;
+    final double maxGain = filter == 'dark_ink'
+        ? 2.65
+        : filter == 'ocv_crisp'
+            ? 2.55
+            : filter == 'magic_pro'
+                ? 2.45
+                : filter == 'lighten_pro'
+                    ? 2.25
+                    : 2.10; // auto_pro
+    final double gainStrength = isCleanDoc ? 0.65 : (0.78 + 0.22 * clampedIntensity);
     final double satBoost = filter == 'magic_pro'
-        ? (1.38 + 0.28 * clampedIntensity)
+        ? (1.15 + 0.18 * clampedIntensity)
         : filter == 'auto_pro'
-            ? (1.22 + 0.16 * clampedIntensity)
+            ? (1.06 + 0.10 * clampedIntensity)
             : filter == 'vivid_color'
-                ? (1.32 + 0.36 * clampedIntensity)
-                : 1.12;
+                ? (1.14 + 0.20 * clampedIntensity)
+                : 1.08;
     final Float32List? bgR = bgMap?.bgR;
     final Float32List? bgG = bgMap?.bgG;
     final Float32List? bgB = bgMap?.bgB;
@@ -1012,9 +1074,12 @@ Uint8List _processRgbaCore({
         double nr = src[p].toDouble(), ng = src[p + 1].toDouble(), nb = src[p + 2].toDouble();
 
         if (filter == 'vivid_color') {
-          nr = ((nr - lowClip) * vividScale).clamp(0.0, 255.0);
-          ng = ((ng - lowClip) * vividScale).clamp(0.0, 255.0);
-          nb = ((nb - lowClip) * vividScale).clamp(0.0, 255.0);
+          final double stretchedR = ((nr - lowClip) * vividScale).clamp(0.0, 255.0);
+          final double stretchedG = ((ng - lowClip) * vividScale).clamp(0.0, 255.0);
+          final double stretchedB = ((nb - lowClip) * vividScale).clamp(0.0, 255.0);
+          nr = nr + (stretchedR - nr) * vividBlend;
+          ng = ng + (stretchedG - ng) * vividBlend;
+          nb = nb + (stretchedB - nb) * vividBlend;
           final double lum = 0.299 * nr + 0.587 * ng + 0.114 * nb;
           nr = (lum + (nr - lum) * satBoost).clamp(0.0, 255.0);
           ng = (lum + (ng - lum) * satBoost).clamp(0.0, 255.0);
@@ -1027,9 +1092,13 @@ Uint8List _processRgbaCore({
           final double estG = (bgG[i00] + (bgG[i10] - bgG[i00]) * fx) * invFy + (bgG[i01] + (bgG[i11] - bgG[i01]) * fx) * fy;
           final double estB = (bgB[i00] + (bgB[i10] - bgB[i00]) * fx) * invFy + (bgB[i01] + (bgB[i11] - bgB[i01]) * fx) * fy;
 
-          final double gR = min(255.0 / max(estR, 28.0), maxGain);
-          final double gG = min(255.0 / max(estG, 28.0), maxGain);
-          final double gB = min(255.0 / max(estB, 28.0), maxGain);
+          final double rawGR = min(255.0 / max(estR, 48.0), maxGain);
+          final double rawGG = min(255.0 / max(estG, 48.0), maxGain);
+          final double rawGB = min(255.0 / max(estB, 48.0), maxGain);
+
+          final double gR = 1.0 + (rawGR - 1.0) * gainStrength;
+          final double gG = 1.0 + (rawGG - 1.0) * gainStrength;
+          final double gB = 1.0 + (rawGB - 1.0) * gainStrength;
 
           final double wbR = (nr * gR).clamp(0.0, 255.0);
           final double wbG = (ng * gG).clamp(0.0, 255.0);
@@ -1042,7 +1111,7 @@ Uint8List _processRgbaCore({
             ng = targetL;
             nb = targetL;
           } else if (filter == 'lighten_pro') {
-            final double blend = 0.72 + 0.28 * clampedIntensity;
+            final double blend = 0.65 + 0.35 * clampedIntensity;
             final double lR = nr + (wbR - nr) * blend;
             final double lG = ng + (wbG - ng) * blend;
             final double lB = nb + (wbB - nb) * blend;
@@ -1059,11 +1128,11 @@ Uint8List _processRgbaCore({
             final double maxC = sr > sg ? (sr > sb ? sr : sb) : (sg > sb ? sg : sb);
             final double minC = sr < sg ? (sr < sb ? sr : sb) : (sg < sb ? sg : sb);
             final double chroma = maxC - minC;
-            final double colorWeight = ((chroma - 16.0) / 34.0).clamp(0.0, 1.0);
-            final double paperFade = ((255.0 - targetL) / 44.0).clamp(0.0, 1.0);
-            final double satFactor = (wbLum > 192.0 && chroma < 26.0)
+            final double colorWeight = ((chroma - 18.0) / 36.0).clamp(0.0, 1.0);
+            final double paperFade = ((255.0 - targetL) / 36.0).clamp(0.0, 1.0);
+            final double satFactor = (wbLum > 205.0 && chroma < 24.0)
                 ? 0.0
-                : (paperFade < 0.20 ? paperFade * 4.2 : (1.0 + (satBoost - 1.0) * colorWeight * paperFade));
+                : (paperFade < 0.25 ? paperFade * 4.0 : (1.0 + (satBoost - 1.0) * colorWeight * paperFade));
 
             nr = (targetL + (sr - targetL) * satFactor).clamp(0.0, 255.0);
             ng = (targetL + (sg - targetL) * satFactor).clamp(0.0, 255.0);
@@ -1087,14 +1156,18 @@ Uint8List _processRgbaCore({
     }
   }
 
-  // 5x5 SEPARABLE EDGE-AWARE CRISP UNSHARP MASK
+  // NOISE-GATED HALO-FREE 5x5 EDGE-AWARE CRISP UNSHARP MASK
   final double baseSharp = filter == 'dark_ink'
-      ? (0.68 + 0.45 * clampedIntensity)
-      : (filter == 'magic_pro' || filter == 'auto_pro' || filter == 'ocv_crisp' || filter == 'super_bw')
-          ? (0.58 + 0.42 * clampedIntensity)
-          : (filter == 'original' ? 0.45 : 0.35);
-  final double effectiveUser = filter == 'original' ? max(0.0, (clampedSharp - 0.72) * 1.8) : (0.42 + clampedSharp * 1.25);
-  final double sharpAmt = (baseSharp * effectiveUser).clamp(0.0, 1.60);
+      ? (0.42 + 0.28 * clampedIntensity)
+      : (filter == 'magic_pro' || filter == 'ocv_crisp' || filter == 'super_bw')
+          ? (0.36 + 0.26 * clampedIntensity)
+          : filter == 'auto_pro'
+              ? (0.30 + 0.22 * clampedIntensity)
+              : (filter == 'original' ? 0.35 : 0.22);
+  final double effectiveUser = filter == 'original'
+      ? max(0.0, (clampedSharp - 0.72) * 1.5)
+      : (0.40 + clampedSharp * 0.85);
+  final double sharpAmt = (baseSharp * effectiveUser).clamp(0.0, 1.05);
 
   if (sharpAmt > 0.05 && w > 5 && h > 5) {
     final Uint8List tmpBlur = Uint8List(total);
@@ -1112,11 +1185,11 @@ Uint8List _processRgbaCore({
       final int r0 = (y - 2) * w, r1 = (y - 1) * w, r2 = y * w, r3 = (y + 1) * w, r4 = (y + 2) * w;
       for (int x = 2; x < w - 2; x++) {
         final int center = lumCache[r2 + x];
-        if (center >= 242) continue;
+        if (center >= 238) continue;
         final int blur = (tmpBlur[r0 + x] + 4 * tmpBlur[r1 + x] + 6 * tmpBlur[r2 + x] + 4 * tmpBlur[r3 + x] + tmpBlur[r4 + x]) >> 4;
         final int diff = center - blur;
-        if (diff.abs() > 7) {
-          final int delta = (diff * sharpAmt).round().clamp(-68, 68);
+        if (diff.abs() > 10) {
+          final int delta = (diff * sharpAmt).round().clamp(-40, 40);
           final int p = (r2 + x) * 4;
           out[p] = (out[p] + delta).clamp(0, 255);
           out[p + 1] = (out[p + 1] + delta).clamp(0, 255);
@@ -1232,7 +1305,7 @@ Uint8List? _rotateArbitraryIsolate(Uint8List rawBytes, double angleDeg) {
   final decoded = img.decodeImage(rawBytes);
   if (decoded == null) return null;
   final oriented = img.bakeOrientation(decoded);
-  if (angleDeg.abs() < 0.05) return Uint8List.fromList(img.encodeJpg(oriented, quality: 90));
+  if (angleDeg.abs() < 0.05) return Uint8List.fromList(img.encodeJpg(oriented, quality: 92));
 
   final int w = oriented.width;
   final int h = oriented.height;
@@ -1274,11 +1347,11 @@ Uint8List? _rotateArbitraryIsolate(Uint8List rawBytes, double angleDeg) {
     }
   }
   final outIm = img.Image.fromBytes(width: outW, height: outH, bytes: outBytes.buffer, numChannels: 3, order: img.ChannelOrder.rgb);
-  return Uint8List.fromList(img.encodeJpg(outIm, quality: 90));
+  return Uint8List.fromList(img.encodeJpg(outIm, quality: 92));
 }
-// ==================== PART 1 OF 4 END ====================
-// ==================== PART 2 OF 4 START ====================
-// PHONE STORAGE MANAGER (Android 11+ MediaStore + Smart Fallback)
+// ==================== PART 1B OF 4 END ====================
+// ==================== PART 2A OF 4 START ====================
+// PHONE STORAGE MANAGER (Android 11+ MediaStore + Complete Multi-Page Fallback)
 class StorageSaveResult {
   final int count;
   final String? savedPath;
@@ -1321,6 +1394,7 @@ class PhoneStorageManager {
     String folderLabel = 'Pictures/BharatScanner';
     String? lastPath;
     final safeName = docTitle.replaceAll(RegExp(r'[^\w\s\-]'), '_').trim();
+    final List<int> remainingIndices = [];
 
     // 1. Try native Android MediaStore channel first (works on Android 10-16+ & updates Gallery immediately)
     bool channelAvailable = true;
@@ -1348,19 +1422,23 @@ class PhoneStorageManager {
           channelAvailable = false;
         }
       }
-      break;
+      remainingIndices.add(i);
     }
 
-    if (savedCount > 0) {
-      return StorageSaveResult(count: savedCount, savedPath: lastPath, folderLabel: 'Gallery (Pictures/BharatScanner)');
+    if (remainingIndices.isEmpty) {
+      return StorageSaveResult(
+        count: savedCount,
+        savedPath: lastPath,
+        folderLabel: savedCount > 0 ? 'Gallery (Pictures/BharatScanner)' : folderLabel,
+      );
     }
 
-    // 2. Fallback to direct filesystem / external dir
+    // 2. Fallback to direct filesystem / external dir for any remaining unsaved pages
     try {
       final resolved = await _resolvePublicDir('/storage/emulated/0/Pictures/BharatScanner', '/storage/emulated/0/DCIM/BharatScanner', 'Pictures/BharatScanner');
       final Directory targetDir = resolved['dir'];
       folderLabel = resolved['label'];
-      for (int i = 0; i < imagePaths.length; i++) {
+      for (final i in remainingIndices) {
         final f = File(imagePaths[i]);
         if (await f.exists()) {
           final dest = File('${targetDir.path}/${safeName}_p${i + 1}_${DateTime.now().millisecondsSinceEpoch}.jpg');
@@ -1492,6 +1570,7 @@ class ProCompressionEngine {
       totalJpgBytes += compressedJpg.length;
       pdf.addPage(pw.Page(pageFormat: PdfPageFormat.a4, margin: const pw.EdgeInsets.all(8), build: (_) => pw.Center(child: pw.Image(pw.MemoryImage(compressedJpg), fit: pw.BoxFit.contain))));
     }
+    if (jpgFiles.isEmpty) return null;
     final pdfBytes = await pdf.save();
     final pdfOut = File('${tempDir.path}/${safeName}_compressed_${targetKb}KB.pdf');
     await pdfOut.writeAsBytes(pdfBytes);
@@ -1550,10 +1629,27 @@ class ProCompressionEngine {
         child: AlertDialog(content: Row(children: [CircularProgressIndicator(), SizedBox(width: 16), Expanded(child: Text('Compressing PDF & JPG...'))])),
       ),
     );
-    final bundle = await compressOrderedPages(orderedImagePaths: orderedPaths, targetKb: targetKb, docTitle: title);
-    if (context.mounted) Navigator.of(context, rootNavigator: true).pop();
-    if (bundle == null || !context.mounted) return;
 
+    CompressedBundleResult? bundle;
+    Object? compErr;
+    try {
+      bundle = await compressOrderedPages(orderedImagePaths: orderedPaths, targetKb: targetKb, docTitle: title);
+    } catch (e) {
+      compErr = e;
+      debugPrint("Compression error: $e");
+    } finally {
+      if (context.mounted) Navigator.of(context, rootNavigator: true).pop();
+    }
+
+    if (!context.mounted) return;
+    if (bundle == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(compErr != null ? '❌ Compression failed: $compErr' : '❌ No valid pages found to compress.')),
+      );
+      return;
+    }
+
+    final resultBundle = bundle;
     showModalBottomSheet(
       context: context,
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(22))),
@@ -1567,7 +1663,7 @@ class ProCompressionEngine {
               const SizedBox(height: 6),
               const Text('Compression Complete!', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
               const SizedBox(height: 6),
-              Text('PDF Size: ${bundle.pdfSizeKb.toStringAsFixed(1)} KB  •  JPG Total: ${bundle.jpgTotalSizeKb.toStringAsFixed(1)} KB (${bundle.jpgFiles.length} Pages)', textAlign: TextAlign.center, style: const TextStyle(fontSize: 12, color: Colors.grey, fontWeight: FontWeight.w600)),
+              Text('PDF Size: ${resultBundle.pdfSizeKb.toStringAsFixed(1)} KB  •  JPG Total: ${resultBundle.jpgTotalSizeKb.toStringAsFixed(1)} KB (${resultBundle.jpgFiles.length} Pages)', textAlign: TextAlign.center, style: const TextStyle(fontSize: 12, color: Colors.grey, fontWeight: FontWeight.w600)),
               const SizedBox(height: 16),
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceAround,
@@ -1579,7 +1675,7 @@ class ProCompressionEngine {
                     iconSize: 28,
                     fontSize: 11,
                     onPressed: () async {
-                      final pdfBytes = await bundle.pdfFile.readAsBytes();
+                      final pdfBytes = await resultBundle.pdfFile.readAsBytes();
                       final res = await PhoneStorageManager.savePdfBytesToPublicDownloads(pdfBytes, '${title}_compressed');
                       if (sheetCtx.mounted) Navigator.pop(sheetCtx);
                       if (context.mounted) {
@@ -1594,15 +1690,15 @@ class ProCompressionEngine {
                     iconSize: 28,
                     fontSize: 11,
                     onPressed: () async {
-                      final res = await PhoneStorageManager.saveImagesToPublicGallery(bundle.jpgFiles.map((f) => f.path).toList(), '${title}_compressed');
+                      final res = await PhoneStorageManager.saveImagesToPublicGallery(resultBundle.jpgFiles.map((f) => f.path).toList(), '${title}_compressed');
                       if (sheetCtx.mounted) Navigator.pop(sheetCtx);
                       if (context.mounted) {
                         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('✅ ${res.count} Compressed JPG(s) saved to ${res.folderLabel}!'), backgroundColor: Colors.green.shade700));
                       }
                     },
                   ),
-                  LabeledIconButton(icon: Icons.picture_as_pdf_rounded, label: AppLang.tr('share_pdf'), color: appPrimaryColor.value, iconSize: 28, fontSize: 11, onPressed: () => Share.shareXFiles([XFile(bundle.pdfFile.path)], text: '$title (Compressed PDF)')),
-                  LabeledIconButton(icon: Icons.image_rounded, label: AppLang.tr('share_jpg'), color: Colors.indigo, iconSize: 28, fontSize: 11, onPressed: () => Share.shareXFiles(bundle.jpgFiles.map((f) => XFile(f.path)).toList(), text: '$title (Compressed JPG)')),
+                  LabeledIconButton(icon: Icons.picture_as_pdf_rounded, label: AppLang.tr('share_pdf'), color: appPrimaryColor.value, iconSize: 28, fontSize: 11, onPressed: () => Share.shareXFiles([XFile(resultBundle.pdfFile.path)], text: '$title (Compressed PDF)')),
+                  LabeledIconButton(icon: Icons.image_rounded, label: AppLang.tr('share_jpg'), color: Colors.indigo, iconSize: 28, fontSize: 11, onPressed: () => Share.shareXFiles(resultBundle.jpgFiles.map((f) => XFile(f.path)).toList(), text: '$title (Compressed JPG)')),
                 ],
               ),
               const SizedBox(height: 10),
@@ -1746,9 +1842,10 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
     );
   }
 }
-
+// ==================== PART 2A OF 4 END ====================
+// ==================== PART 2B OF 4 START ====================
 // ============================================================================
-// NIGHT PRO CAMERA SCANNER (FIXED BACK FLASH ON/OFF/AUTO + PRESERVED AUTO-SCAN)
+// NIGHT PRO CAMERA SCANNER (FIXED FLASH STATE + FAST MULTI-PAGE & GALLERY IMPORT)
 // ============================================================================
 class ProCameraScannerScreen extends StatefulWidget {
   static const String switchToMlKitMarker = '__SWITCH_TO_MLKIT__';
@@ -1767,6 +1864,8 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
   bool _isFrontCamera = false;
   bool _isInitializing = true;
   bool _isCapturing = false;
+  bool _isImportingGallery = false;
+  String _importProgressText = '';
   bool _showGrid = true;
   bool _showNightScreenFlash = false;
   bool _returnedResult = false;
@@ -1775,6 +1874,7 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
   // Back Flash cycle: Off -> Light ON (Torch) -> Auto Flash
   final List<FlashMode> _backFlashCycle = const [FlashMode.off, FlashMode.torch, FlashMode.auto];
   int _backFlashIndex = 0;
+  FlashMode _currentBackFlashMode = FlashMode.off;
   bool _frontScreenFlashOn = false;
 
   double _exposureOffset = 0.0;
@@ -1866,7 +1966,6 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
       orElse: () => _cameras.first,
     );
 
-    // Fast startup & crisp 1080p+/4K document capture without multi-second 48MP sensor lag
     CameraController? initializedCtrl;
     Object? lastErr;
     for (final preset in [ResolutionPreset.veryHigh, ResolutionPreset.high, ResolutionPreset.medium]) {
@@ -1888,8 +1987,11 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
 
     if (!_isFrontCamera) {
       try {
-        await initializedCtrl.setFlashMode(_backFlashCycle[_backFlashIndex]);
-      } catch (_) {}
+        await initializedCtrl.setFlashMode(_currentBackFlashMode);
+      } catch (_) {
+        _currentBackFlashMode = FlashMode.off;
+        _backFlashIndex = 0;
+      }
     }
     try {
       await initializedCtrl.setFocusMode(FocusMode.auto);
@@ -1912,13 +2014,12 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
   }
 
   Future<void> _toggleFrontBackCamera() async {
-    if (_isInitializing || _isCapturing) return;
+    if (_isInitializing || _isCapturing || _isImportingGallery) return;
     final hasOther = _cameras.any((c) => c.lensDirection == (_isFrontCamera ? CameraLensDirection.back : CameraLensDirection.front));
     if (!hasOther) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Only one camera available on this device.')));
       return;
     }
-    // Turn off back torch cleanly before switching to front
     if (!_isFrontCamera && _controller != null && _controller!.value.isInitialized) {
       try {
         await _controller!.setFlashMode(FlashMode.off);
@@ -1941,15 +2042,24 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
     final FlashMode targetMode = _backFlashCycle[nextIdx];
     try {
       await ctrl.setFlashMode(targetMode);
-      if (mounted) setState(() => _backFlashIndex = nextIdx);
+      if (mounted) {
+        setState(() {
+          _backFlashIndex = nextIdx;
+          _currentBackFlashMode = targetMode;
+        });
+      }
     } catch (e) {
-      // Fallback: if torch isn't supported, toggle between off and auto/always
       try {
         final fallback = targetMode == FlashMode.torch ? FlashMode.always : FlashMode.off;
         await ctrl.setFlashMode(fallback);
         if (mounted) {
-          setState(() => _backFlashIndex = fallback == FlashMode.off ? 0 : 2);
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Torch unsupported; switched to ${fallback == FlashMode.off ? "Off" : "Flash"}')));
+          setState(() {
+            _backFlashIndex = fallback == FlashMode.off ? 0 : 1;
+            _currentBackFlashMode = fallback;
+          });
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Torch unsupported; switched to ${fallback == FlashMode.off ? "Off" : "Flash ON"}')),
+          );
         }
       } catch (_) {
         if (mounted) {
@@ -1961,7 +2071,7 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
 
   String get _flashLabel {
     if (_isFrontCamera) return _frontScreenFlashOn ? 'Light ON' : 'Light OFF';
-    switch (_backFlashCycle[_backFlashIndex]) {
+    switch (_currentBackFlashMode) {
       case FlashMode.off:
         return 'Light OFF';
       case FlashMode.torch:
@@ -1975,7 +2085,7 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
 
   IconData get _flashIcon {
     if (_isFrontCamera) return _frontScreenFlashOn ? Icons.flash_on_rounded : Icons.flash_off_rounded;
-    switch (_backFlashCycle[_backFlashIndex]) {
+    switch (_currentBackFlashMode) {
       case FlashMode.off:
         return Icons.flash_off_rounded;
       case FlashMode.torch:
@@ -1989,12 +2099,12 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
 
   bool get _isFlashActive {
     if (_isFrontCamera) return _frontScreenFlashOn;
-    return _backFlashCycle[_backFlashIndex] != FlashMode.off;
+    return _currentBackFlashMode != FlashMode.off;
   }
 
   Future<void> _capturePhoto() async {
     final ctrl = _controller;
-    if (ctrl == null || !ctrl.value.isInitialized || _isCapturing) return;
+    if (ctrl == null || !ctrl.value.isInitialized || _isCapturing || _isImportingGallery) return;
     if (_capturedPaths.length >= widget.pageLimit) {
       _finishCapture();
       return;
@@ -2014,8 +2124,7 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
         setState(() => _showNightScreenFlash = false);
       }
 
-      // Some Android drivers turn off Torch after takePicture(); keep it ON if user selected Light ON
-      if (!_isFrontCamera && _backFlashCycle[_backFlashIndex] == FlashMode.torch) {
+      if (!_isFrontCamera && _currentBackFlashMode == FlashMode.torch) {
         try {
           await ctrl.setFlashMode(FlashMode.torch);
         } catch (_) {}
@@ -2025,10 +2134,10 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
       final scansDir = Directory('${appDir.path}/scans');
       if (!await scansDir.exists()) await scansDir.create(recursive: true);
       final destPath = '${scansDir.path}/cam_${DateTime.now().millisecondsSinceEpoch}_${_capturedPaths.length}.jpg';
-      await ProDocImageProcessor.bakeOrientationToFile(shot.path, destPath, maxDimension: 2200);
+      final saved = await importXFileSafely(shot, destPath, maxDimension: 2500);
 
-      if (mounted) {
-        setState(() => _capturedPaths.add(destPath));
+      if (mounted && saved != null) {
+        setState(() => _capturedPaths.add(saved));
         if (_capturedPaths.length >= widget.pageLimit) {
           _finishCapture();
         }
@@ -2044,26 +2153,58 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
   }
 
   Future<void> _pickFromGalleryInsideCamera() async {
-    final picked = await ImagePicker().pickMultiImage();
-    if (!mounted || picked.isEmpty) return;
-    final appDir = await getApplicationDocumentsDirectory();
-    final scansDir = Directory('${appDir.path}/scans');
-    if (!await scansDir.exists()) await scansDir.create(recursive: true);
-    for (int i = 0; i < picked.length; i++) {
-      if (_capturedPaths.length >= widget.pageLimit) break;
-      final cleanPath = normalizeLocalFilePath(picked[i].path);
-      final f = File(cleanPath);
-      if (await f.exists()) {
+    if (_isCapturing || _isImportingGallery) return;
+    final int remaining = widget.pageLimit - _capturedPaths.length;
+    if (remaining <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Page limit (${widget.pageLimit}) reached. Tap Next to continue.')));
+      return;
+    }
+    try {
+      final List<XFile> picked = widget.pageLimit == 1
+          ? (await ImagePicker().pickImage(source: ImageSource.gallery).then((x) => x == null ? <XFile>[] : <XFile>[x]))
+          : await ImagePicker().pickMultiImage();
+      if (!mounted || picked.isEmpty) return;
+
+      final int countToImport = min(picked.length, remaining);
+      setState(() {
+        _isImportingGallery = true;
+        _importProgressText = 'Importing 1/$countToImport...';
+      });
+
+      final appDir = await getApplicationDocumentsDirectory();
+      final scansDir = Directory('${appDir.path}/scans');
+      if (!await scansDir.exists()) await scansDir.create(recursive: true);
+
+      int importedCount = 0;
+      for (int i = 0; i < countToImport; i++) {
+        if (!mounted) break;
+        setState(() => _importProgressText = 'Importing ${i + 1}/$countToImport...');
         final dest = '${scansDir.path}/camgal_${DateTime.now().millisecondsSinceEpoch}_$i.jpg';
-        await ProDocImageProcessor.bakeOrientationToFile(f.path, dest, maxDimension: 2200);
-        _capturedPaths.add(dest);
+        final savedPath = await importXFileSafely(picked[i], dest, maxDimension: 2500);
+        if (savedPath != null && mounted) {
+          _capturedPaths.add(savedPath);
+          importedCount++;
+        }
+      }
+      if (mounted) {
+        setState(() => _isImportingGallery = false);
+        if (importedCount > 0) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('✅ Added $importedCount photo(s). Total: ${_capturedPaths.length}')));
+          if (_capturedPaths.length >= widget.pageLimit) {
+            _finishCapture();
+          }
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isImportingGallery = false);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Gallery Import Error: $e')));
       }
     }
-    if (mounted) setState(() {});
   }
 
   Future<void> _switchToAutoScan() async {
-    if (!widget.allowAutoScanSwitch) return;
+    if (!widget.allowAutoScanSwitch || _isImportingGallery) return;
     final oldCtrl = _controller;
     _controller = null;
     if (mounted) setState(() => _isInitializing = true);
@@ -2076,12 +2217,12 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
       await oldCtrl.dispose();
     }
     if (!mounted) return;
-    _returnedResult = true; // Preserve any already-captured pages!
+    _returnedResult = true;
     Navigator.pop(context, [..._capturedPaths, ProCameraScannerScreen.switchToMlKitMarker]);
   }
 
   void _finishCapture() {
-    if (_capturedPaths.isEmpty) return;
+    if (_capturedPaths.isEmpty || _isImportingGallery) return;
     _returnedResult = true;
     Navigator.pop(context, List<String>.from(_capturedPaths));
   }
@@ -2096,7 +2237,7 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
           children: [
             Column(
               children: [
-                // Top Control Bar (Close, Back Flash ON/OFF/Auto, Night Boost, Grid, Front/Back Switch)
+                // Top Control Bar
                 Container(
                   color: Colors.black87,
                   padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
@@ -2220,6 +2361,18 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
                                           top: _focusPoint!.dy - 24,
                                           child: Container(width: 48, height: 48, decoration: BoxDecoration(border: Border.all(color: Colors.amberAccent, width: 2), borderRadius: BorderRadius.circular(8))),
                                         ),
+                                      Positioned(
+                                        top: 10,
+                                        right: 10,
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                          decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(14)),
+                                          child: Text(
+                                            'Pages: ${_capturedPaths.length}/${widget.pageLimit}',
+                                            style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+                                          ),
+                                        ),
+                                      ),
                                     ],
                                   ),
                                 );
@@ -2306,6 +2459,23 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
               ],
             ),
 
+            if (_isImportingGallery)
+              Positioned.fill(
+                child: Container(
+                  color: Colors.black87,
+                  child: Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const CircularProgressIndicator(color: Colors.greenAccent),
+                        const SizedBox(height: 14),
+                        Text(_importProgressText, style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600)),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+
             // Front Camera Night Screen-Flash Overlay
             if (_showNightScreenFlash)
               Positioned.fill(child: Container(color: Colors.white)),
@@ -2328,8 +2498,8 @@ class _CameraGridPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
-// ==================== PART 2 OF 4 END ====================
-// ==================== PART 3 OF 4 START ====================
+// ==================== PART 2B OF 4 END ====================
+/ ==================== PART 3A OF 4 START ====================
 // 2. MAIN DASHBOARD SCREEN
 class MainDashboardScreen extends StatefulWidget {
   const MainDashboardScreen({super.key});
@@ -2627,27 +2797,47 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     try {
       final List<XFile> picked = await ImagePicker().pickMultiImage();
       if (!mounted || picked.isEmpty) return;
-      final appDir = await getApplicationDocumentsDirectory();
-      final scansDir = Directory('${appDir.path}/scans');
-      if (!await scansDir.exists()) await scansDir.create(recursive: true);
+
+      final progressNotifier = ValueNotifier<String>('Importing 1/${picked.length}...');
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => PopScope(
+          canPop: false,
+          child: ValueListenableBuilder<String>(
+            valueListenable: progressNotifier,
+            builder: (_, msg, __) => AlertDialog(
+              content: Row(children: [const CircularProgressIndicator(), const SizedBox(width: 16), Expanded(child: Text(msg))]),
+            ),
+          ),
+        ),
+      );
 
       final List<String> persistentRawPaths = [];
-      for (int i = 0; i < picked.length; i++) {
-        final f = File(normalizeLocalFilePath(picked[i].path));
-        if (await f.exists()) {
+      try {
+        final appDir = await getApplicationDocumentsDirectory();
+        final scansDir = Directory('${appDir.path}/scans');
+        if (!await scansDir.exists()) await scansDir.create(recursive: true);
+
+        for (int i = 0; i < picked.length; i++) {
+          progressNotifier.value = 'Importing ${i + 1}/${picked.length}...';
           final targetPath = '${scansDir.path}/gal_${DateTime.now().millisecondsSinceEpoch}_$i.jpg';
-          await ProDocImageProcessor.bakeOrientationToFile(f.path, targetPath, maxDimension: 2200);
-          persistentRawPaths.add(targetPath);
+          final saved = await importXFileSafely(picked[i], targetPath, maxDimension: 2500);
+          if (saved != null) persistentRawPaths.add(saved);
         }
+      } finally {
+        if (mounted) Navigator.of(context, rootNavigator: true).pop();
+        Future.delayed(const Duration(milliseconds: 450), progressNotifier.dispose);
       }
+
       if (!mounted || persistentRawPaths.isEmpty) return;
-      _openFilterReview(persistentRawPaths, category: category, prefix: prefix, defaultFilter: 'magic_pro');
+      _openFilterReview(persistentRawPaths, category: category, prefix: prefix, defaultFilter: 'auto_pro');
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Gallery Error: $e')));
     }
   }
 
-  Future<void> _startDocScan({int limit = 50, String category = 'General', String prefix = 'Doc', String defaultFilter = 'magic_pro', bool runOcrAfter = false}) async {
+  Future<void> _startDocScan({int limit = 50, String category = 'General', String prefix = 'Doc', String defaultFilter = 'auto_pro', bool runOcrAfter = false}) async {
     final List<String>? result = await Navigator.push<List<String>>(
       context,
       MaterialPageRoute(builder: (_) => ProCameraScannerScreen(pageLimit: limit, allowAutoScanSwitch: true)),
@@ -2674,50 +2864,67 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     int limit = 50,
     String category = 'General',
     String prefix = 'Doc',
-    String defaultFilter = 'magic_pro',
+    String defaultFilter = 'auto_pro',
     bool runOcrAfter = false,
     List<String> preCapturedPaths = const [],
   }) async {
     DocumentScanningResult? result;
-    // Try ScannerMode.full first for automatic border detection & perspective crop; fall back to base if needed
-    for (final mode in [ScannerMode.full, ScannerMode.base]) {
-      final scanner = DocumentScanner(
-        options: DocumentScannerOptions(
-          documentFormat: DocumentFormat.jpeg,
-          mode: mode,
-          isGalleryImport: true,
-          pageLimit: limit,
-        ),
-      );
-      try {
-        result = await scanner.scanDocument();
-        break;
-      } catch (e) {
-        debugPrint("ML Kit Scan ($mode) err: $e");
-        if (mode == ScannerMode.base && mounted && preCapturedPaths.isEmpty) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Auto Scan failed: $e')));
-        }
-      } finally {
-        await scanner.close();
+    // ScannerMode.base = Auto Border Crop + Straighten ONLY (avoids hidden double-filter so Camera & Auto Scan match)
+    final scanner = DocumentScanner(
+      options: DocumentScannerOptions(
+        documentFormat: DocumentFormat.jpeg,
+        mode: ScannerMode.base,
+        isGalleryImport: true,
+        pageLimit: limit,
+      ),
+    );
+    try {
+      result = await scanner.scanDocument();
+    } catch (e) {
+      debugPrint("ML Kit Scan err: $e");
+      if (mounted && preCapturedPaths.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Auto Scan failed: $e')));
       }
+    } finally {
+      await scanner.close();
     }
 
     if (!mounted) return;
     final List<String> persistentRawPaths = List<String>.from(preCapturedPaths);
 
     if (result != null && result.images.isNotEmpty) {
-      final appDir = await getApplicationDocumentsDirectory();
-      final scansDir = Directory('${appDir.path}/scans');
-      if (!await scansDir.exists()) await scansDir.create(recursive: true);
+      final progressNotifier = ValueNotifier<String>('Preparing 1/${result.images.length}...');
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => PopScope(
+          canPop: false,
+          child: ValueListenableBuilder<String>(
+            valueListenable: progressNotifier,
+            builder: (_, msg, __) => AlertDialog(
+              content: Row(children: [const CircularProgressIndicator(), const SizedBox(width: 16), Expanded(child: Text(msg))]),
+            ),
+          ),
+        ),
+      );
+      try {
+        final appDir = await getApplicationDocumentsDirectory();
+        final scansDir = Directory('${appDir.path}/scans');
+        if (!await scansDir.exists()) await scansDir.create(recursive: true);
 
-      for (int i = 0; i < result.images.length; i++) {
-        final cleanPath = normalizeLocalFilePath(result.images[i]);
-        final f = File(cleanPath);
-        if (await f.exists()) {
-          final targetPath = '${scansDir.path}/mlkit_${DateTime.now().millisecondsSinceEpoch}_$i.jpg';
-          await ProDocImageProcessor.bakeOrientationToFile(f.path, targetPath, maxDimension: 2200);
-          persistentRawPaths.add(targetPath);
+        for (int i = 0; i < result.images.length; i++) {
+          progressNotifier.value = 'Preparing ${i + 1}/${result.images.length}...';
+          final cleanPath = normalizeLocalFilePath(result.images[i]);
+          final f = File(cleanPath);
+          if (await f.exists()) {
+            final targetPath = '${scansDir.path}/mlkit_${DateTime.now().millisecondsSinceEpoch}_$i.jpg';
+            await ProDocImageProcessor.bakeOrientationToFile(f.path, targetPath, maxDimension: 2500);
+            persistentRawPaths.add(targetPath);
+          }
         }
+      } finally {
+        if (mounted) Navigator.of(context, rootNavigator: true).pop();
+        Future.delayed(const Duration(milliseconds: 450), progressNotifier.dispose);
       }
     }
 
@@ -2732,13 +2939,13 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
         builder: (_) => ScanFilterReviewScreen(
           rawImagePaths: rawPaths,
           initialFilterId: defaultFilter,
-          onApplyAndProceed: (filteredImages) {
+          onApplyAndProceed: (filteredImages, updatedRawPaths) {
             if (runOcrAfter && filteredImages.isNotEmpty) {
               _extractTextOCR(filteredImages.first);
             } else if (category == 'Personal' && prefix.contains('ID_Card') && filteredImages.length >= 2) {
-              _processIdCardCollage(filteredImages.sublist(0, 2), rawPaths);
+              _processIdCardCollage(filteredImages.sublist(0, 2), updatedRawPaths);
             } else {
-              _promptSaveDoc(filteredImages, rawPaths, prefix, category);
+              _promptSaveDoc(filteredImages, updatedRawPaths, prefix, category);
             }
           },
         ),
@@ -2791,7 +2998,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       final byteData = await a4CollageImg.toByteData(format: ui.ImageByteFormat.rawRgba);
       if (byteData != null) {
         final ttd = TransferableTypedData.fromList([byteData.buffer.asUint8List()]);
-        final jpgBytes = await Isolate.run(() => _encodeRgbaToJpgFast(ttd, a4Width.toInt(), a4Height.toInt(), 90));
+        final jpgBytes = await Isolate.run(() => _encodeRgbaToJpgFast(ttd, a4Width.toInt(), a4Height.toInt(), 92));
         final appDir = await getApplicationDocumentsDirectory();
         final scansDir = Directory('${appDir.path}/scans');
         if (!await scansDir.exists()) await scansDir.create(recursive: true);
@@ -2821,7 +3028,8 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       backCodec?.dispose();
     }
   }
-
+// ==================== PART 3A OF 4 END ====================
+  // ==================== PART 3B OF 4 START ====================
   void _promptSaveDoc(List<String> enhancedImages, List<String> rawImages, String prefix, String defaultCat) {
     final nameCtrl = TextEditingController(text: "${prefix}_${DateFormat('ddMMM_HHmm').format(DateTime.now())}");
     String chosenFolder = (defaultCat != 'General' && _actualFolders.contains(defaultCat))
@@ -3598,17 +3806,22 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     );
   }
 }
-// ==================== PART 3 OF 4 END ====================
-// ==================== PART 4A (1/3) START ====================
+// ==================== PART 3B OF 4 END ====================
+ // ==================== PART 4A OF 4 START ====================
 // ============================================================================
-// 3. PRO SCAN FILTER, CROP, MANUAL ADJUST & ERASER SCREEN
+// 3. PRO SCAN FILTER, CROP, MANUAL ADJUST, ERASER & MULTI-PAGE ADD SCREEN
 // ============================================================================
 class ScanFilterReviewScreen extends StatefulWidget {
   final List<String> rawImagePaths;
   final String initialFilterId;
-  final Function(List<String> filteredPaths) onApplyAndProceed;
+  final void Function(List<String> filteredPaths, List<String> updatedRawPaths) onApplyAndProceed;
 
-  const ScanFilterReviewScreen({super.key, required this.rawImagePaths, this.initialFilterId = 'magic_pro', required this.onApplyAndProceed});
+  const ScanFilterReviewScreen({
+    super.key,
+    required this.rawImagePaths,
+    this.initialFilterId = 'auto_pro',
+    required this.onApplyAndProceed,
+  });
   @override
   State<ScanFilterReviewScreen> createState() => _ScanFilterReviewScreenState();
 }
@@ -3618,11 +3831,14 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
 
   int _curPageIndex = 0;
   bool _isSaving = false;
+  String _savingStatusText = 'Saving Pro-Clarity Document...';
   bool _isRenderingPreview = false;
   bool _showOriginalHold = false;
+  bool _didFinishSave = false;
   // Tabs: 0 = Straighten AI, 1 = Pro Filters, 2 = Adjust (B/C/S), 3 = Eraser, 4 = Tilt & Rotate, 5 = Crop
   int _activeTopTab = 1;
 
+  late List<String> _originalRawPaths;
   late List<String> _workingPaths;
   late Map<int, String> _pageFilterSelections;
   late Map<int, double> _pageFilterIntensities;
@@ -3653,7 +3869,6 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
         const Offset(0.05, 0.95),
       ];
 
-  /// Prevents dragging crop handles into a crossed (bowtie) or collapsed polygon
   bool _isConvexQuad(List<Offset> pts) {
     if (pts.length != 4) return false;
     double? sign;
@@ -3675,9 +3890,10 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
   @override
   void initState() {
     super.initState();
+    _originalRawPaths = List<String>.from(widget.rawImagePaths);
     _workingPaths = List<String>.from(widget.rawImagePaths);
     _pageFilterSelections = {for (var i = 0; i < widget.rawImagePaths.length; i++) i: widget.initialFilterId};
-    _pageFilterIntensities = {for (var i = 0; i < widget.rawImagePaths.length; i++) i: 0.78};
+    _pageFilterIntensities = {for (var i = 0; i < widget.rawImagePaths.length; i++) i: 0.72};
     _pageBrightness = {for (var i = 0; i < widget.rawImagePaths.length; i++) i: 0.0};
     _pageContrast = {for (var i = 0; i < widget.rawImagePaths.length; i++) i: 1.0};
     _pageSharpness = {for (var i = 0; i < widget.rawImagePaths.length; i++) i: 0.72};
@@ -3696,7 +3912,9 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
     _cachedBasePreviewRgba.clear();
     _cachedBgMaps.clear();
     for (final p in _tempCreatedPaths) {
-      if (!_finalExportedPaths.contains(p)) _deleteFileQuietly(p);
+      if (!_finalExportedPaths.contains(p) && !(_didFinishSave && _originalRawPaths.contains(p))) {
+        _deleteFileQuietly(p);
+      }
     }
     super.dispose();
   }
@@ -3708,8 +3926,8 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
     } catch (_) {}
   }
 
-  DocFilterPreset get _currentPreset => kDocFilters.firstWhere((f) => f.id == (_pageFilterSelections[_curPageIndex] ?? 'magic_pro'), orElse: () => kDocFilters[1]);
-  double get _currentIntensity => _pageFilterIntensities[_curPageIndex] ?? 0.78;
+  DocFilterPreset get _currentPreset => kDocFilters.firstWhere((f) => f.id == (_pageFilterSelections[_curPageIndex] ?? 'auto_pro'), orElse: () => kDocFilters[1]);
+  double get _currentIntensity => _pageFilterIntensities[_curPageIndex] ?? 0.72;
   double get _currentBrightness => _pageBrightness[_curPageIndex] ?? 0.0;
   double get _currentContrast => _pageContrast[_curPageIndex] ?? 1.0;
   double get _currentSharpness => _pageSharpness[_curPageIndex] ?? 0.72;
@@ -3746,8 +3964,8 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
   Future<void> _renderCurrentPagePreview() async {
     final int pageIdx = _curPageIndex;
     final int token = ++_renderRequestToken;
-    final String filterId = _pageFilterSelections[pageIdx] ?? 'magic_pro';
-    final double intensity = _pageFilterIntensities[pageIdx] ?? 0.78;
+    final String filterId = _pageFilterSelections[pageIdx] ?? 'auto_pro';
+    final double intensity = _pageFilterIntensities[pageIdx] ?? 0.72;
     final double brightness = _pageBrightness[pageIdx] ?? 0.0;
     final double contrast = _pageContrast[pageIdx] ?? 1.0;
     final double sharpness = _pageSharpness[pageIdx] ?? 0.72;
@@ -3813,8 +4031,160 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
     _disposeOldPreviewSafely(oldImg);
   }
 
+  void _appendExtraPages(List<String> newPaths) {
+    if (newPaths.isEmpty || !mounted) return;
+    final int startIdx = _workingPaths.length;
+    final String activeFilter = _pageFilterSelections[_curPageIndex] ?? widget.initialFilterId;
+    final double activeInt = _currentIntensity;
+    final double activeBr = _currentBrightness;
+    final double activeCt = _currentContrast;
+    final double activeSh = _currentSharpness;
+
+    setState(() {
+      for (int k = 0; k < newPaths.length; k++) {
+        final int idx = startIdx + k;
+        final String p = newPaths[k];
+        _workingPaths.add(p);
+        _originalRawPaths.add(p);
+        _tempCreatedPaths.add(p);
+        _pageFilterSelections[idx] = activeFilter;
+        _pageFilterIntensities[idx] = activeInt;
+        _pageBrightness[idx] = activeBr;
+        _pageContrast[idx] = activeCt;
+        _pageSharpness[idx] = activeSh;
+        _pageDeskewAngles[idx] = 0.0;
+        _pageEraserStrokes[idx] = [];
+        _pageCropCorners[idx] = _defaultCropCorners();
+      }
+      _curPageIndex = startIdx;
+      _showOriginalHold = false;
+      _activeEraserPoints = null;
+    });
+    _renderCurrentPagePreview();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('✅ Added ${newPaths.length} page(s). Total: ${_workingPaths.length}')),
+    );
+  }
+
+  Future<void> _openAddMorePagesInsideReview() async {
+    if (_isSaving) return;
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('Add More Pages to Scan', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 10),
+              ListTile(
+                leading: const CircleAvatar(backgroundColor: Color(0xFFE8F5E9), child: Icon(Icons.camera_alt_rounded, color: Color(0xFF2E7D32))),
+                title: const Text('Scan from Camera (Multi-Page)'),
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  final captured = await Navigator.push<List<String>>(
+                    context,
+                    MaterialPageRoute(builder: (_) => const ProCameraScannerScreen(pageLimit: 30, allowAutoScanSwitch: true)),
+                  );
+                  if (!mounted || captured == null || captured.isEmpty) return;
+                  if (captured.contains(ProCameraScannerScreen.switchToMlKitMarker)) {
+                    final pre = captured.where((p) => p != ProCameraScannerScreen.switchToMlKitMarker).toList();
+                    await _scanMlKitInsideReview(preCaptured: pre);
+                  } else {
+                    _appendExtraPages(captured);
+                  }
+                },
+              ),
+              ListTile(
+                leading: const CircleAvatar(backgroundColor: Color(0xFFE8F5E9), child: Icon(Icons.document_scanner_rounded, color: Color(0xFF1B5E20))),
+                title: const Text('Auto Document Scan (AI Edge Crop)'),
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  await _scanMlKitInsideReview();
+                },
+              ),
+              ListTile(
+                leading: const CircleAvatar(backgroundColor: Color(0xFFE0F7FA), child: Icon(Icons.photo_library_rounded, color: Color(0xFF00B4D8))),
+                title: const Text('Import Multiple from Gallery'),
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  final picked = await ImagePicker().pickMultiImage();
+                  if (!mounted || picked.isEmpty) return;
+                  setState(() {
+                    _isSaving = true;
+                    _savingStatusText = 'Importing ${picked.length} gallery photo(s)...';
+                  });
+                  final List<String> added = [];
+                  try {
+                    final appDir = await getApplicationDocumentsDirectory();
+                    final scansDir = Directory('${appDir.path}/scans');
+                    if (!await scansDir.exists()) await scansDir.create(recursive: true);
+                    for (int i = 0; i < picked.length; i++) {
+                      if (mounted) setState(() => _savingStatusText = 'Importing ${i + 1}/${picked.length}...');
+                      final dest = '${scansDir.path}/rev_gal_${DateTime.now().millisecondsSinceEpoch}_$i.jpg';
+                      final saved = await importXFileSafely(picked[i], dest, maxDimension: 2500);
+                      if (saved != null) added.add(saved);
+                    }
+                  } finally {
+                    if (mounted) setState(() => _isSaving = false);
+                  }
+                  if (added.isNotEmpty) _appendExtraPages(added);
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _scanMlKitInsideReview({List<String> preCaptured = const []}) async {
+    DocumentScanningResult? res;
+    final scanner = DocumentScanner(
+      options: DocumentScannerOptions(
+        documentFormat: DocumentFormat.jpeg,
+        mode: ScannerMode.base,
+        isGalleryImport: true,
+        pageLimit: 30,
+      ),
+    );
+    try {
+      res = await scanner.scanDocument();
+    } catch (e) {
+      debugPrint("Review ML Kit err: $e");
+    } finally {
+      await scanner.close();
+    }
+    if (!mounted) return;
+    final List<String> added = List<String>.from(preCaptured);
+    if (res != null && res.images.isNotEmpty) {
+      setState(() {
+        _isSaving = true;
+        _savingStatusText = 'Preparing scanned pages...';
+      });
+      try {
+        final appDir = await getApplicationDocumentsDirectory();
+        final scansDir = Directory('${appDir.path}/scans');
+        if (!await scansDir.exists()) await scansDir.create(recursive: true);
+        for (int i = 0; i < res.images.length; i++) {
+          final f = File(normalizeLocalFilePath(res.images[i]));
+          if (await f.exists()) {
+            final dest = '${scansDir.path}/rev_mlkit_${DateTime.now().millisecondsSinceEpoch}_$i.jpg';
+            await ProDocImageProcessor.bakeOrientationToFile(f.path, dest, maxDimension: 2500);
+            added.add(dest);
+          }
+        }
+      } finally {
+        if (mounted) setState(() => _isSaving = false);
+      }
+    }
+    if (added.isNotEmpty) _appendExtraPages(added);
+  }
+
   Future<void> _applyAllPagesSameFilter() async {
-    final activeFilter = _pageFilterSelections[_curPageIndex] ?? 'magic_pro';
+    final activeFilter = _pageFilterSelections[_curPageIndex] ?? 'auto_pro';
     final activeIntensity = _currentIntensity;
     final activeBright = _currentBrightness;
     final activeContrast = _currentContrast;
@@ -3841,7 +4211,10 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
   }
 
   Future<void> _runAutoStraightenAI() async {
-    setState(() => _isSaving = true);
+    setState(() {
+      _isSaving = true;
+      _savingStatusText = 'Detecting page alignment...';
+    });
     final curImg = _workingPaths[_curPageIndex];
     final detectedAngle = await AIDeskewEngine.detectSkewAngle(curImg);
     if (detectedAngle.abs() > 0.4) {
@@ -3874,7 +4247,10 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
   }
 
   Future<void> _rotateCurrentPage90() async {
-    setState(() => _isSaving = true);
+    setState(() {
+      _isSaving = true;
+      _savingStatusText = 'Rotating page...';
+    });
     final appDir = await getApplicationDocumentsDirectory();
     final scansDir = Directory('${appDir.path}/scans');
     if (!await scansDir.exists()) await scansDir.create(recursive: true);
@@ -3898,7 +4274,10 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
   }
 
   Future<void> _applyManualPerspectiveCrop() async {
-    setState(() => _isSaving = true);
+    setState(() {
+      _isSaving = true;
+      _savingStatusText = 'Applying perspective crop...';
+    });
     final appDir = await getApplicationDocumentsDirectory();
     final scansDir = Directory('${appDir.path}/scans');
     if (!await scansDir.exists()) await scansDir.create(recursive: true);
@@ -3928,7 +4307,7 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
 
   Future<String> _exportSinglePage(int i, String scansDirPath, int stamp) async {
     final outPath = '$scansDirPath/pro_${stamp}_p$i.jpg';
-    final String filterId = _pageFilterSelections[i] ?? 'magic_pro';
+    final String filterId = _pageFilterSelections[i] ?? 'auto_pro';
     final double brightness = _pageBrightness[i] ?? 0.0;
     final double contrast = _pageContrast[i] ?? 1.0;
     final double sharpness = _pageSharpness[i] ?? 0.72;
@@ -3942,13 +4321,13 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
 
     String processedPath;
     if (filterId == 'original' && !hasAdjustments) {
-      await File(_workingPaths[i]).copy(outPath);
+      await ProDocImageProcessor.bakeOrientationToFile(_workingPaths[i], outPath, maxDimension: 2500);
       processedPath = outPath;
     } else {
       processedPath = await ProDocImageProcessor.processAndSaveHighRes(
         sourcePath: _workingPaths[i],
         filterId: filterId,
-        intensity: _pageFilterIntensities[i] ?? 0.78,
+        intensity: _pageFilterIntensities[i] ?? 0.72,
         outputPath: outPath,
         brightness: brightness,
         contrast: contrast,
@@ -3969,7 +4348,10 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
   }
 
   Future<void> _finishAndExport() async {
-    setState(() => _isSaving = true);
+    setState(() {
+      _isSaving = true;
+      _savingStatusText = 'Saving Page 1 of ${_workingPaths.length}...';
+    });
     final appDir = await getApplicationDocumentsDirectory();
     final scansDir = Directory('${appDir.path}/scans');
     if (!await scansDir.exists()) await scansDir.create(recursive: true);
@@ -3977,23 +4359,28 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
     final int stamp = DateTime.now().millisecondsSinceEpoch;
     final List<String> enhancedPaths = List<String>.filled(_workingPaths.length, '');
 
-    for (int start = 0; start < _workingPaths.length; start += 2) {
-      final int end = min(start + 2, _workingPaths.length);
-      final futures = <Future<String>>[];
-      for (int i = start; i < end; i++) {
-        futures.add(_exportSinglePage(i, scansDir.path, stamp));
+    try {
+      for (int i = 0; i < _workingPaths.length; i++) {
+        if (mounted) {
+          setState(() => _savingStatusText = 'Saving Page ${i + 1} of ${_workingPaths.length}...');
+        }
+        final exported = await _exportSinglePage(i, scansDir.path, stamp);
+        enhancedPaths[i] = exported;
+        _finalExportedPaths.add(exported);
       }
-      final results = await Future.wait(futures);
-      for (int k = 0; k < results.length; k++) {
-        enhancedPaths[start + k] = results[k];
-        _finalExportedPaths.add(results[k]);
-      }
-    }
 
-    if (mounted) {
-      setState(() => _isSaving = false);
-      Navigator.pop(context);
-      widget.onApplyAndProceed(enhancedPaths);
+      if (mounted) {
+        _didFinishSave = true;
+        setState(() => _isSaving = false);
+        Navigator.pop(context);
+        widget.onApplyAndProceed(enhancedPaths, List<String>.from(_originalRawPaths));
+      }
+    } catch (e) {
+      debugPrint("Export error: $e");
+      if (mounted) {
+        setState(() => _isSaving = false);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Export Error: $e')));
+      }
     }
   }
 
@@ -4010,15 +4397,16 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
       appBar: AppBar(
         backgroundColor: const Color(0xFF14161B),
         foregroundColor: Colors.white,
-        title: Text('Page ${_curPageIndex + 1}/${_workingPaths.length} • ${activePreset.title}', style: const TextStyle(fontSize: 14)),
+        title: Text('Page ${_curPageIndex + 1}/${_workingPaths.length} • ${activePreset.title}', style: const TextStyle(fontSize: 13.5)),
         actions: [
+          LabeledIconButton(icon: Icons.add_photo_alternate_rounded, label: 'Add', color: Colors.lightBlueAccent, onPressed: _isSaving ? null : _openAddMorePagesInsideReview),
           LabeledIconButton(icon: Icons.compare_rounded, label: 'Original', color: _showOriginalHold ? Colors.amber : Colors.white70, onPressed: () => setState(() => _showOriginalHold = !_showOriginalHold)),
           LabeledIconButton(icon: Icons.done_all_rounded, label: 'Apply All', color: const Color(0xFF81C784), onPressed: _applyAllPagesSameFilter),
           LabeledIconButton(icon: Icons.check_circle_rounded, label: AppLang.tr('save'), color: Colors.greenAccent, iconSize: 23, onPressed: _isSaving ? null : _finishAndExport),
         ],
       ),
       body: _isSaving
-          ? const Center(child: Column(mainAxisSize: MainAxisSize.min, children: [CircularProgressIndicator(color: Colors.greenAccent), SizedBox(height: 12), Text('Saving Ultra-Clarity Document...', style: TextStyle(color: Colors.white70, fontSize: 13))]))
+          ? Center(child: Column(mainAxisSize: MainAxisSize.min, children: [const CircularProgressIndicator(color: Colors.greenAccent), const SizedBox(height: 12), Text(_savingStatusText, style: const TextStyle(color: Colors.white70, fontSize: 13))]))
           : Column(
               children: [
                 SingleChildScrollView(
@@ -4317,29 +4705,48 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
                       ],
                     ),
                   ),
-                if (_workingPaths.length > 1)
-                  Container(
-                    height: 68,
-                    color: const Color(0xFF14161B),
-                    padding: const EdgeInsets.symmetric(vertical: 5),
-                    child: ListView.builder(
-                      scrollDirection: Axis.horizontal,
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      itemCount: _workingPaths.length,
-                      itemBuilder: (ctx, idx) {
-                        final isSelectedPage = _curPageIndex == idx;
+                Container(
+                  height: 68,
+                  color: const Color(0xFF14161B),
+                  padding: const EdgeInsets.symmetric(vertical: 5),
+                  child: ListView.builder(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    itemCount: _workingPaths.length + 1,
+                    itemBuilder: (ctx, idx) {
+                      if (idx == _workingPaths.length) {
                         return GestureDetector(
-                          onTap: () { setState(() { _curPageIndex = idx; _showOriginalHold = false; _activeEraserPoints = null; }); _renderCurrentPagePreview(); },
+                          onTap: _openAddMorePagesInsideReview,
                           child: Container(
                             width: 50,
-                            margin: const EdgeInsets.only(right: 10),
-                            decoration: BoxDecoration(borderRadius: BorderRadius.circular(8), border: Border.all(color: isSelectedPage ? const Color(0xFF81C784) : Colors.grey.shade700, width: isSelectedPage ? 2.5 : 1)),
-                            child: Stack(children: [Positioned.fill(child: ClipRRect(borderRadius: BorderRadius.circular(6), child: Image.file(File(_workingPaths[idx]), fit: BoxFit.cover, cacheWidth: 140))), Positioned(bottom: 2, left: 2, right: 2, child: Container(padding: const EdgeInsets.symmetric(vertical: 1), decoration: BoxDecoration(color: Colors.black.withAlpha(190), borderRadius: BorderRadius.circular(4)), child: Text('P${idx + 1}', textAlign: TextAlign.center, style: const TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold))))]),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF262A34),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: Colors.greenAccent.withAlpha(140), width: 1.2),
+                            ),
+                            child: const Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.add_rounded, color: Colors.greenAccent, size: 22),
+                                Text('Add', style: TextStyle(color: Colors.greenAccent, fontSize: 9, fontWeight: FontWeight.bold)),
+                              ],
+                            ),
                           ),
                         );
-                      },
-                    ),
+                      }
+                      final isSelectedPage = _curPageIndex == idx;
+                      return GestureDetector(
+                        onTap: () { setState(() { _curPageIndex = idx; _showOriginalHold = false; _activeEraserPoints = null; }); _renderCurrentPagePreview(); },
+                        child: Container(
+                          width: 50,
+                          margin: const EdgeInsets.only(right: 10),
+                          decoration: BoxDecoration(borderRadius: BorderRadius.circular(8), border: Border.all(color: isSelectedPage ? const Color(0xFF81C784) : Colors.grey.shade700, width: isSelectedPage ? 2.5 : 1)),
+                          child: Stack(children: [Positioned.fill(child: ClipRRect(borderRadius: BorderRadius.circular(6), child: Image.file(File(_workingPaths[idx]), fit: BoxFit.cover, cacheWidth: 140))), Positioned(bottom: 2, left: 2, right: 2, child: Container(padding: const EdgeInsets.symmetric(vertical: 1), decoration: BoxDecoration(color: Colors.black.withAlpha(190), borderRadius: BorderRadius.circular(4)), child: Text('P${idx + 1}', textAlign: TextAlign.center, style: const TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold))))]),
+                        ),
+                      );
+                    },
                   ),
+                ),
               ],
             ),
     );
@@ -4439,8 +4846,8 @@ class _LiveEraserStrokePainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _LiveEraserStrokePainter oldDelegate) => true;
 }
-// ==================== PART 4A (1/3) END ====================
-// ==================== PART 4B (2/3) START ====================
+// ==================== PART 4A OF 4 END ====================
+// ==================== PART 4B OF 4 START ====================
 // 4. DOCUMENT DETAIL SCREEN (MOVE/COPY PAGES BETWEEN DOCS & FOLDERS)
 class DocumentDetailScreen extends StatefulWidget {
   final Map<String, dynamic> doc;
@@ -4682,8 +5089,18 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
       MaterialPageRoute(
         builder: (_) => ScanFilterReviewScreen(
           rawImagePaths: indicesToEdit.map((i) => i < _originalImages.length ? _originalImages[i] : _images[i]).toList(),
-          onApplyAndProceed: (retouchedPaths) {
-            setState(() { for (int k = 0; k < indicesToEdit.length; k++) _images[indicesToEdit[k]] = retouchedPaths[k]; });
+          onApplyAndProceed: (retouchedPaths, updatedRawPaths) {
+            setState(() {
+              for (int k = 0; k < indicesToEdit.length; k++) {
+                if (k < retouchedPaths.length) _images[indicesToEdit[k]] = retouchedPaths[k];
+              }
+              if (retouchedPaths.length > indicesToEdit.length) {
+                for (int k = indicesToEdit.length; k < retouchedPaths.length; k++) {
+                  _images.add(retouchedPaths[k]);
+                  _originalImages.add(k < updatedRawPaths.length ? updatedRawPaths[k] : retouchedPaths[k]);
+                }
+              }
+            });
             _syncDocChanges();
             ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('✅ Retouched Pages Saved!')));
           },
@@ -4694,16 +5111,21 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
 
   Future<void> _scanWithMlKitAndAppend({List<String> preCapturedPaths = const []}) async {
     DocumentScanningResult? res;
-    for (final mode in [ScannerMode.full, ScannerMode.base]) {
-      final scanner = DocumentScanner(options: DocumentScannerOptions(documentFormat: DocumentFormat.jpeg, mode: mode, isGalleryImport: true, pageLimit: 20));
-      try {
-        res = await scanner.scanDocument();
-        break;
-      } catch (e) {
-        debugPrint("Add page ML Kit ($mode) err: $e");
-      } finally {
-        await scanner.close();
-      }
+    // ScannerMode.base = Auto Border Crop + Straighten ONLY (consistent filter flow with Camera)
+    final scanner = DocumentScanner(
+      options: DocumentScannerOptions(
+        documentFormat: DocumentFormat.jpeg,
+        mode: ScannerMode.base,
+        isGalleryImport: true,
+        pageLimit: 30,
+      ),
+    );
+    try {
+      res = await scanner.scanDocument();
+    } catch (e) {
+      debugPrint("Add page ML Kit err: $e");
+    } finally {
+      await scanner.close();
     }
     if (!mounted) return;
     final List<String> combinedRaw = List<String>.from(preCapturedPaths);
@@ -4738,25 +5160,25 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
               ),
               ListTile(
                 leading: const CircleAvatar(backgroundColor: Color(0xFFE0F7FA), child: Icon(Icons.photo_library_rounded, color: Color(0xFF00B4D8))),
-                title: const Text('Import from Gallery'),
-                subtitle: const Text('Open phone gallery directly'),
+                title: const Text('Import Multiple from Gallery'),
+                subtitle: const Text('Select 1 or many photos together'),
                 onTap: () async {
                   Navigator.pop(ctx);
                   final picked = await ImagePicker().pickMultiImage();
                   if (mounted && picked.isNotEmpty) {
-                    await _appendNewImagesThroughFilter(picked.map((x) => normalizeLocalFilePath(x.path)).toList());
+                    await _appendNewXFilesThroughFilter(picked);
                   }
                 },
               ),
               ListTile(
                 leading: const CircleAvatar(backgroundColor: Color(0xFFE8F5E9), child: Icon(Icons.camera_alt_rounded, color: Color(0xFF2E7D32))),
                 title: const Text('Scan from Camera'),
-                subtitle: const Text('Capture new pages (Flash & Front/Back)'),
+                subtitle: const Text('Capture multiple pages (Flash & Front/Back)'),
                 onTap: () async {
                   Navigator.pop(ctx);
                   final captured = await Navigator.push<List<String>>(
                     context,
-                    MaterialPageRoute(builder: (_) => const ProCameraScannerScreen(pageLimit: 20, allowAutoScanSwitch: true)),
+                    MaterialPageRoute(builder: (_) => const ProCameraScannerScreen(pageLimit: 30, allowAutoScanSwitch: true)),
                   );
                   if (!mounted || captured == null || captured.isEmpty) return;
                   if (captured.contains(ProCameraScannerScreen.switchToMlKitMarker)) {
@@ -4774,6 +5196,56 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
     );
   }
 
+  Future<void> _appendNewXFilesThroughFilter(List<XFile> picked) async {
+    final progressNotifier = ValueNotifier<String>('Importing 1/${picked.length}...');
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => PopScope(
+        canPop: false,
+        child: ValueListenableBuilder<String>(
+          valueListenable: progressNotifier,
+          builder: (_, msg, __) => AlertDialog(
+            content: Row(children: [const CircularProgressIndicator(), const SizedBox(width: 16), Expanded(child: Text(msg))]),
+          ),
+        ),
+      ),
+    );
+
+    final List<String> copiedRaw = [];
+    try {
+      final appDir = await getApplicationDocumentsDirectory();
+      final scansDir = Directory('${appDir.path}/scans');
+      if (!await scansDir.exists()) await scansDir.create(recursive: true);
+      for (int i = 0; i < picked.length; i++) {
+        progressNotifier.value = 'Importing ${i + 1}/${picked.length}...';
+        final target = '${scansDir.path}/addgal_${DateTime.now().millisecondsSinceEpoch}_$i.jpg';
+        final saved = await importXFileSafely(picked[i], target, maxDimension: 2500);
+        if (saved != null) copiedRaw.add(saved);
+      }
+    } finally {
+      if (mounted) Navigator.of(context, rootNavigator: true).pop();
+      Future.delayed(const Duration(milliseconds: 450), progressNotifier.dispose);
+    }
+
+    if (!mounted || copiedRaw.isEmpty) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ScanFilterReviewScreen(
+          rawImagePaths: copiedRaw,
+          onApplyAndProceed: (filteredPaths, updatedRawPaths) {
+            setState(() {
+              _images.addAll(filteredPaths);
+              _originalImages.addAll(updatedRawPaths);
+            });
+            _syncDocChanges();
+          },
+        ),
+      ),
+    );
+  }
+
   Future<void> _appendNewImagesThroughFilter(List<String> rawPaths) async {
     final appDir = await getApplicationDocumentsDirectory();
     final scansDir = Directory('${appDir.path}/scans');
@@ -4783,12 +5255,26 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
       final f = File(normalizeLocalFilePath(rawPaths[i]));
       if (await f.exists()) {
         final target = '${scansDir.path}/add_${DateTime.now().millisecondsSinceEpoch}_$i.jpg';
-        await ProDocImageProcessor.bakeOrientationToFile(f.path, target, maxDimension: 2200);
+        await ProDocImageProcessor.bakeOrientationToFile(f.path, target, maxDimension: 2500);
         copiedRaw.add(target);
       }
     }
     if (!mounted || copiedRaw.isEmpty) return;
-    Navigator.push(context, MaterialPageRoute(builder: (_) => ScanFilterReviewScreen(rawImagePaths: copiedRaw, onApplyAndProceed: (filteredPaths) { setState(() { _images.addAll(filteredPaths); _originalImages.addAll(copiedRaw); }); _syncDocChanges(); })));
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ScanFilterReviewScreen(
+          rawImagePaths: copiedRaw,
+          onApplyAndProceed: (filteredPaths, updatedRawPaths) {
+            setState(() {
+              _images.addAll(filteredPaths);
+              _originalImages.addAll(updatedRawPaths);
+            });
+            _syncDocChanges();
+          },
+        ),
+      ),
+    );
   }
 
   Future<Uint8List> _buildOrderedPdfBytes(List<String> orderedImgs) async {
@@ -4946,7 +5432,26 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
                                   onExtractText: widget.onExtractText,
                                   onReEditPage: (pageIdx) {
                                     final srcPath = pageIdx < _originalImages.length ? _originalImages[pageIdx] : _images[pageIdx];
-                                    Navigator.push(context, MaterialPageRoute(builder: (_) => ScanFilterReviewScreen(rawImagePaths: [srcPath], onApplyAndProceed: (retouched) { setState(() => _images[pageIdx] = retouched.first); _syncDocChanges(); })));
+                                    Navigator.push(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder: (_) => ScanFilterReviewScreen(
+                                          rawImagePaths: [srcPath],
+                                          onApplyAndProceed: (retouched, updatedRaws) {
+                                            setState(() {
+                                              _images[pageIdx] = retouched.first;
+                                              if (retouched.length > 1) {
+                                                for (int k = 1; k < retouched.length; k++) {
+                                                  _images.add(retouched[k]);
+                                                  _originalImages.add(k < updatedRaws.length ? updatedRaws[k] : retouched[k]);
+                                                }
+                                              }
+                                            });
+                                            _syncDocChanges();
+                                          },
+                                        ),
+                                      ),
+                                    );
                                   },
                                 ),
                               ),
@@ -5118,8 +5623,8 @@ class _FullScreenPhotoViewerState extends State<FullScreenPhotoViewer> {
     );
   }
 }
-// ==================== PART 4B (2/3) END ====================
-// ==================== PART 4C-1 (3/3) START ====================
+// ==================== PART 4B OF 4 END ====================
+// ==================== PART 4C-1 OF 4 START ====================
 // HELPER FOR MULTI-PAGE HINDI / UNICODE / RUPEE SYMBOL PDF RENDERING
 class _UnicodePdfHelper {
   static bool hasNonAscii(String s) => s.runes.any((r) => r > 127);
@@ -5242,23 +5747,26 @@ class _PassportPhotoStudioScreenState extends State<PassportPhotoStudioScreen> {
 
   Future<void> _pickPhotoFromGallery() async {
     final x = await ImagePicker().pickImage(source: ImageSource.gallery);
-    if (x != null && mounted) setState(() => _photoPath = normalizeLocalFilePath(x.path));
+    if (x == null || !mounted) return;
+    final tempDir = await getTemporaryDirectory();
+    final dest = '${tempDir.path}/pass_gal_${DateTime.now().millisecondsSinceEpoch}.jpg';
+    final saved = await importXFileSafely(x, dest, maxDimension: 1600);
+    if (saved != null && mounted) setState(() => _photoPath = saved);
   }
 
   Future<void> _scanPhotoMlKit() async {
-    for (final mode in [ScannerMode.full, ScannerMode.base]) {
-      final scanner = DocumentScanner(options: DocumentScannerOptions(documentFormat: DocumentFormat.jpeg, mode: mode, isGalleryImport: true, pageLimit: 1));
-      try {
-        final res = await scanner.scanDocument();
-        if (res.images.isNotEmpty && mounted) {
-          setState(() => _photoPath = normalizeLocalFilePath(res.images.first));
-        }
-        return;
-      } catch (e) {
-        debugPrint("Passport ML Kit ($mode) err: $e");
-      } finally {
-        await scanner.close();
+    final scanner = DocumentScanner(
+      options: DocumentScannerOptions(documentFormat: DocumentFormat.jpeg, mode: ScannerMode.base, isGalleryImport: true, pageLimit: 1),
+    );
+    try {
+      final res = await scanner.scanDocument();
+      if (res.images.isNotEmpty && mounted) {
+        setState(() => _photoPath = normalizeLocalFilePath(res.images.first));
       }
+    } catch (e) {
+      debugPrint("Passport ML Kit err: $e");
+    } finally {
+      await scanner.close();
     }
   }
 
@@ -5640,8 +6148,8 @@ class _InvoiceMakerProScreenState extends State<InvoiceMakerProScreen> {
     );
   }
 }
-// ==================== PART 4C-1 (3/3) END ====================
-// ==================== PART 4C-2 (3/3) START ====================
+// ==================== PART 4C-1 OF 4 END ====================
+// ==================== PART 4C-2 OF 4 START ====================
 // 9. RESUME / CV BUILDER
 class ResumeBuilderScreen extends StatefulWidget {
   const ResumeBuilderScreen({super.key});
@@ -5928,6 +6436,8 @@ class _PdfStudioScreenState extends State<PdfStudioScreen> {
         await file.writeAsBytes(pdfBytes);
         await Share.shareXFiles([XFile(file.path)], text: 'Merged PDF Document');
       }
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('❌ Merge failed: $e')));
     } finally {
       if (mounted) setState(() => _isMerging = false);
     }
@@ -6056,12 +6566,12 @@ class UniversalImageToolScreen extends StatefulWidget {
 
 class _UniversalImageToolScreenState extends State<UniversalImageToolScreen> {
   String? _imgPath;
-  String? _lastTempRotatedPath;
+  String? _lastTempPath;
   bool _isRotating = false;
 
   @override
   void dispose() {
-    _deleteTempQuietly(_lastTempRotatedPath);
+    _deleteTempQuietly(_lastTempPath);
     super.dispose();
   }
 
@@ -6075,29 +6585,32 @@ class _UniversalImageToolScreenState extends State<UniversalImageToolScreen> {
 
   Future<void> _pickImageGallery() async {
     final x = await ImagePicker().pickImage(source: ImageSource.gallery);
-    if (x != null && mounted) {
-      _deleteTempQuietly(_lastTempRotatedPath);
-      _lastTempRotatedPath = null;
-      setState(() => _imgPath = normalizeLocalFilePath(x.path));
+    if (x == null || !mounted) return;
+    final tempDir = await getTemporaryDirectory();
+    final dest = '${tempDir.path}/uni_gal_${DateTime.now().millisecondsSinceEpoch}.jpg';
+    final saved = await importXFileSafely(x, dest, maxDimension: 2500);
+    if (saved != null && mounted) {
+      _deleteTempQuietly(_lastTempPath);
+      _lastTempPath = saved;
+      setState(() => _imgPath = saved);
     }
   }
 
   Future<void> _pickImageMlKit() async {
-    for (final mode in [ScannerMode.full, ScannerMode.base]) {
-      final scanner = DocumentScanner(options: DocumentScannerOptions(documentFormat: DocumentFormat.jpeg, mode: mode, isGalleryImport: true, pageLimit: 1));
-      try {
-        final res = await scanner.scanDocument();
-        if (res.images.isNotEmpty && mounted) {
-          _deleteTempQuietly(_lastTempRotatedPath);
-          _lastTempRotatedPath = null;
-          setState(() => _imgPath = normalizeLocalFilePath(res.images.first));
-        }
-        return;
-      } catch (e) {
-        debugPrint("Universal ML Kit ($mode) err: $e");
-      } finally {
-        await scanner.close();
+    final scanner = DocumentScanner(
+      options: DocumentScannerOptions(documentFormat: DocumentFormat.jpeg, mode: ScannerMode.base, isGalleryImport: true, pageLimit: 1),
+    );
+    try {
+      final res = await scanner.scanDocument();
+      if (res.images.isNotEmpty && mounted) {
+        _deleteTempQuietly(_lastTempPath);
+        _lastTempPath = null;
+        setState(() => _imgPath = normalizeLocalFilePath(res.images.first));
       }
+    } catch (e) {
+      debugPrint("Universal ML Kit err: $e");
+    } finally {
+      await scanner.close();
     }
   }
 
@@ -6111,8 +6624,8 @@ class _UniversalImageToolScreenState extends State<UniversalImageToolScreen> {
       await _pickImageMlKit();
       return;
     }
-    _deleteTempQuietly(_lastTempRotatedPath);
-    _lastTempRotatedPath = null;
+    _deleteTempQuietly(_lastTempPath);
+    _lastTempPath = null;
     setState(() => _imgPath = normalizeLocalFilePath(captured.first));
   }
 
@@ -6124,8 +6637,8 @@ class _UniversalImageToolScreenState extends State<UniversalImageToolScreen> {
       final outPath = '${tempDir.path}/rot_${DateTime.now().millisecondsSinceEpoch}.jpg';
       final rotatedPath = await ProDocImageProcessor.rotateImage90Fast(_imgPath!, outPath);
       if (rotatedPath != _imgPath) {
-        final prevTemp = _lastTempRotatedPath;
-        _lastTempRotatedPath = rotatedPath;
+        final prevTemp = _lastTempPath;
+        _lastTempPath = rotatedPath;
         if (mounted) setState(() => _imgPath = rotatedPath);
         _deleteTempQuietly(prevTemp);
       }
@@ -6164,41 +6677,57 @@ class QrBarcodeStudioScreen extends StatefulWidget {
 
 class _QrBarcodeStudioScreenState extends State<QrBarcodeStudioScreen> {
   final _qrTextCtrl = TextEditingController(text: 'https://bharatdocscanner.app');
+  List<Rect> _qrRects = [];
   bool _qrTooLong = false;
 
   @override
   void initState() {
     super.initState();
-    _qrTextCtrl.addListener(() {
-      if (mounted) setState(() {});
-    });
+    _recomputePreviewQr();
+    _qrTextCtrl.addListener(_onQrTextChanged);
+  }
+
+  void _onQrTextChanged() {
+    if (!mounted) return;
+    setState(_recomputePreviewQr);
+  }
+
+  void _recomputePreviewQr() {
+    final text = _qrTextCtrl.text.trim();
+    if (text.isEmpty) {
+      _qrRects = [];
+      _qrTooLong = false;
+      return;
+    }
+    try {
+      _qrRects = _generateQrRects(text, 190.0);
+      _qrTooLong = false;
+    } catch (_) {
+      _qrRects = [];
+      _qrTooLong = true;
+    }
+  }
+
+  List<Rect> _generateQrRects(String text, double size) {
+    final List<Rect> rects = [];
+    for (final elem in pw.Barcode.qrCode().make(text, width: size, height: size, drawText: false)) {
+      if (elem is pw.BarcodeBar && elem.black) {
+        rects.add(Rect.fromLTWH(
+          elem.left.toDouble(),
+          elem.top.toDouble(),
+          elem.width.toDouble(),
+          elem.height.toDouble(),
+        ));
+      }
+    }
+    return rects;
   }
 
   @override
   void dispose() {
+    _qrTextCtrl.removeListener(_onQrTextChanged);
     _qrTextCtrl.dispose();
     super.dispose();
-  }
-
-  List<Rect> _buildQrRects(String text, double size) {
-    final List<Rect> rects = [];
-    _qrTooLong = false;
-    if (text.isEmpty) return rects;
-    try {
-      for (final elem in pw.Barcode.qrCode().make(text, width: size, height: size, drawText: false)) {
-        if (elem is pw.BarcodeBar && elem.black) {
-          rects.add(Rect.fromLTWH(
-            elem.left.toDouble(),
-            elem.top.toDouble(),
-            elem.width.toDouble(),
-            elem.height.toDouble(),
-          ));
-        }
-      }
-    } catch (_) {
-      _qrTooLong = true;
-    }
-    return rects;
   }
 
   Future<void> _shareQrCode() async {
@@ -6206,7 +6735,12 @@ class _QrBarcodeStudioScreenState extends State<QrBarcodeStudioScreen> {
     if (text.isEmpty) return;
     const double imgSize = 600.0;
     const double pad = 48.0;
-    final rects = _buildQrRects(text, imgSize - pad * 2);
+    List<Rect> rects = const [];
+    try {
+      rects = _generateQrRects(text, imgSize - pad * 2);
+    } catch (_) {
+      rects = const [];
+    }
     if (rects.isEmpty) {
       await Share.share(text);
       return;
@@ -6235,7 +6769,6 @@ class _QrBarcodeStudioScreenState extends State<QrBarcodeStudioScreen> {
   @override
   Widget build(BuildContext context) {
     final qrText = _qrTextCtrl.text.trim();
-    final qrRects = _buildQrRects(qrText, 190.0);
 
     return Scaffold(
       appBar: AppBar(title: const Text('QR & Barcode Studio')),
@@ -6248,9 +6781,9 @@ class _QrBarcodeStudioScreenState extends State<QrBarcodeStudioScreen> {
             Container(
               padding: const EdgeInsets.all(20),
               decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16), border: Border.all(color: Colors.grey.shade300)),
-              child: qrRects.isEmpty
+              child: _qrRects.isEmpty
                   ? SizedBox(width: 190, height: 190, child: Center(child: Text(_qrTooLong ? 'Text too long for QR code' : 'Enter text to generate QR', textAlign: TextAlign.center, style: const TextStyle(color: Colors.grey))))
-                  : SizedBox(width: 190, height: 190, child: CustomPaint(painter: _QrRectPainter(qrRects))),
+                  : SizedBox(width: 190, height: 190, child: CustomPaint(painter: _QrRectPainter(_qrRects))),
             ),
             const SizedBox(height: 20),
             ElevatedButton.icon(style: ElevatedButton.styleFrom(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white, minimumSize: const Size.fromHeight(48)), icon: const Icon(Icons.share), label: const Text('Share QR Image'), onPressed: (qrText.isEmpty || _qrTooLong) ? null : _shareQrCode),
@@ -6276,4 +6809,4 @@ class _QrRectPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _QrRectPainter oldDelegate) => true;
 }
-// ==================== PART 4C-2 (3/3) END ====================
+// ==================== PART 4C-2 OF 4 END ====================
