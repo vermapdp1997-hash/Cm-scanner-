@@ -1,4 +1,4 @@
-name: Build APK
+name: Build APK and AAB
 
 on:
   workflow_dispatch:
@@ -20,37 +20,372 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.24.5'
+          flutter-version: '3.38.10'
           channel: 'stable'
+          cache: true
 
-      - name: Configure Android
+      - name: Configure Android and Inject Native MediaStore
         run: |
           # 1. Android प्रोजेक्ट बनाना
           flutter create --project-name cam_scanner --org com.mycompany.scanner .
-          
-          # 2. सुपर-फास्ट मिरर से सीधे डाउनलोड करना (504 एरर से बचने के लिए)
-          curl -fL --retry 3 -o android/gradle/wrapper/gradle-8.5-bin.zip https://mirrors.cloud.tencent.com/gradle/gradle-8.5-bin.zip || \
-          curl -fL --retry 3 -o android/gradle/wrapper/gradle-8.5-bin.zip https://downloads.gradle-dn.com/distributions/gradle-8.5-bin.zip
-          
-          # 3. Gradle Wrapper को इंटरनेट के बजाय इसी लोकल फाइल से चलाना
-          sed -i 's|distributionUrl=.*|distributionUrl=gradle-8.5-bin.zip|' android/gradle/wrapper/gradle-wrapper.properties || true
 
-          # 4. MinSdk 21 सेट करना (AI व कैमरा के लिए)
-          sed -i 's/.*minSdk.*/        minSdk = 21/' android/app/build.gradle || true
-          sed -i 's/.*minSdk =.*/        minSdk = 21/' android/app/build.gradle.kts || true
-          
-          # 5. AdMob ID जोड़ना
-          sed -i '/<\/application>/i <meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="ca-app-pub-3940256099942544~3347511713"/>' android/app/src/main/AndroidManifest.xml || true
-          
-          # 6. R8 Minify एरर बंद करना
-          sed -i '/signingConfig/a \            minifyEnabled false\n            shrinkResources false' android/app/build.gradle || true
-          sed -i '/signingConfig/a \            isMinifyEnabled = false\n            isShrinkResources = false' android/app/build.gradle.kts || true
+          # 2. MainActivity.kt को MediaStore (Gallery + Downloads + Fast JPEG) से अपडेट करना
+          MAIN_KT=$(find android/app/src/main/kotlin -name "MainActivity.kt" | head -n 1)
+          PKG_LINE=$(grep -m 1 "^package " "$MAIN_KT")
+          echo "Updating $MAIN_KT ($PKG_LINE)"
+          {
+            echo "$PKG_LINE"
+            cat << 'EOF'
 
-      - name: Build APK
+          import android.content.ContentValues
+          import android.graphics.Bitmap
+          import android.graphics.BitmapFactory
+          import android.graphics.Matrix
+          import android.media.ExifInterface
+          import android.media.MediaScannerConnection
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Environment
+          import android.os.Handler
+          import android.os.Looper
+          import android.provider.MediaStore
+          import io.flutter.embedding.android.FlutterActivity
+          import io.flutter.embedding.engine.FlutterEngine
+          import io.flutter.plugin.common.MethodChannel
+          import java.io.File
+          import java.io.FileOutputStream
+          import java.util.concurrent.Executors
+
+          class MainActivity : FlutterActivity() {
+              private val channelName = "bharat_scanner/media_store"
+              private val ioExecutor = Executors.newCachedThreadPool()
+              private val mainHandler = Handler(Looper.getMainLooper())
+
+              override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+                  super.configureFlutterEngine(flutterEngine)
+                  MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
+                      .setMethodCallHandler { call, result ->
+                          when (call.method) {
+                              "saveImage" -> {
+                                  val bytes = call.argument<ByteArray>("bytes")
+                                  val fileName = call.argument<String>("fileName") ?: "scan_${System.currentTimeMillis()}.jpg"
+                                  val album = call.argument<String>("album") ?: "BharatScanner"
+                                  if (bytes == null || bytes.isEmpty()) {
+                                      result.error("INVALID_ARGS", "Image bytes missing", null)
+                                      return@setMethodCallHandler
+                                  }
+                                  ioExecutor.execute {
+                                      val saved = saveImageToMediaStore(bytes, fileName, album)
+                                      mainHandler.post { result.success(saved) }
+                                  }
+                              }
+
+                              "savePdf" -> {
+                                  val bytes = call.argument<ByteArray>("bytes")
+                                  val fileName = call.argument<String>("fileName") ?: "doc_${System.currentTimeMillis()}.pdf"
+                                  val folder = call.argument<String>("folder") ?: "BharatScanner"
+                                  if (bytes == null || bytes.isEmpty()) {
+                                      result.error("INVALID_ARGS", "PDF bytes missing", null)
+                                      return@setMethodCallHandler
+                                  }
+                                  ioExecutor.execute {
+                                      val saved = savePdfToMediaStore(bytes, fileName, folder)
+                                      mainHandler.post { result.success(saved) }
+                                  }
+                              }
+
+                              "bakeAndResizeJpg" -> {
+                                  val srcPath = call.argument<String>("srcPath")
+                                  val dstPath = call.argument<String>("dstPath")
+                                  val maxDim = call.argument<Int>("maxDim") ?: 2600
+                                  val quality = call.argument<Int>("quality") ?: 92
+                                  if (srcPath.isNullOrBlank() || dstPath.isNullOrBlank()) {
+                                      result.success(false)
+                                      return@setMethodCallHandler
+                                  }
+                                  ioExecutor.execute {
+                                      val ok = bakeAndResizeJpgNative(srcPath, dstPath, maxDim, quality, extraRotate90 = false)
+                                      mainHandler.post { result.success(ok) }
+                                  }
+                              }
+
+                              "rotateJpg90" -> {
+                                  val srcPath = call.argument<String>("srcPath")
+                                  val dstPath = call.argument<String>("dstPath")
+                                  val quality = call.argument<Int>("quality") ?: 93
+                                  if (srcPath.isNullOrBlank() || dstPath.isNullOrBlank()) {
+                                      result.success(false)
+                                      return@setMethodCallHandler
+                                  }
+                                  ioExecutor.execute {
+                                      val ok = bakeAndResizeJpgNative(srcPath, dstPath, maxDim = 4500, quality = quality, extraRotate90 = true)
+                                      mainHandler.post { result.success(ok) }
+                                  }
+                              }
+
+                              else -> result.notImplemented()
+                          }
+                      }
+              }
+
+              private fun saveImageToMediaStore(bytes: ByteArray, fileName: String, album: String): String? {
+                  return try {
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                          val values = ContentValues().apply {
+                              put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
+                              put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                              put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/$album")
+                              put(MediaStore.Images.Media.IS_PENDING, 1)
+                          }
+                          val resolver = applicationContext.contentResolver
+                          val uri: Uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: return null
+                          try {
+                              resolver.openOutputStream(uri)?.use { it.write(bytes) }
+                                  ?: throw IllegalStateException("Unable to open image stream")
+                              values.clear()
+                              values.put(MediaStore.Images.Media.IS_PENDING, 0)
+                              resolver.update(uri, values, null, null)
+                              uri.toString()
+                          } catch (e: Exception) {
+                              resolver.delete(uri, null, null)
+                              null
+                          }
+                      } else {
+                          @Suppress("DEPRECATION")
+                          val picDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
+                          val targetDir = File(picDir, album).apply { if (!exists()) mkdirs() }
+                          val outFile = File(targetDir, fileName)
+                          FileOutputStream(outFile).use { it.write(bytes) }
+                          MediaScannerConnection.scanFile(applicationContext, arrayOf(outFile.absolutePath), arrayOf("image/jpeg"), null)
+                          outFile.absolutePath
+                      }
+                  } catch (_: Exception) {
+                      null
+                  }
+              }
+
+              private fun savePdfToMediaStore(bytes: ByteArray, fileName: String, folder: String): String? {
+                  return try {
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                          val values = ContentValues().apply {
+                              put(MediaStore.Downloads.DISPLAY_NAME, fileName)
+                              put(MediaStore.Downloads.MIME_TYPE, "application/pdf")
+                              put(MediaStore.Downloads.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/$folder")
+                              put(MediaStore.Downloads.IS_PENDING, 1)
+                          }
+                          val resolver = applicationContext.contentResolver
+                          val uri: Uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return null
+                          try {
+                              resolver.openOutputStream(uri)?.use { it.write(bytes) }
+                                  ?: throw IllegalStateException("Unable to open PDF stream")
+                              values.clear()
+                              values.put(MediaStore.Downloads.IS_PENDING, 0)
+                              resolver.update(uri, values, null, null)
+                              uri.toString()
+                          } catch (e: Exception) {
+                              resolver.delete(uri, null, null)
+                              null
+                          }
+                      } else {
+                          @Suppress("DEPRECATION")
+                          val dlDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                          val targetDir = File(dlDir, folder).apply { if (!exists()) mkdirs() }
+                          val outFile = File(targetDir, fileName)
+                          FileOutputStream(outFile).use { it.write(bytes) }
+                          MediaScannerConnection.scanFile(applicationContext, arrayOf(outFile.absolutePath), arrayOf("application/pdf"), null)
+                          outFile.absolutePath
+                      }
+                  } catch (_: Exception) {
+                      null
+                  }
+              }
+
+              private fun bakeAndResizeJpgNative(
+                  srcPath: String,
+                  dstPath: String,
+                  maxDim: Int,
+                  quality: Int,
+                  extraRotate90: Boolean
+              ): Boolean {
+                  var decoded: Bitmap? = null
+                  var transformed: Bitmap? = null
+                  return try {
+                      val srcFile = File(srcPath)
+                      if (!srcFile.exists()) return false
+
+                      val exifOrient = try {
+                          ExifInterface(srcPath).getAttributeInt(
+                              ExifInterface.TAG_ORIENTATION,
+                              ExifInterface.ORIENTATION_NORMAL
+                          )
+                      } catch (_: Exception) {
+                          ExifInterface.ORIENTATION_NORMAL
+                      }
+
+                      val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                      BitmapFactory.decodeFile(srcPath, boundsOpts)
+                      val rawW = boundsOpts.outWidth
+                      val rawH = boundsOpts.outHeight
+                      if (rawW <= 0 || rawH <= 0) return false
+
+                      if (!extraRotate90 &&
+                          exifOrient == ExifInterface.ORIENTATION_NORMAL &&
+                          rawW <= maxDim && rawH <= maxDim &&
+                          srcPath.lowercase().endsWith(".jpg")
+                      ) {
+                          if (srcPath != dstPath) {
+                              File(dstPath).parentFile?.mkdirs()
+                              srcFile.copyTo(File(dstPath), overwrite = true)
+                          }
+                          return true
+                      }
+
+                      var sampleSize = 1
+                      while ((rawW / (sampleSize * 2)) >= maxDim && (rawH / (sampleSize * 2)) >= maxDim) {
+                          sampleSize *= 2
+                      }
+
+                      val decodeOpts = BitmapFactory.Options().apply {
+                          inSampleSize = sampleSize
+                          inPreferredConfig = Bitmap.Config.ARGB_8888
+                      }
+                      decoded = BitmapFactory.decodeFile(srcPath, decodeOpts) ?: return false
+
+                      val matrix = Matrix()
+                      when (exifOrient) {
+                          ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.setScale(-1f, 1f)
+                          ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
+                          ExifInterface.ORIENTATION_FLIP_VERTICAL -> matrix.setScale(1f, -1f)
+                          ExifInterface.ORIENTATION_TRANSPOSE -> {
+                              matrix.setRotate(90f)
+                              matrix.postScale(-1f, 1f)
+                          }
+                          ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
+                          ExifInterface.ORIENTATION_TRANSVERSE -> {
+                              matrix.setRotate(-90f)
+                              matrix.postScale(-1f, 1f)
+                          }
+                          ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+                      }
+                      if (extraRotate90) {
+                          matrix.postRotate(90f)
+                      }
+
+                      val swapAfterExif = exifOrient in listOf(
+                          ExifInterface.ORIENTATION_TRANSPOSE,
+                          ExifInterface.ORIENTATION_ROTATE_90,
+                          ExifInterface.ORIENTATION_TRANSVERSE,
+                          ExifInterface.ORIENTATION_ROTATE_270
+                      )
+                      val swapFinal = swapAfterExif xor extraRotate90
+                      val uprightW = if (swapFinal) decoded.height else decoded.width
+                      val uprightH = if (swapFinal) decoded.width else decoded.height
+                      val longest = maxOf(uprightW, uprightH)
+                      if (longest > maxDim && maxDim > 0) {
+                          val scale = maxDim.toFloat() / longest.toFloat()
+                          matrix.postScale(scale, scale)
+                      }
+
+                      transformed = if (matrix.isIdentity) {
+                          decoded
+                      } else {
+                          Bitmap.createBitmap(decoded, 0, 0, decoded.width, decoded.height, matrix, true)
+                      }
+
+                      val outFile = File(dstPath)
+                      outFile.parentFile?.mkdirs()
+                      FileOutputStream(outFile).use { out ->
+                          transformed.compress(Bitmap.CompressFormat.JPEG, quality.coerceIn(50, 98), out)
+                      }
+                      true
+                  } catch (_: Exception) {
+                      false
+                  } finally {
+                      if (transformed != null && transformed !== decoded && !transformed.isRecycled) {
+                          transformed.recycle()
+                      }
+                      if (decoded != null && !decoded.isRecycled) {
+                          decoded.recycle()
+                      }
+                  }
+              }
+          }
+          EOF
+          } > "$MAIN_KT"
+
+          # 3. AndroidManifest.xml (Play Store Compliant Permissions + AdMob App ID)
+          cat << 'EOF' > android/app/src/main/AndroidManifest.xml
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.CAMERA" />
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
+              <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
+
+              <uses-feature android:name="android.hardware.camera" android:required="false" />
+              <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+
+              <application
+                  android:label="Bharat Document Scanner AI"
+                  android:name="${applicationName}"
+                  android:icon="@mipmap/ic_launcher">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:launchMode="singleTop"
+                      android:taskAffinity=""
+                      android:theme="@style/LaunchTheme"
+                      android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+                      android:hardwareAccelerated="true"
+                      android:windowSoftInputMode="adjustResize">
+                      <meta-data
+                          android:name="io.flutter.embedding.android.NormalTheme"
+                          android:resource="@style/NormalTheme" />
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+                  <meta-data
+                      android:name="com.google.android.gms.ads.APPLICATION_ID"
+                      android:value="ca-app-pub-3940256099942544~3347511713" />
+                  <meta-data
+                      android:name="flutterEmbedding"
+                      android:value="2" />
+              </application>
+          </manifest>
+          EOF
+
+          # 4. Play Store API 36 (compileSdk 36, targetSdk 36, minSdk 24) व सुरक्षित R8 सेटिंग
+          if [ -f android/app/build.gradle.kts ]; then
+            sed -i 's/compileSdk = .*/compileSdk = 36/' android/app/build.gradle.kts
+            sed -i 's/minSdk = .*/minSdk = 24/' android/app/build.gradle.kts
+            sed -i 's/targetSdk = .*/targetSdk = 36/' android/app/build.gradle.kts
+            sed -i '/signingConfig/a \            isMinifyEnabled = false\n            isShrinkResources = false' android/app/build.gradle.kts
+          elif [ -f android/app/build.gradle ]; then
+            sed -i 's/compileSdk.*/compileSdk 36/' android/app/build.gradle
+            sed -i 's/minSdk.*/minSdkVersion 24/' android/app/build.gradle
+            sed -i 's/targetSdk.*/targetSdkVersion 36/' android/app/build.gradle
+            sed -i '/signingConfig/a \            minifyEnabled false\n            shrinkResources false' android/app/build.gradle
+          fi
+
+      - name: Get Flutter Dependencies
+        run: flutter pub get
+
+      - name: Build Release APK
         run: flutter build apk --release --no-tree-shake-icons
+
+      - name: Build Play Store AAB
+        run: flutter build appbundle --release --no-tree-shake-icons
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: BharatScanner-AI-App
+          name: BharatScanner-AI-APK
           path: build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Upload Play Store AAB
+        uses: actions/upload-artifact@v4
+        with:
+          name: BharatScanner-AI-PlayStore-AAB
+          path: build/app/outputs/bundle/release/app-release.aab
