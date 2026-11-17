@@ -1,4 +1,4 @@
-// ==================== PART 1A OF 4 START ====================
+// ==================== PART 1 OF 6 START (lib/main.dart) ====================
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -21,6 +21,9 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:intl/intl.dart';
+
+// SHARED NATIVE ANDROID METHOD CHANNEL (MediaStore + Fast Hardware JPEG/Rotate)
+const MethodChannel kBharatMediaChannel = MethodChannel('bharat_scanner/media_store');
 
 // GLOBAL CONTROLLERS & LOCALIZATION
 final ValueNotifier<ThemeMode> appThemeMode = ValueNotifier(ThemeMode.light);
@@ -45,8 +48,8 @@ String normalizeLocalFilePath(String raw) {
   return s;
 }
 
-// Safe multi-image import helper (supports direct file paths AND Android Photo Picker content URIs/bytes)
-Future<String?> importXFileSafely(XFile xfile, String destPath, {int maxDimension = 3000}) async {
+// Fast multi-image import helper (supports direct file paths AND Android Photo Picker content URIs/bytes)
+Future<String?> importXFileSafely(XFile xfile, String destPath, {int maxDimension = 2600}) async {
   try {
     final cleanPath = normalizeLocalFilePath(xfile.path);
     final f = File(cleanPath);
@@ -112,6 +115,8 @@ class AppLang {
       'dark_mode': ['Dark Mode', 'डार्क मोड'],
       'change_theme': ['Change Theme Color', 'थीम का रंग बदलें'],
       'language': ['Language / भाषा (हिंदी)', 'भाषा / Language (हिंदी)'],
+      'ad_privacy': ['Ad Privacy Settings', 'विज्ञापन गोपनीयता सेटिंग्स'],
+      'privacy_policy': ['Privacy & Data Policy', 'गोपनीयता नीति (Privacy Policy)'],
     };
     return dict[key] != null ? (hi ? dict[key]![1] : dict[key]![0]) : key;
   }
@@ -151,7 +156,12 @@ class LabeledIconButton extends StatelessWidget {
           children: [
             Icon(icon, size: iconSize, color: effectiveColor),
             const SizedBox(height: 2),
-            Text(label, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: fontSize, fontWeight: FontWeight.w600, color: effectiveColor, height: 1.05)),
+            Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: fontSize, fontWeight: FontWeight.w600, color: effectiveColor, height: 1.05),
+            ),
           ],
         ),
       ),
@@ -230,7 +240,7 @@ Future<void> cleanupOrphanScanFiles(List<Map<String, dynamic>> activeDocs) async
 }
 
 // ============================================================================
-// PRO-LEVEL ADAPTIVE DOCUMENT IMAGE PROCESSOR (PRINT-GRADE 3000PX + PHOTO-SAFE)
+// FAST ADAPTIVE DOCUMENT IMAGE PROCESSOR (NATIVE ACCELERATED + PRO CLARITY)
 // ============================================================================
 class ProDocImageProcessor {
   static List<int>? _readDimensionsFast(Uint8List rawBytes) {
@@ -276,7 +286,7 @@ class ProDocImageProcessor {
                 : ((bytes[p] << 24) | (bytes[p + 1] << 16) | (bytes[p + 2] << 8) | bytes[p + 3]);
             final int ifdOffset = read32(tiff + 4);
             final int ifd = tiff + ifdOffset;
-            if (ifd + 2 > bytes.length) return 1;
+            if (ifd < tiff || ifd + 2 > bytes.length) return 1;
             final int entries = read16(ifd);
             for (int i = 0; i < entries; i++) {
               final int e = ifd + 2 + i * 12;
@@ -297,7 +307,7 @@ class ProDocImageProcessor {
     }
   }
 
-  /// EXIF-aware dimension reader with zero pixel RAM allocation (fixes Crop/Eraser alignment on rotated photos).
+  /// EXIF-aware dimension reader with zero pixel RAM allocation.
   static Future<List<int>?> readImageDimensions(String path) async {
     ui.ImmutableBuffer? buffer;
     ui.ImageDescriptor? descriptor;
@@ -330,12 +340,29 @@ class ProDocImageProcessor {
     }
   }
 
-  static Future<String> bakeOrientationToFile(String sourcePath, String outputPath, {int maxDimension = 3000}) async {
-    ui.Codec? codec;
-    ui.Image? targetImg;
+  /// Fast hardware-accelerated EXIF orientation bake + downscale via Android Bitmap, with pure-Dart fallback.
+  static Future<String> bakeOrientationToFile(String sourcePath, String outputPath, {int maxDimension = 2600}) async {
     try {
       final srcFile = File(sourcePath);
       if (!await srcFile.exists()) return sourcePath;
+
+      // Fast path: Native Android hardware BitmapFactory + ExifInterface + libjpeg (~80ms)
+      try {
+        final bool? ok = await kBharatMediaChannel.invokeMethod<bool>('bakeAndResizeJpg', {
+          'srcPath': sourcePath,
+          'dstPath': outputPath,
+          'maxDim': maxDimension,
+          'quality': 92,
+        });
+        if (ok == true && await File(outputPath).exists()) {
+          return outputPath;
+        }
+      } on MissingPluginException {
+        // Fallback to Dart codec below
+      } catch (e) {
+        debugPrint("Native bake fallback: $e");
+      }
+
       final rawBytes = await srcFile.readAsBytes();
       final dims = _readDimensionsFast(rawBytes);
       final int exifOrient = _readJpegExifOrientation(rawBytes);
@@ -358,17 +385,24 @@ class ProDocImageProcessor {
         }
       }
 
-      codec = await ui.instantiateImageCodec(rawBytes, targetWidth: targetWidth, targetHeight: targetHeight);
-      final frame = await codec.getNextFrame();
-      targetImg = frame.image;
-      final byteData = await targetImg.toByteData(format: ui.ImageByteFormat.rawRgba);
-      if (byteData != null) {
-        final int w = targetImg.width;
-        final int h = targetImg.height;
-        final ttd = TransferableTypedData.fromList([byteData.buffer.asUint8List()]);
-        final jpgBytes = await Isolate.run(() => _encodeRgbaToJpgFast(ttd, w, h, 94));
-        await File(outputPath).writeAsBytes(jpgBytes);
-        return outputPath;
+      ui.Codec? codec;
+      ui.Image? targetImg;
+      try {
+        codec = await ui.instantiateImageCodec(rawBytes, targetWidth: targetWidth, targetHeight: targetHeight);
+        final frame = await codec.getNextFrame();
+        targetImg = frame.image;
+        final byteData = await targetImg.toByteData(format: ui.ImageByteFormat.rawRgba);
+        if (byteData != null) {
+          final int w = targetImg.width;
+          final int h = targetImg.height;
+          final ttd = TransferableTypedData.fromList([byteData.buffer.asUint8List()]);
+          final jpgBytes = await Isolate.run(() => _encodeRgbaToJpgFast(ttd, w, h, 92));
+          await File(outputPath).writeAsBytes(jpgBytes);
+          return outputPath;
+        }
+      } finally {
+        targetImg?.dispose();
+        codec?.dispose();
       }
       await srcFile.copy(outputPath);
       return outputPath;
@@ -380,9 +414,6 @@ class ProDocImageProcessor {
       } catch (_) {
         return sourcePath;
       }
-    } finally {
-      targetImg?.dispose();
-      codec?.dispose();
     }
   }
 
@@ -498,10 +529,10 @@ class ProDocImageProcessor {
         (sharpness - 0.72).abs() > 0.02 ||
         (eraserStrokes != null && eraserStrokes.isNotEmpty);
     if (filterId == 'original' && !hasAdjustments) {
-      return bakeOrientationToFile(sourcePath, outputPath, maxDimension: 3000);
+      return bakeOrientationToFile(sourcePath, outputPath, maxDimension: 2600);
     }
     final wh = [0, 0];
-    final rgba = await decodeImageToRgba(sourcePath, maxDimension: 2800, outWidthHeight: wh);
+    final rgba = await decodeImageToRgba(sourcePath, maxDimension: 2400, outWidthHeight: wh);
     if (rgba == null) return sourcePath;
 
     final ttd = TransferableTypedData.fromList([rgba]);
@@ -525,7 +556,7 @@ class ProDocImageProcessor {
         cachedBg: cachedBg,
       );
       final im = img.Image.fromBytes(width: w, height: h, bytes: enhanced.buffer, numChannels: 4, order: img.ChannelOrder.rgba);
-      return Uint8List.fromList(img.encodeJpg(im, quality: 94));
+      return Uint8List.fromList(img.encodeJpg(im, quality: 92));
     });
 
     await File(outputPath).writeAsBytes(jpgBytes);
@@ -534,6 +565,21 @@ class ProDocImageProcessor {
 
   static Future<String> rotateImage90Fast(String sourcePath, String outputPath) async {
     try {
+      try {
+        final bool? ok = await kBharatMediaChannel.invokeMethod<bool>('rotateJpg90', {
+          'srcPath': sourcePath,
+          'dstPath': outputPath,
+          'quality': 93,
+        });
+        if (ok == true && await File(outputPath).exists()) {
+          return outputPath;
+        }
+      } on MissingPluginException {
+        // Fallback below
+      } catch (e) {
+        debugPrint("Native rotate fallback: $e");
+      }
+
       final rawBytes = await File(sourcePath).readAsBytes();
       final ttd = TransferableTypedData.fromList([rawBytes]);
       final rotatedJpg = await Isolate.run(() => _rotate90Isolate(ttd.materialize().asUint8List()));
@@ -550,7 +596,7 @@ class ProDocImageProcessor {
   static Future<String> perspectiveCropImage(String sourcePath, List<Offset> normCorners, String outputPath) async {
     try {
       final wh = [0, 0];
-      final rgba = await decodeImageToRgba(sourcePath, maxDimension: 3000, outWidthHeight: wh);
+      final rgba = await decodeImageToRgba(sourcePath, maxDimension: 2600, outWidthHeight: wh);
       if (rgba == null) return sourcePath;
       final pts = normCorners.map((o) => [o.dx, o.dy]).toList();
       final ttd = TransferableTypedData.fromList([rgba]);
@@ -566,8 +612,7 @@ class ProDocImageProcessor {
     return sourcePath;
   }
 }
-// ==================== PART 1A OF 4 END ====================
-// ==================== PART 1B OF 4 START ====================
+
 Uint8List _encodeRgbaToJpgFast(TransferableTypedData ttd, int w, int h, int quality) {
   final rgba = ttd.materialize().asUint8List();
   final im = img.Image.fromBytes(width: w, height: h, bytes: rgba.buffer, numChannels: 4, order: img.ChannelOrder.rgba);
@@ -579,7 +624,7 @@ Uint8List? _rotate90Isolate(Uint8List rawBytes) {
   if (decoded == null) return null;
   final oriented = img.bakeOrientation(decoded);
   final rotated = img.copyRotate(oriented, angle: 90);
-  return Uint8List.fromList(img.encodeJpg(rotated, quality: 94));
+  return Uint8List.fromList(img.encodeJpg(rotated, quality: 93));
 }
 
 Uint8List? _perspectiveCropIsolate(Uint8List src, int w, int h, List<List<double>> pts) {
@@ -597,7 +642,7 @@ Uint8List? _perspectiveCropIsolate(Uint8List src, int w, int h, List<List<double
 
   final int outW = max(20, max(wTop, wBot).round());
   final int outH = max(20, max(hLeft, hRight).round());
-  if (outW > 5000 || outH > 5000) return null;
+  if (outW > 4500 || outH > 4500) return null;
 
   final List<List<double>> a = List.generate(8, (_) => List.filled(9, 0.0));
   final List<double> sxList = [x0, x1, x2, x3];
@@ -658,7 +703,7 @@ Uint8List? _perspectiveCropIsolate(Uint8List src, int w, int h, List<List<double
     }
   }
   final im = img.Image.fromBytes(width: outW, height: outH, bytes: out.buffer, numChannels: 4, order: img.ChannelOrder.rgba);
-  return Uint8List.fromList(img.encodeJpg(im, quality: 94));
+  return Uint8List.fromList(img.encodeJpg(im, quality: 92));
 }
 
 PrecomputedBgMap _computeFineBgMap(Uint8List src, int w, int h) {
@@ -672,7 +717,7 @@ PrecomputedBgMap _computeFineBgMap(Uint8List src, int w, int h) {
 
   final Int32List gHistR = Int32List(256), gHistG = Int32List(256), gHistB = Int32List(256), lumHist = Int32List(256);
   int gSamples = 0;
-  final int gStep = max(1, total ~/ 16000);
+  final int gStep = max(1, total ~/ 14000);
   for (int i = 0; i < total; i += gStep) {
     final int p = i * 4;
     final int r = src[p], g = src[p + 1], b = src[p + 2];
@@ -715,13 +760,13 @@ PrecomputedBgMap _computeFineBgMap(Uint8List src, int w, int h) {
     highClip = 250;
   }
 
-  final double minFloorR = max(44.0, percentileHigh(gHistR, 0.15) * 0.36);
-  final double minFloorG = max(44.0, percentileHigh(gHistG, 0.15) * 0.36);
-  final double minFloorB = max(44.0, percentileHigh(gHistB, 0.15) * 0.36);
+  final double minFloorR = max(40.0, percentileHigh(gHistR, 0.15) * 0.34);
+  final double minFloorG = max(40.0, percentileHigh(gHistG, 0.15) * 0.34);
+  final double minFloorB = max(40.0, percentileHigh(gHistB, 0.15) * 0.34);
 
   final Int32List blkHist = Int32List(256);
   final Int32List blkSumR = Int32List(256), blkSumG = Int32List(256), blkSumB = Int32List(256);
-  final int step = max(1, min(w, h) ~/ 360);
+  final int step = max(1, min(w, h) ~/ 340);
 
   for (int gy = 0; gy < gridRows; gy++) {
     final int y0 = (gy * h) ~/ gridRows, y1 = max(y0 + 1, ((gy + 1) * h) ~/ gridRows);
@@ -752,7 +797,7 @@ PrecomputedBgMap _computeFineBgMap(Uint8List src, int w, int h) {
         bgBGrid[gIdx] = 255.0;
         continue;
       }
-      final int target = max(1, (samples * 0.18).round());
+      final int target = max(1, (samples * 0.16).round());
       int bAcc = 0, sR = 0, sG = 0, sB = 0;
       for (int bin = 255; bin >= 0; bin--) {
         final int c = blkHist[bin];
@@ -764,9 +809,9 @@ PrecomputedBgMap _computeFineBgMap(Uint8List src, int w, int h) {
           if (bAcc >= target) break;
         }
       }
-      bgRGrid[gIdx] = max(sR / bAcc, minFloorR).clamp(42.0, 255.0);
-      bgGGrid[gIdx] = max(sG / bAcc, minFloorG).clamp(42.0, 255.0);
-      bgBGrid[gIdx] = max(sB / bAcc, minFloorB).clamp(42.0, 255.0);
+      bgRGrid[gIdx] = max(sR / bAcc, minFloorR).clamp(40.0, 255.0);
+      bgGGrid[gIdx] = max(sG / bAcc, minFloorG).clamp(40.0, 255.0);
+      bgBGrid[gIdx] = max(sB / bAcc, minFloorB).clamp(40.0, 255.0);
     }
   }
 
@@ -786,7 +831,7 @@ PrecomputedBgMap _computeFineBgMap(Uint8List src, int w, int h) {
             if (bgBGrid[nIdx] > mB) mB = bgBGrid[nIdx];
           }
         }
-        final double wCur = dPass == 0 ? 0.20 : 0.40;
+        final double wCur = dPass == 0 ? 0.22 : 0.42;
         tmpR[idx] = bgRGrid[idx] * wCur + mR * (1.0 - wCur);
         tmpG[idx] = bgGGrid[idx] * wCur + mG * (1.0 - wCur);
         tmpB[idx] = bgBGrid[idx] * wCur + mB * (1.0 - wCur);
@@ -831,7 +876,7 @@ PrecomputedBgMap _computeFineBgMap(Uint8List src, int w, int h) {
   final double p15 = cellLums[(gridCount * 0.15).floor()];
   final double p50 = cellLums[gridCount ~/ 2];
   final double p85 = cellLums[(gridCount * 0.85).floor()];
-  final bool isAlreadyClean = p50 >= 212.0 && (p85 - p15) <= 22.0;
+  final bool isAlreadyClean = p50 >= 214.0 && (p85 - p15) <= 20.0;
 
   return PrecomputedBgMap(
     bgR: bgRGrid,
@@ -852,12 +897,12 @@ Float32List _buildSmoothToneLut(double blackAnchor, double paperSnap, double ink
     final double dv = v.toDouble();
     if (dv <= blackAnchor && blackAnchor > 0.5) {
       final double r = (dv / blackAnchor).clamp(0.0, 1.0);
-      lut[v] = (pow(r, 1.3) * deepInkFloor).clamp(0.0, deepInkFloor);
+      lut[v] = (pow(r, 1.32) * deepInkFloor).clamp(0.0, deepInkFloor);
     } else {
       final double normalized = ((dv - blackAnchor) / max(1.0, paperSnap - blackAnchor)).clamp(0.0, 1.0);
       final double inkVal = deepInkFloor + pow(normalized, inkGamma) * (paperSnap - deepInkFloor);
-      final double kneeStart = paperSnap - 28.0;
-      final double kneeEnd = min(253.0, paperSnap + 12.0);
+      final double kneeStart = paperSnap - 30.0;
+      final double kneeEnd = min(252.0, paperSnap + 10.0);
       final double t = ((dv - kneeStart) / max(1.0, kneeEnd - kneeStart)).clamp(0.0, 1.0);
       final double smoothWhite = t * t * (3.0 - 2.0 * t);
       lut[v] = (inkVal + (255.0 - inkVal) * smoothWhite).clamp(0.0, 255.0);
@@ -939,9 +984,9 @@ Uint8List _processRgbaCore({
         final double estB = (bgB[i00] + (bgB[i10] - bgB[i00]) * fx) * (1.0 - fy) + (bgB[i01] + (bgB[i11] - bgB[i01]) * fx) * fy;
 
         final int p = (rb + x) * 4;
-        final double gR = min(255.0 / max(estR, 42.0), 3.1);
-        final double gG = min(255.0 / max(estG, 42.0), 3.1);
-        final double gB = min(255.0 / max(estB, 42.0), 3.1);
+        final double gR = min(255.0 / max(estR, 40.0), 3.25);
+        final double gG = min(255.0 / max(estG, 40.0), 3.25);
+        final double gB = min(255.0 / max(estB, 40.0), 3.25);
         final int nL = (0.299 * src[p] * gR + 0.587 * src[p + 1] * gG + 0.114 * src[p + 2] * gB).round().clamp(0, 255);
         normLum[rb + x] = nL;
         rowSum += nL;
@@ -952,8 +997,8 @@ Uint8List _processRgbaCore({
     }
 
     final int rad = max(14, min(w, h) ~/ 28);
-    final double kSauvola = 0.14 + 0.18 * (1.0 - clampedIntensity);
-    const double band = 12.0;
+    final double kSauvola = 0.13 + 0.18 * (1.0 - clampedIntensity);
+    const double band = 10.0;
 
     for (int y = 0; y < h; y++) {
       final int y1 = max(0, y - rad), y2 = min(h - 1, y + rad), rowOff = y * w;
@@ -969,14 +1014,14 @@ Uint8List _processRgbaCore({
         final int cur = normLum[rowOff + x];
 
         int bw;
-        if (cur > 222 && stdDev < 18.0) {
+        if (cur > 215 && stdDev < 19.0) {
           bw = 255;
-        } else if (cur < 56 || (mean < 54.0 && cur <= mean + 12.0)) {
-          bw = 4;
+        } else if (cur < 60 || (mean < 56.0 && cur <= mean + 12.0)) {
+          bw = 3;
         } else {
           final double thresh = mean * (1.0 + kSauvola * (stdDev / 128.0 - 1.0));
           final double t = ((cur - (thresh - band)) / (2.0 * band)).clamp(0.0, 1.0);
-          bw = (4 + (t * t * (3.0 - 2.0 * t)) * 251).round().clamp(0, 255);
+          bw = (3 + (t * t * (3.0 - 2.0 * t)) * 252).round().clamp(0, 255);
         }
         if (hasManualTone) {
           bw = ((bw - 128.0) * clampedContrast + 128.0 + brightOffset).round().clamp(0, 255);
@@ -992,44 +1037,44 @@ Uint8List _processRgbaCore({
   } else {
     // DUAL-CURVE PRO ENHANCEMENT: Crisp Jet-Black Ink + Pure Paper + Natural Protected Photos/Stamps
     final bool isCleanDoc = bgMap?.isAlreadyClean ?? false;
-    final double cleanScale = isCleanDoc ? 0.62 : 1.0;
+    final double cleanScale = isCleanDoc ? 0.65 : 1.0;
 
     late final Float32List inkLut;
     late final Float32List photoLut;
 
     if (filter == 'magic_pro' || filter == 'auto_pro' || filter == 'dark_ink' || filter == 'ocv_crisp') {
       final double blackAnchor = (filter == 'dark_ink'
-              ? (34.0 + 22.0 * clampedIntensity)
+              ? (38.0 + 22.0 * clampedIntensity)
               : filter == 'magic_pro'
-                  ? (28.0 + 20.0 * clampedIntensity)
+                  ? (30.0 + 20.0 * clampedIntensity)
                   : filter == 'ocv_crisp'
-                      ? (26.0 + 18.0 * clampedIntensity)
-                      : (22.0 + 18.0 * clampedIntensity)) *
+                      ? (28.0 + 18.0 * clampedIntensity)
+                      : (26.0 + 18.0 * clampedIntensity)) *
           cleanScale;
       final double paperSnap = filter == 'dark_ink'
-          ? (216.0 - 20.0 * clampedIntensity * cleanScale)
+          ? (212.0 - 20.0 * clampedIntensity * cleanScale)
           : filter == 'magic_pro'
-              ? (220.0 - 18.0 * clampedIntensity * cleanScale)
+              ? (216.0 - 18.0 * clampedIntensity * cleanScale)
               : filter == 'ocv_crisp'
-                  ? (220.0 - 18.0 * clampedIntensity * cleanScale)
-                  : (226.0 - 16.0 * clampedIntensity * cleanScale);
+                  ? (216.0 - 18.0 * clampedIntensity * cleanScale)
+                  : (222.0 - 16.0 * clampedIntensity * cleanScale);
       final double inkGamma = 1.0 +
           ((filter == 'dark_ink'
-                  ? (0.58 + 0.36 * clampedIntensity)
+                  ? (0.62 + 0.36 * clampedIntensity)
                   : filter == 'magic_pro'
-                      ? (0.52 + 0.34 * clampedIntensity)
+                      ? (0.55 + 0.34 * clampedIntensity)
                       : filter == 'ocv_crisp'
-                          ? (0.48 + 0.30 * clampedIntensity)
-                          : (0.45 + 0.28 * clampedIntensity)) *
+                          ? (0.50 + 0.30 * clampedIntensity)
+                          : (0.48 + 0.30 * clampedIntensity)) *
               cleanScale);
 
-      inkLut = _buildSmoothToneLut(blackAnchor, paperSnap, inkGamma, 3.0);
-      photoLut = _buildSmoothToneLut(8.0 * cleanScale, 242.0 - 8.0 * cleanScale, 1.08, 4.0);
+      inkLut = _buildSmoothToneLut(blackAnchor, paperSnap, inkGamma, 2.0);
+      photoLut = _buildSmoothToneLut(8.0 * cleanScale, 240.0 - 8.0 * cleanScale, 1.08, 4.0);
     } else if (filter == 'lighten_pro') {
       inkLut = Float32List(256);
       for (int v = 0; v < 256; v++) {
-        final double val = pow(v / 255.0, 0.80 - 0.18 * clampedIntensity) * 255.0;
-        final double t = ((val - 224.0) / 26.0).clamp(0.0, 1.0);
+        final double val = pow(v / 255.0, 0.78 - 0.18 * clampedIntensity) * 255.0;
+        final double t = ((val - 220.0) / 28.0).clamp(0.0, 1.0);
         final double roll = t * t * (3.0 - 2.0 * t);
         inkLut[v] = (val + (255.0 - val) * roll).clamp(0.0, 255.0);
       }
@@ -1045,24 +1090,24 @@ Uint8List _processRgbaCore({
     final int lowClip = bgMap?.lowClip ?? 5;
     final int highClip = bgMap?.highClip ?? 250;
     final double vividScale = 255.0 / max(1, highClip - lowClip);
-    final double vividBlend = 0.32 + 0.28 * clampedIntensity;
+    final double vividBlend = 0.34 + 0.28 * clampedIntensity;
     final double maxGain = filter == 'dark_ink'
-        ? 3.2
+        ? 3.35
         : filter == 'ocv_crisp'
-            ? 3.0
+            ? 3.15
             : filter == 'magic_pro'
-                ? 3.0
+                ? 3.15
                 : filter == 'lighten_pro'
-                    ? 2.6
-                    : 2.85;
-    final double gainStrength = isCleanDoc ? 0.72 : (0.85 + 0.15 * clampedIntensity);
+                    ? 2.75
+                    : 3.0;
+    final double gainStrength = isCleanDoc ? 0.76 : (0.88 + 0.12 * clampedIntensity);
     final double satBoost = filter == 'magic_pro'
-        ? (1.20 + 0.20 * clampedIntensity)
+        ? (1.22 + 0.20 * clampedIntensity)
         : filter == 'auto_pro'
-            ? (1.12 + 0.12 * clampedIntensity)
+            ? (1.14 + 0.12 * clampedIntensity)
             : filter == 'vivid_color'
-                ? (1.16 + 0.22 * clampedIntensity)
-                : 1.10;
+                ? (1.18 + 0.22 * clampedIntensity)
+                : 1.12;
     final Float32List? bgR = bgMap?.bgR;
     final Float32List? bgG = bgMap?.bgG;
     final Float32List? bgB = bgMap?.bgB;
@@ -1100,9 +1145,9 @@ Uint8List _processRgbaCore({
           final double estG = (bgG[i00] + (bgG[i10] - bgG[i00]) * fx) * invFy + (bgG[i01] + (bgG[i11] - bgG[i01]) * fx) * fy;
           final double estB = (bgB[i00] + (bgB[i10] - bgB[i00]) * fx) * invFy + (bgB[i01] + (bgB[i11] - bgB[i01]) * fx) * fy;
 
-          final double rawGR = min(255.0 / max(estR, 42.0), maxGain);
-          final double rawGG = min(255.0 / max(estG, 42.0), maxGain);
-          final double rawGB = min(255.0 / max(estB, 42.0), maxGain);
+          final double rawGR = min(255.0 / max(estR, 40.0), maxGain);
+          final double rawGG = min(255.0 / max(estG, 40.0), maxGain);
+          final double rawGB = min(255.0 / max(estB, 40.0), maxGain);
 
           final double gR = 1.0 + (rawGR - 1.0) * gainStrength;
           final double gG = 1.0 + (rawGG - 1.0) * gainStrength;
@@ -1120,7 +1165,7 @@ Uint8List _processRgbaCore({
             ng = targetL;
             nb = targetL;
           } else if (filter == 'lighten_pro') {
-            final double blend = 0.68 + 0.32 * clampedIntensity;
+            final double blend = 0.70 + 0.30 * clampedIntensity;
             final double lR = nr + (wbR - nr) * blend;
             final double lG = ng + (wbG - ng) * blend;
             final double lB = nb + (wbB - nb) * blend;
@@ -1132,8 +1177,8 @@ Uint8List _processRgbaCore({
             final double minWb = wbR < wbG ? (wbR < wbB ? wbR : wbB) : (wbG < wbB ? wbG : wbB);
             final double wbChroma = maxWb - minWb;
 
-            final double colorWeight = ((wbChroma - 18.0) / 34.0).clamp(0.0, 1.0);
-            final double photoProtect = colorWeight * 0.78;
+            final double colorWeight = ((wbChroma - 16.0) / 32.0).clamp(0.0, 1.0);
+            final double photoProtect = colorWeight * 0.82;
             final double targetL = inkLut[wbIdx] * (1.0 - photoProtect) + photoLut[wbIdx] * photoProtect;
 
             final double ratio = wbLum > 1.5 ? (targetL / wbLum) : 1.0;
@@ -1142,7 +1187,7 @@ Uint8List _processRgbaCore({
             final double sb = (wbB * ratio).clamp(0.0, 255.0);
 
             final double paperFade = ((255.0 - targetL) / 34.0).clamp(0.0, 1.0);
-            final double satFactor = (wbLum > 205.0 && wbChroma < 24.0)
+            final double satFactor = (wbLum > 202.0 && wbChroma < 24.0)
                 ? 0.0
                 : (paperFade < 0.25 ? paperFade * 4.0 : (1.0 + (satBoost - 1.0) * colorWeight * paperFade));
 
@@ -1170,16 +1215,16 @@ Uint8List _processRgbaCore({
 
   // ASYMMETRIC HALO-FREE DOCUMENT SHARPENING + FLAT-PAPER GRAIN DENOISE
   final double baseSharp = filter == 'dark_ink'
-      ? (0.58 + 0.34 * clampedIntensity)
+      ? (0.62 + 0.34 * clampedIntensity)
       : (filter == 'magic_pro' || filter == 'ocv_crisp' || filter == 'super_bw')
-          ? (0.52 + 0.32 * clampedIntensity)
+          ? (0.56 + 0.32 * clampedIntensity)
           : filter == 'auto_pro'
-              ? (0.48 + 0.30 * clampedIntensity)
-              : (filter == 'original' ? 0.35 : 0.28);
+              ? (0.52 + 0.30 * clampedIntensity)
+              : (filter == 'original' ? 0.35 : 0.30);
   final double effectiveUser = filter == 'original'
       ? max(0.0, (clampedSharp - 0.72) * 1.5)
       : (0.45 + clampedSharp * 0.90);
-  final double sharpAmt = (baseSharp * effectiveUser).clamp(0.0, 1.25);
+  final double sharpAmt = (baseSharp * effectiveUser).clamp(0.0, 1.28);
 
   if (w > 5 && h > 5 && (sharpAmt > 0.05 || filter != 'original')) {
     final Uint8List tmpBlur = Uint8List(total);
@@ -1201,15 +1246,15 @@ Uint8List _processRgbaCore({
         final int diff = center - blur;
         final int p = (r2 + x) * 4;
 
-        if (filter != 'original' && center > 210 && diff.abs() <= 9) {
-          final int smoothDelta = ((blur - center) * 0.45).round();
+        if (filter != 'original' && center > 198 && diff.abs() <= 11) {
+          final int smoothDelta = ((blur - center) * 0.55).round();
           out[p] = (out[p] + smoothDelta).clamp(0, 255);
           out[p + 1] = (out[p + 1] + smoothDelta).clamp(0, 255);
           out[p + 2] = (out[p + 2] + smoothDelta).clamp(0, 255);
-        } else if (sharpAmt > 0.05 && center < 238 && diff.abs() > 8) {
+        } else if (sharpAmt > 0.05 && center < 238 && diff.abs() > 7) {
           final int delta = diff < 0
-              ? (diff * sharpAmt).round().clamp(-52, 0)
-              : (diff * sharpAmt * 0.30).round().clamp(0, 14);
+              ? (diff * sharpAmt).round().clamp(-56, 0)
+              : (diff * sharpAmt * 0.28).round().clamp(0, 12);
           out[p] = (out[p] + delta).clamp(0, 255);
           out[p + 1] = (out[p + 1] + delta).clamp(0, 255);
           out[p + 2] = (out[p + 2] + delta).clamp(0, 255);
@@ -1324,7 +1369,7 @@ Uint8List? _rotateArbitraryIsolate(Uint8List rawBytes, double angleDeg) {
   final decoded = img.decodeImage(rawBytes);
   if (decoded == null) return null;
   final oriented = img.bakeOrientation(decoded);
-  if (angleDeg.abs() < 0.05) return Uint8List.fromList(img.encodeJpg(oriented, quality: 94));
+  if (angleDeg.abs() < 0.05) return Uint8List.fromList(img.encodeJpg(oriented, quality: 92));
 
   final int w = oriented.width;
   final int h = oriented.height;
@@ -1366,11 +1411,11 @@ Uint8List? _rotateArbitraryIsolate(Uint8List rawBytes, double angleDeg) {
     }
   }
   final outIm = img.Image.fromBytes(width: outW, height: outH, bytes: outBytes.buffer, numChannels: 3, order: img.ChannelOrder.rgb);
-  return Uint8List.fromList(img.encodeJpg(outIm, quality: 94));
+  return Uint8List.fromList(img.encodeJpg(outIm, quality: 92));
 }
-// ==================== PART 1B OF 4 END ====================
-// ==================== PART 2A OF 4 START ====================
-// PHONE STORAGE MANAGER (Android 11+ MediaStore + Complete Multi-Page Fallback)
+// ==================== PART 1 OF 6 END ====================
+// ==================== PART 2A OF 6 START ====================
+// PHONE STORAGE MANAGER (Android 10-16+ MediaStore + Fallback)
 class StorageSaveResult {
   final int count;
   final String? savedPath;
@@ -1379,8 +1424,6 @@ class StorageSaveResult {
 }
 
 class PhoneStorageManager {
-  static const MethodChannel _mediaStoreChannel = MethodChannel('bharat_scanner/media_store');
-
   static Future<Map<String, dynamic>> _resolvePublicDir(String primaryPath, String secondaryPath, String publicLabel, {bool preferDownloads = false}) async {
     for (final path in [primaryPath, secondaryPath]) {
       try {
@@ -1415,7 +1458,7 @@ class PhoneStorageManager {
     final safeName = docTitle.replaceAll(RegExp(r'[^\w\s\-]'), '_').trim();
     final List<int> remainingIndices = [];
 
-    // 1. Try native Android MediaStore channel first (works on Android 10-16+ & updates Gallery immediately)
+    // 1. Native Android MediaStore channel (works on Android 10-16+ & updates Gallery immediately)
     bool channelAvailable = true;
     for (int i = 0; i < imagePaths.length; i++) {
       final f = File(imagePaths[i]);
@@ -1424,7 +1467,7 @@ class PhoneStorageManager {
         try {
           final bytes = await f.readAsBytes();
           final fileName = '${safeName}_p${i + 1}_${DateTime.now().millisecondsSinceEpoch}.jpg';
-          final String? uri = await _mediaStoreChannel.invokeMethod<String>('saveImage', {
+          final String? uri = await kBharatMediaChannel.invokeMethod<String>('saveImage', {
             'bytes': bytes,
             'fileName': fileName,
             'album': 'BharatScanner',
@@ -1452,7 +1495,7 @@ class PhoneStorageManager {
       );
     }
 
-    // 2. Fallback to direct filesystem / external dir for any remaining unsaved pages
+    // 2. Fallback to direct filesystem / external dir
     try {
       final resolved = await _resolvePublicDir('/storage/emulated/0/Pictures/BharatScanner', '/storage/emulated/0/DCIM/BharatScanner', 'Pictures/BharatScanner');
       final Directory targetDir = resolved['dir'];
@@ -1476,9 +1519,9 @@ class PhoneStorageManager {
     final safeName = docTitle.replaceAll(RegExp(r'[^\w\s\-]'), '_').trim();
     final fileName = '${safeName}_${DateTime.now().millisecondsSinceEpoch}.pdf';
 
-    // 1. Try native Android MediaStore Downloads channel first (Android 10-16+)
+    // 1. Native Android MediaStore Downloads channel (Android 10-16+)
     try {
-      final String? uri = await _mediaStoreChannel.invokeMethod<String>('savePdf', {
+      final String? uri = await kBharatMediaChannel.invokeMethod<String>('savePdf', {
         'bytes': pdfBytes,
         'fileName': fileName,
         'folder': 'BharatScanner',
@@ -1487,7 +1530,7 @@ class PhoneStorageManager {
         return StorageSaveResult(count: 1, savedPath: uri, folderLabel: 'Download/BharatScanner');
       }
     } on MissingPluginException {
-      // Fall back below if Kotlin channel is not registered
+      // Fallback below
     } catch (e) {
       debugPrint("MediaStore PDF err: $e");
     }
@@ -1506,7 +1549,7 @@ class PhoneStorageManager {
   }
 }
 
-// PRO TARGET COMPRESSION ENGINE (10KB - 5MB)
+// PRO TARGET COMPRESSION ENGINE (10KB - 5MB) - PARALLEL ISOLATE PROCESSING
 class CompressedBundleResult {
   final File pdfFile;
   final List<File> jpgFiles;
@@ -1573,21 +1616,35 @@ class ProCompressionEngine {
     final int totalTargetBytes = max(10 * 1024, targetKb * 1024);
     final int perPageTargetBytes = max(3 * 1024, (totalTargetBytes * 0.85) ~/ orderedImagePaths.length);
 
+    final List<Uint8List?> compressedList = List<Uint8List?>.filled(orderedImagePaths.length, null);
+    const int batchSize = 3;
+    for (int start = 0; start < orderedImagePaths.length; start += batchSize) {
+      final int end = min(orderedImagePaths.length, start + batchSize);
+      await Future.wait(
+        List.generate(end - start, (offset) async {
+          final int idx = start + offset;
+          final srcFile = File(orderedImagePaths[idx]);
+          if (!await srcFile.exists()) return;
+          final rawBytes = await srcFile.readAsBytes();
+          final ttd = TransferableTypedData.fromList([rawBytes]);
+          compressedList[idx] = await Isolate.run(() => _compressSingleImageIsolate(ttd.materialize().asUint8List(), perPageTargetBytes));
+        }),
+      );
+    }
+
     final pdf = pw.Document();
     final List<File> jpgFiles = [];
     int totalJpgBytes = 0;
+    final int stamp = DateTime.now().millisecondsSinceEpoch;
 
-    for (int i = 0; i < orderedImagePaths.length; i++) {
-      final srcFile = File(orderedImagePaths[i]);
-      if (!await srcFile.exists()) continue;
-      final rawBytes = await srcFile.readAsBytes();
-      final ttd = TransferableTypedData.fromList([rawBytes]);
-      final compressedJpg = await Isolate.run(() => _compressSingleImageIsolate(ttd.materialize().asUint8List(), perPageTargetBytes));
-      final jpgOut = File('${tempDir.path}/${safeName}_comp_p${i + 1}_${DateTime.now().millisecondsSinceEpoch}.jpg');
-      await jpgOut.writeAsBytes(compressedJpg);
+    for (int i = 0; i < compressedList.length; i++) {
+      final bytes = compressedList[i];
+      if (bytes == null) continue;
+      final jpgOut = File('${tempDir.path}/${safeName}_comp_p${i + 1}_$stamp.jpg');
+      await jpgOut.writeAsBytes(bytes);
       jpgFiles.add(jpgOut);
-      totalJpgBytes += compressedJpg.length;
-      pdf.addPage(pw.Page(pageFormat: PdfPageFormat.a4, margin: const pw.EdgeInsets.all(8), build: (_) => pw.Center(child: pw.Image(pw.MemoryImage(compressedJpg), fit: pw.BoxFit.contain))));
+      totalJpgBytes += bytes.length;
+      pdf.addPage(pw.Page(pageFormat: PdfPageFormat.a4, margin: const pw.EdgeInsets.all(8), build: (_) => pw.Center(child: pw.Image(pw.MemoryImage(bytes), fit: pw.BoxFit.contain))));
     }
     if (jpgFiles.isEmpty) return null;
     final pdfBytes = await pdf.save();
@@ -1730,19 +1787,85 @@ class ProCompressionEngine {
   }
 }
 
+// GOOGLE ADMOB + UMP CONSENT MANAGER (PLAY STORE POLICY COMPLIANT)
+class AdConsentManager {
+  static final ValueNotifier<bool> canRequestAdsNotifier = ValueNotifier(false);
+  static final ValueNotifier<bool> privacyOptionsRequiredNotifier = ValueNotifier(false);
+  static bool _mobileAdsInitialized = false;
+
+  static Future<void> _initMobileAdsIfNeeded() async {
+    if (!_mobileAdsInitialized) {
+      _mobileAdsInitialized = true;
+      try {
+        await MobileAds.instance.initialize();
+      } catch (e) {
+        _mobileAdsInitialized = false;
+        debugPrint("MobileAds init err: $e");
+      }
+    }
+    canRequestAdsNotifier.value = true;
+  }
+
+  static Future<void> initializeConsentAndAds() async {
+    try {
+      if (await ConsentInformation.instance.canRequestAds()) {
+        await _initMobileAdsIfNeeded();
+      }
+      privacyOptionsRequiredNotifier.value =
+          (await ConsentInformation.instance.getPrivacyOptionsRequirementStatus()) == PrivacyOptionsRequirementStatus.required;
+
+      ConsentInformation.instance.requestConsentInfoUpdate(
+        ConsentRequestParameters(),
+        () async {
+          ConsentForm.loadAndShowConsentFormIfRequired((FormError? formError) async {
+            if (formError != null) {
+              debugPrint("UMP Consent Form err: ${formError.message}");
+            }
+            try {
+              privacyOptionsRequiredNotifier.value =
+                  (await ConsentInformation.instance.getPrivacyOptionsRequirementStatus()) == PrivacyOptionsRequirementStatus.required;
+              if (await ConsentInformation.instance.canRequestAds()) {
+                await _initMobileAdsIfNeeded();
+              }
+            } catch (_) {}
+          });
+        },
+        (FormError error) async {
+          debugPrint("UMP Consent update err: ${error.message}");
+          try {
+            if (await ConsentInformation.instance.canRequestAds()) {
+              await _initMobileAdsIfNeeded();
+            }
+          } catch (_) {}
+        },
+      );
+    } catch (e) {
+      debugPrint("AdConsentManager err: $e");
+    }
+  }
+
+  static void showPrivacyOptionsForm(BuildContext context) {
+    ConsentForm.showPrivacyOptionsForm((FormError? formError) async {
+      if (formError != null && context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Privacy Settings: ${formError.message}')));
+      }
+      try {
+        privacyOptionsRequiredNotifier.value =
+            (await ConsentInformation.instance.getPrivacyOptionsRequirementStatus()) == PrivacyOptionsRequirementStatus.required;
+      } catch (_) {}
+    });
+  }
+}
+
 // MAIN & APP ROOT
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  try {
-    await MobileAds.instance.initialize();
-  } catch (e) {
-    debugPrint("AdMob Init: $e");
-  }
   final prefs = await SharedPreferences.getInstance();
   appThemeMode.value = (prefs.getBool('is_dark_mode') ?? false) ? ThemeMode.dark : ThemeMode.light;
   final colorVal = prefs.getInt('primary_color_val_v2');
   if (colorVal != null) appPrimaryColor.value = Color(colorVal);
   isHindiLanguage.value = prefs.getBool('app_language_hindi') ?? false;
+  unawaited(AdConsentManager.initializeConsentAndAds());
   runApp(const BharatDocScannerApp());
 }
 
@@ -1760,8 +1883,20 @@ class BharatDocScannerApp extends StatelessWidget {
             title: 'Bharat Document Scanner PDF AI',
             debugShowCheckedModeBanner: false,
             themeMode: mode,
-            theme: ThemeData(useMaterial3: true, brightness: Brightness.light, scaffoldBackgroundColor: const Color(0xFFF8F9FA), colorSchemeSeed: color, appBarTheme: const AppBarTheme(elevation: 0, backgroundColor: Colors.white, foregroundColor: Colors.black87)),
-            darkTheme: ThemeData(useMaterial3: true, brightness: Brightness.dark, scaffoldBackgroundColor: const Color(0xFF121212), colorSchemeSeed: color, appBarTheme: const AppBarTheme(elevation: 0, backgroundColor: Color(0xFF1E1E1E), foregroundColor: Colors.white)),
+            theme: ThemeData(
+              useMaterial3: true,
+              brightness: Brightness.light,
+              scaffoldBackgroundColor: const Color(0xFFF8F9FA),
+              colorSchemeSeed: color,
+              appBarTheme: const AppBarTheme(elevation: 0, backgroundColor: Colors.white, foregroundColor: Colors.black87),
+            ),
+            darkTheme: ThemeData(
+              useMaterial3: true,
+              brightness: Brightness.dark,
+              scaffoldBackgroundColor: const Color(0xFF121212),
+              colorSchemeSeed: color,
+              appBarTheme: const AppBarTheme(elevation: 0, backgroundColor: Color(0xFF1E1E1E), foregroundColor: Colors.white),
+            ),
             home: const SplashScreen(),
           ),
         ),
@@ -1770,7 +1905,7 @@ class BharatDocScannerApp extends StatelessWidget {
   }
 }
 
-// 1. SPLASH SCREEN
+// 1. SPLASH SCREEN (FAST 950ms LAUNCH)
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
   @override
@@ -1785,12 +1920,17 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
   @override
   void initState() {
     super.initState();
-    _animController = AnimationController(vsync: this, duration: const Duration(milliseconds: 700));
+    _animController = AnimationController(vsync: this, duration: const Duration(milliseconds: 550));
     _scaleAnimation = CurvedAnimation(parent: _animController, curve: Curves.easeOutBack);
     _animController.forward();
-    _timer = Timer(const Duration(milliseconds: 1400), () {
+    _timer = Timer(const Duration(milliseconds: 950), () {
       if (mounted) {
-        Navigator.of(context).pushReplacement(PageRouteBuilder(pageBuilder: (_, __, ___) => const MainDashboardScreen(), transitionsBuilder: (_, a, __, c) => FadeTransition(opacity: a, child: c)));
+        Navigator.of(context).pushReplacement(
+          PageRouteBuilder(
+            pageBuilder: (_, __, ___) => const MainDashboardScreen(),
+            transitionsBuilder: (_, a, __, c) => FadeTransition(opacity: a, child: c),
+          ),
+        );
       }
     });
   }
@@ -1861,11 +2001,9 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
     );
   }
 }
-// ==================== PART 2A OF 4 END ====================
-// ==================== PART 2B OF 4 START ====================
-// ============================================================================
-// NIGHT PRO CAMERA SCANNER (MAX SENSOR RES + EXACT FLASH + FAST MULTI-PAGE)
-// ============================================================================
+// ==================== PART 2A OF 6 END ====================
+// ==================== PART 2B OF 6 START ====================
+// NIGHT PRO CAMERA SCANNER (FAST 4K SHUTTER + EXACT FLASH + MULTI-PAGE)
 class ProCameraScannerScreen extends StatefulWidget {
   static const String switchToMlKitMarker = '__SWITCH_TO_MLKIT__';
 
@@ -1890,7 +2028,6 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
   bool _returnedResult = false;
   String? _cameraError;
 
-  // Back Flash cycle: Off -> Light ON (Torch) -> Auto Flash
   final List<FlashMode> _backFlashCycle = const [FlashMode.off, FlashMode.torch, FlashMode.auto];
   int _backFlashIndex = 0;
   FlashMode _currentBackFlashMode = FlashMode.off;
@@ -1918,11 +2055,10 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
     _controller = null;
     if (camCtrl != null) {
       if (!_isFrontCamera && camCtrl.value.isInitialized) {
-        try {
-          camCtrl.setFlashMode(FlashMode.off);
-        } catch (_) {}
+        camCtrl.setFlashMode(FlashMode.off).catchError((_) {}).whenComplete(() => camCtrl.dispose());
+      } else {
+        camCtrl.dispose();
       }
-      camCtrl.dispose();
     }
     if (!_returnedResult && _capturedPaths.isNotEmpty) {
       for (final p in _capturedPaths) {
@@ -1985,10 +2121,10 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
       orElse: () => _cameras.first,
     );
 
-    // Full sensor resolution first (max -> ultraHigh -> veryHigh -> high) for print-sharp A4 text
+    // ultraHigh (4K / ~8MP) gives crisp A4 print sharpness with 3x-5x faster shutter than 48MP max
     CameraController? initializedCtrl;
     Object? lastErr;
-    for (final preset in [ResolutionPreset.max, ResolutionPreset.ultraHigh, ResolutionPreset.veryHigh, ResolutionPreset.high]) {
+    for (final preset in [ResolutionPreset.ultraHigh, ResolutionPreset.veryHigh, ResolutionPreset.high, ResolutionPreset.max]) {
       final candidate = CameraController(chosen, preset, enableAudio: false, imageFormatGroup: ImageFormatGroup.jpeg);
       try {
         await candidate.initialize();
@@ -2138,7 +2274,7 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
       final bool useFrontScreenFlash = _isFrontCamera && _frontScreenFlashOn;
       if (useFrontScreenFlash && mounted) {
         setState(() => _showNightScreenFlash = true);
-        await Future.delayed(const Duration(milliseconds: 220));
+        await Future.delayed(const Duration(milliseconds: 180));
       }
 
       final XFile shot = await ctrl.takePicture();
@@ -2148,16 +2284,17 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
       }
 
       if (!_isFrontCamera && _currentBackFlashMode == FlashMode.torch) {
-        try {
-          await ctrl.setFlashMode(FlashMode.torch);
-        } catch (_) {}
+        unawaited(ctrl.setFlashMode(FlashMode.torch).catchError((_) {}));
       }
 
       final appDir = await getApplicationDocumentsDirectory();
       final scansDir = Directory('${appDir.path}/scans');
       if (!await scansDir.exists()) await scansDir.create(recursive: true);
       final destPath = '${scansDir.path}/cam_${DateTime.now().millisecondsSinceEpoch}_${_capturedPaths.length}.jpg';
-      final saved = await importXFileSafely(shot, destPath, maxDimension: 3000);
+      final saved = await importXFileSafely(shot, destPath, maxDimension: 2600);
+      if (saved != null && saved != shot.path) {
+        _deleteFileQuietly(shot.path);
+      }
 
       if (mounted && saved != null) {
         setState(() => _capturedPaths.add(saved));
@@ -2199,11 +2336,12 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
       if (!await scansDir.exists()) await scansDir.create(recursive: true);
 
       int importedCount = 0;
+      final int stamp = DateTime.now().millisecondsSinceEpoch;
       for (int i = 0; i < countToImport; i++) {
         if (!mounted) break;
         setState(() => _importProgressText = 'Importing ${i + 1}/$countToImport...');
-        final dest = '${scansDir.path}/camgal_${DateTime.now().millisecondsSinceEpoch}_$i.jpg';
-        final savedPath = await importXFileSafely(picked[i], dest, maxDimension: 3000);
+        final dest = '${scansDir.path}/camgal_${stamp}_$i.jpg';
+        final savedPath = await importXFileSafely(picked[i], dest, maxDimension: 2600);
         if (savedPath != null && mounted) {
           _capturedPaths.add(savedPath);
           importedCount++;
@@ -2260,7 +2398,6 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
           children: [
             Column(
               children: [
-                // Top Control Bar
                 Container(
                   color: Colors.black87,
                   padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
@@ -2295,8 +2432,6 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
                     ],
                   ),
                 ),
-
-                // Optional Night Brightness Exposure Slider
                 if (_showNightBoostSlider)
                   Container(
                     color: Colors.black87,
@@ -2325,8 +2460,6 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
                       ],
                     ),
                   ),
-
-                // Live Preview
                 Expanded(
                   child: _isInitializing
                       ? const Center(child: CircularProgressIndicator(color: Colors.greenAccent))
@@ -2402,8 +2535,6 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
                               },
                             ),
                 ),
-
-                // Captured Pages Thumbnail Strip
                 if (_capturedPaths.isNotEmpty)
                   Container(
                     height: 70,
@@ -2440,8 +2571,6 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
                       ),
                     ),
                   ),
-
-                // Bottom Shutter & Action Bar
                 Container(
                   color: Colors.black,
                   padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
@@ -2481,7 +2610,6 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
                 ),
               ],
             ),
-
             if (_isImportingGallery)
               Positioned.fill(
                 child: Container(
@@ -2498,8 +2626,6 @@ class _ProCameraScannerScreenState extends State<ProCameraScannerScreen> with Wi
                   ),
                 ),
               ),
-
-            // Front Camera Night Screen-Flash Overlay
             if (_showNightScreenFlash)
               Positioned.fill(child: Container(color: Colors.white)),
           ],
@@ -2521,8 +2647,8 @@ class _CameraGridPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
-// ==================== PART 2B OF 4 END ====================
-// ==================== PART 3A OF 4 START ====================
+// ==================== PART 2B OF 6 END ====================
+// ==================== PART 3A OF 6 START ====================
 // 2. MAIN DASHBOARD SCREEN
 class MainDashboardScreen extends StatefulWidget {
   const MainDashboardScreen({super.key});
@@ -2549,24 +2675,44 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     super.initState();
     _loadUserFolders();
     _loadSavedDocs();
-    _loadBannerAd();
     _searchController.addListener(_filterDocs);
+    AdConsentManager.canRequestAdsNotifier.addListener(_onAdConsentChanged);
+    if (AdConsentManager.canRequestAdsNotifier.value) {
+      _loadBannerAd();
+    }
   }
 
   @override
   void dispose() {
+    AdConsentManager.canRequestAdsNotifier.removeListener(_onAdConsentChanged);
     _searchController.removeListener(_filterDocs);
     _searchController.dispose();
     _bannerAd?.dispose();
     super.dispose();
   }
 
+  void _onAdConsentChanged() {
+    if (AdConsentManager.canRequestAdsNotifier.value && _bannerAd == null && mounted) {
+      _loadBannerAd();
+    }
+  }
+
   void _loadBannerAd() {
+    if (_bannerAd != null) return;
     _bannerAd = BannerAd(
       adUnitId: kDebugMode ? 'ca-app-pub-3940256099942544/6300978111' : 'ca-app-pub-7940311763952252/4182204348',
       request: const AdRequest(),
       size: AdSize.banner,
-      listener: BannerAdListener(onAdLoaded: (_) { if (mounted) setState(() => _isBannerLoaded = true); }, onAdFailedToLoad: (ad, err) => ad.dispose()),
+      listener: BannerAdListener(
+        onAdLoaded: (_) {
+          if (mounted) setState(() => _isBannerLoaded = true);
+        },
+        onAdFailedToLoad: (ad, err) {
+          ad.dispose();
+          _bannerAd = null;
+          debugPrint("BannerAd err: $err");
+        },
+      ),
     )..load();
   }
 
@@ -2631,8 +2777,9 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
 
   void _moveDocumentsToFolderDialog(List<String> docIds) {
     if (docIds.isEmpty) return;
-    final folders = _actualFolders;
-    String selectedTarget = folders.isNotEmpty ? folders.first : 'General';
+    final folders = List<String>.from(_actualFolders);
+    if (folders.isEmpty) folders.add('General');
+    String selectedTarget = folders.first;
     final newFolderCtrl = TextEditingController();
 
     showDialog(
@@ -2661,6 +2808,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                       final created = await _addNewFolder(newFolderCtrl.text);
                       if (created != null) {
                         setDState(() {
+                          if (!folders.contains(created)) folders.add(created);
                           selectedTarget = created;
                           newFolderCtrl.clear();
                         });
@@ -2836,23 +2984,31 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
         ),
       );
 
-      final List<String> persistentRawPaths = [];
+      final List<String?> importedSlots = List<String?>.filled(picked.length, null);
       try {
         final appDir = await getApplicationDocumentsDirectory();
         final scansDir = Directory('${appDir.path}/scans');
         if (!await scansDir.exists()) await scansDir.create(recursive: true);
+        final int stamp = DateTime.now().millisecondsSinceEpoch;
 
-        for (int i = 0; i < picked.length; i++) {
-          progressNotifier.value = 'Importing ${i + 1}/${picked.length}...';
-          final targetPath = '${scansDir.path}/gal_${DateTime.now().millisecondsSinceEpoch}_$i.jpg';
-          final saved = await importXFileSafely(picked[i], targetPath, maxDimension: 3000);
-          if (saved != null) persistentRawPaths.add(saved);
+        const int batchSize = 3;
+        for (int start = 0; start < picked.length; start += batchSize) {
+          final int end = min(picked.length, start + batchSize);
+          progressNotifier.value = 'Importing $end/${picked.length}...';
+          await Future.wait(
+            List.generate(end - start, (offset) async {
+              final int i = start + offset;
+              final targetPath = '${scansDir.path}/gal_${stamp}_$i.jpg';
+              importedSlots[i] = await importXFileSafely(picked[i], targetPath, maxDimension: 2600);
+            }),
+          );
         }
       } finally {
         if (mounted) Navigator.of(context, rootNavigator: true).pop();
         Future.delayed(const Duration(milliseconds: 450), progressNotifier.dispose);
       }
 
+      final persistentRawPaths = importedSlots.whereType<String>().toList();
       if (!mounted || persistentRawPaths.isEmpty) return;
       _openFilterReview(persistentRawPaths, category: category, prefix: prefix, defaultFilter: 'auto_pro');
     } catch (e) {
@@ -2892,7 +3048,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     List<String> preCapturedPaths = const [],
   }) async {
     DocumentScanningResult? result;
-    // ScannerMode.base = Auto Border Crop + Straighten ONLY (avoids hidden double-filter so Camera & Auto Scan match)
     final scanner = DocumentScanner(
       options: DocumentScannerOptions(
         documentFormat: DocumentFormat.jpeg,
@@ -2934,17 +3089,26 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
         final appDir = await getApplicationDocumentsDirectory();
         final scansDir = Directory('${appDir.path}/scans');
         if (!await scansDir.exists()) await scansDir.create(recursive: true);
+        final int stamp = DateTime.now().millisecondsSinceEpoch;
+        final List<String?> prepared = List<String?>.filled(result.images.length, null);
 
-        for (int i = 0; i < result.images.length; i++) {
-          progressNotifier.value = 'Preparing ${i + 1}/${result.images.length}...';
-          final cleanPath = normalizeLocalFilePath(result.images[i]);
-          final f = File(cleanPath);
-          if (await f.exists()) {
-            final targetPath = '${scansDir.path}/mlkit_${DateTime.now().millisecondsSinceEpoch}_$i.jpg';
-            await ProDocImageProcessor.bakeOrientationToFile(f.path, targetPath, maxDimension: 3000);
-            persistentRawPaths.add(targetPath);
-          }
+        const int batchSize = 3;
+        for (int start = 0; start < result.images.length; start += batchSize) {
+          final int end = min(result.images.length, start + batchSize);
+          progressNotifier.value = 'Preparing $end/${result.images.length}...';
+          await Future.wait(
+            List.generate(end - start, (offset) async {
+              final int i = start + offset;
+              final cleanPath = normalizeLocalFilePath(result!.images[i]);
+              final f = File(cleanPath);
+              if (await f.exists()) {
+                final targetPath = '${scansDir.path}/mlkit_${stamp}_$i.jpg';
+                prepared[i] = await ProDocImageProcessor.bakeOrientationToFile(f.path, targetPath, maxDimension: 2600);
+              }
+            }),
+          );
         }
+        persistentRawPaths.addAll(prepared.whereType<String>());
       } finally {
         if (mounted) Navigator.of(context, rootNavigator: true).pop();
         Future.delayed(const Duration(milliseconds: 450), progressNotifier.dispose);
@@ -3021,7 +3185,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       final byteData = await a4CollageImg.toByteData(format: ui.ImageByteFormat.rawRgba);
       if (byteData != null) {
         final ttd = TransferableTypedData.fromList([byteData.buffer.asUint8List()]);
-        final jpgBytes = await Isolate.run(() => _encodeRgbaToJpgFast(ttd, a4Width.toInt(), a4Height.toInt(), 94));
+        final jpgBytes = await Isolate.run(() => _encodeRgbaToJpgFast(ttd, a4Width.toInt(), a4Height.toInt(), 92));
         final appDir = await getApplicationDocumentsDirectory();
         final scansDir = Directory('${appDir.path}/scans');
         if (!await scansDir.exists()) await scansDir.create(recursive: true);
@@ -3051,8 +3215,8 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       backCodec?.dispose();
     }
   }
-// ==================== PART 3A OF 4 END ====================
-// ==================== PART 3B OF 4 START ====================
+// ==================== PART 3A OF 6 END ====================
+// ==================== PART 3B OF 6 START ====================
   void _promptSaveDoc(List<String> enhancedImages, List<String> rawImages, String prefix, String defaultCat) {
     final nameCtrl = TextEditingController(text: "${prefix}_${DateFormat('ddMMM_HHmm').format(DateTime.now())}");
     String chosenFolder = (defaultCat != 'General' && _actualFolders.contains(defaultCat))
@@ -3150,16 +3314,30 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
   Future<void> _exportSelectedDocsPdf({required bool saveToPhone}) async {
     final paths = _getOrderedImagesFromSelectedDocs();
     if (paths.isEmpty) return;
-    final pdfBytes = await _buildOrderedPdfBytes(paths);
-    final name = 'Ordered_Docs_${_selectedDocIdsOrder.length}';
-    if (saveToPhone) {
-      final res = await PhoneStorageManager.savePdfBytesToPublicDownloads(pdfBytes, name);
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(res.savedPath != null ? '✅ Ordered PDF saved to ${res.folderLabel}!' : '❌ Failed to save PDF'), backgroundColor: Colors.green.shade700));
-    } else {
-      final tempDir = await getTemporaryDirectory();
-      final file = File('${tempDir.path}/$name.pdf');
-      await file.writeAsBytes(pdfBytes);
-      await Share.shareXFiles([XFile(file.path)], text: 'Ordered PDF (${_selectedDocIdsOrder.length} Documents)');
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const PopScope(canPop: false, child: AlertDialog(content: Row(children: [CircularProgressIndicator(), SizedBox(width: 16), Expanded(child: Text('Building PDF...'))]))),
+    );
+    try {
+      final pdfBytes = await _buildOrderedPdfBytes(paths);
+      final name = 'Ordered_Docs_${_selectedDocIdsOrder.length}';
+      if (saveToPhone) {
+        final res = await PhoneStorageManager.savePdfBytesToPublicDownloads(pdfBytes, name);
+        if (mounted) Navigator.of(context, rootNavigator: true).pop();
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(res.savedPath != null ? '✅ Ordered PDF saved to ${res.folderLabel}!' : '❌ Failed to save PDF'), backgroundColor: Colors.green.shade700));
+      } else {
+        final tempDir = await getTemporaryDirectory();
+        final file = File('${tempDir.path}/$name.pdf');
+        await file.writeAsBytes(pdfBytes);
+        if (mounted) Navigator.of(context, rootNavigator: true).pop();
+        await Share.shareXFiles([XFile(file.path)], text: 'Ordered PDF (${_selectedDocIdsOrder.length} Documents)');
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.of(context, rootNavigator: true).pop();
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('❌ PDF Error: $e')));
+      }
     }
   }
 
@@ -3335,6 +3513,25 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     );
   }
 
+  void _showPrivacyPolicyDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Text(AppLang.tr('privacy_policy'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+        content: const SingleChildScrollView(
+          child: Text(
+            '1. On-Device Processing: All camera scans, document cropping, filters, and OCR text recognition run locally on your device. Your documents are never uploaded to external servers.\n\n'
+            '2. Local Storage & Exports: Saved documents stay in your device storage. Exporting JPG/PDF writes only to your chosen Pictures/BharatScanner or Download/BharatScanner folders.\n\n'
+            '3. Advertising: This app uses Google AdMob to display banner ads. You can manage your ad consent preferences anytime from "Ad Privacy Settings" when applicable.',
+            style: TextStyle(fontSize: 12.5, height: 1.45),
+          ),
+        ),
+        actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
@@ -3414,28 +3611,38 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
                 ),
               ),
             )
-          : Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                BottomAppBar(
-                  shape: const CircularNotchedRectangle(),
-                  notchMargin: 8,
-                  elevation: 10,
-                  color: Theme.of(context).cardColor,
-                  child: SizedBox(
-                    height: 58,
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceAround,
-                      children: [
-                        InkWell(onTap: () => setState(() => _currentTabIndex = 0), child: Padding(padding: const EdgeInsets.symmetric(horizontal: 14), child: Column(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.folder_special_rounded, color: _currentTabIndex == 0 ? appPrimaryColor.value : Colors.grey, size: 24), Text(AppLang.tr('docs'), style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: _currentTabIndex == 0 ? appPrimaryColor.value : Colors.grey))]))),
-                        const SizedBox(width: 48),
-                        InkWell(onTap: () => setState(() => _currentTabIndex = 1), child: Padding(padding: const EdgeInsets.symmetric(horizontal: 14), child: Column(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.auto_awesome_mosaic_rounded, color: _currentTabIndex == 1 ? appPrimaryColor.value : Colors.grey, size: 24), Text(AppLang.tr('tools'), style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: _currentTabIndex == 1 ? appPrimaryColor.value : Colors.grey))]))),
-                      ],
+          : SafeArea(
+              top: false,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  BottomAppBar(
+                    shape: const CircularNotchedRectangle(),
+                    notchMargin: 8,
+                    elevation: 10,
+                    color: Theme.of(context).cardColor,
+                    child: SizedBox(
+                      height: 58,
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceAround,
+                        children: [
+                          InkWell(onTap: () => setState(() => _currentTabIndex = 0), child: Padding(padding: const EdgeInsets.symmetric(horizontal: 14), child: Column(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.folder_special_rounded, color: _currentTabIndex == 0 ? appPrimaryColor.value : Colors.grey, size: 24), Text(AppLang.tr('docs'), style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: _currentTabIndex == 0 ? appPrimaryColor.value : Colors.grey))]))),
+                          const SizedBox(width: 48),
+                          InkWell(onTap: () => setState(() => _currentTabIndex = 1), child: Padding(padding: const EdgeInsets.symmetric(horizontal: 14), child: Column(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.auto_awesome_mosaic_rounded, color: _currentTabIndex == 1 ? appPrimaryColor.value : Colors.grey, size: 24), Text(AppLang.tr('tools'), style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: _currentTabIndex == 1 ? appPrimaryColor.value : Colors.grey))]))),
+                        ],
+                      ),
                     ),
                   ),
-                ),
-                if (_isBannerLoaded && _bannerAd != null) SizedBox(width: _bannerAd!.size.width.toDouble(), height: _bannerAd!.size.height.toDouble(), child: AdWidget(ad: _bannerAd!)),
-              ],
+                  if (_isBannerLoaded && _bannerAd != null)
+                    Container(
+                      color: Theme.of(context).scaffoldBackgroundColor,
+                      alignment: Alignment.center,
+                      width: double.infinity,
+                      height: _bannerAd!.size.height.toDouble(),
+                      child: SizedBox(width: _bannerAd!.size.width.toDouble(), height: _bannerAd!.size.height.toDouble(), child: AdWidget(ad: _bannerAd!)),
+                    ),
+                ],
+              ),
             ),
     );
   }
@@ -3452,6 +3659,29 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
           ListTile(leading: Icon(isDark ? Icons.light_mode : Icons.dark_mode), title: Text(isDark ? AppLang.tr('light_mode') : AppLang.tr('dark_mode')), onTap: () async { appThemeMode.value = isDark ? ThemeMode.light : ThemeMode.dark; await (await SharedPreferences.getInstance()).setBool('is_dark_mode', !isDark); }),
           ListTile(leading: const Icon(Icons.palette_rounded), title: Text(AppLang.tr('change_theme')), onTap: () { Navigator.pop(context); _openThemeColorPicker(); }),
           ListTile(leading: const Icon(Icons.language_rounded), title: Text(AppLang.tr('language')), trailing: Switch(value: isHindiLanguage.value, onChanged: (val) async { isHindiLanguage.value = val; await (await SharedPreferences.getInstance()).setBool('app_language_hindi', val); })),
+          const Divider(),
+          ValueListenableBuilder<bool>(
+            valueListenable: AdConsentManager.privacyOptionsRequiredNotifier,
+            builder: (_, required, __) {
+              if (!required) return const SizedBox.shrink();
+              return ListTile(
+                leading: const Icon(Icons.privacy_tip_outlined),
+                title: Text(AppLang.tr('ad_privacy')),
+                onTap: () {
+                  Navigator.pop(context);
+                  AdConsentManager.showPrivacyOptionsForm(context);
+                },
+              );
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.verified_user_outlined),
+            title: Text(AppLang.tr('privacy_policy')),
+            onTap: () {
+              Navigator.pop(context);
+              _showPrivacyPolicyDialog();
+            },
+          ),
         ],
       ),
     );
@@ -3829,8 +4059,8 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     );
   }
 }
-// ==================== PART 3B OF 4 END ====================
-// ==================== PART 4A OF 4 START ====================
+// ==================== PART 3B OF 6 END ====================
+// ==================== PART 4A OF 6 START ====================
 // ============================================================================
 // 3. PRO SCAN FILTER, CROP, MANUAL ADJUST, ERASER & MULTI-PAGE ADD SCREEN
 // ============================================================================
@@ -4010,7 +4240,7 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
 
     if (!_cachedBasePreviewRgba.containsKey(pageIdx)) {
       final wh = [0, 0];
-      final rgba = await ProDocImageProcessor.decodeImageToRgba(_workingPaths[pageIdx], maxDimension: 1440, outWidthHeight: wh);
+      final rgba = await ProDocImageProcessor.decodeImageToRgba(_workingPaths[pageIdx], maxDimension: 1200, outWidthHeight: wh);
       if (rgba != null) {
         _cachedBasePreviewRgba[pageIdx] = rgba;
         _cachedBasePreviewWH[pageIdx] = wh;
@@ -4139,20 +4369,28 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
                     _isSaving = true;
                     _savingStatusText = 'Importing ${picked.length} gallery photo(s)...';
                   });
-                  final List<String> added = [];
+                  final List<String?> slots = List<String?>.filled(picked.length, null);
                   try {
                     final appDir = await getApplicationDocumentsDirectory();
                     final scansDir = Directory('${appDir.path}/scans');
                     if (!await scansDir.exists()) await scansDir.create(recursive: true);
-                    for (int i = 0; i < picked.length; i++) {
-                      if (mounted) setState(() => _savingStatusText = 'Importing ${i + 1}/${picked.length}...');
-                      final dest = '${scansDir.path}/rev_gal_${DateTime.now().millisecondsSinceEpoch}_$i.jpg';
-                      final saved = await importXFileSafely(picked[i], dest, maxDimension: 3000);
-                      if (saved != null) added.add(saved);
+                    final int stamp = DateTime.now().millisecondsSinceEpoch;
+                    const int batchSize = 3;
+                    for (int start = 0; start < picked.length; start += batchSize) {
+                      final int end = min(picked.length, start + batchSize);
+                      if (mounted) setState(() => _savingStatusText = 'Importing $end/${picked.length}...');
+                      await Future.wait(
+                        List.generate(end - start, (offset) async {
+                          final int i = start + offset;
+                          final dest = '${scansDir.path}/rev_gal_${stamp}_$i.jpg';
+                          slots[i] = await importXFileSafely(picked[i], dest, maxDimension: 2600);
+                        }),
+                      );
                     }
                   } finally {
                     if (mounted) setState(() => _isSaving = false);
                   }
+                  final added = slots.whereType<String>().toList();
                   if (added.isNotEmpty) _appendExtraPages(added);
                 },
               ),
@@ -4191,14 +4429,23 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
         final appDir = await getApplicationDocumentsDirectory();
         final scansDir = Directory('${appDir.path}/scans');
         if (!await scansDir.exists()) await scansDir.create(recursive: true);
-        for (int i = 0; i < res.images.length; i++) {
-          final f = File(normalizeLocalFilePath(res.images[i]));
-          if (await f.exists()) {
-            final dest = '${scansDir.path}/rev_mlkit_${DateTime.now().millisecondsSinceEpoch}_$i.jpg';
-            await ProDocImageProcessor.bakeOrientationToFile(f.path, dest, maxDimension: 3000);
-            added.add(dest);
-          }
+        final int stamp = DateTime.now().millisecondsSinceEpoch;
+        final List<String?> prepared = List<String?>.filled(res.images.length, null);
+        const int batchSize = 3;
+        for (int start = 0; start < res.images.length; start += batchSize) {
+          final int end = min(res.images.length, start + batchSize);
+          await Future.wait(
+            List.generate(end - start, (offset) async {
+              final int i = start + offset;
+              final f = File(normalizeLocalFilePath(res!.images[i]));
+              if (await f.exists()) {
+                final dest = '${scansDir.path}/rev_mlkit_${stamp}_$i.jpg';
+                prepared[i] = await ProDocImageProcessor.bakeOrientationToFile(f.path, dest, maxDimension: 2600);
+              }
+            }),
+          );
         }
+        added.addAll(prepared.whereType<String>());
       } finally {
         if (mounted) setState(() => _isSaving = false);
       }
@@ -4250,6 +4497,7 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
       if (mounted) {
         setState(() {
           _workingPaths[_curPageIndex] = straightened;
+          _originalRawPaths[_curPageIndex] = straightened;
           _pageDeskewAngles[_curPageIndex] = 0.0;
           _pageEraserStrokes[_curPageIndex] = [];
           _pageCropCorners[_curPageIndex] = _defaultCropCorners();
@@ -4287,6 +4535,7 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
     if (mounted) {
       setState(() {
         _workingPaths[_curPageIndex] = rotatedPath;
+        _originalRawPaths[_curPageIndex] = rotatedPath;
         _pageEraserStrokes[_curPageIndex] = [];
         _pageCropCorners[_curPageIndex] = _defaultCropCorners();
         _isSaving = false;
@@ -4318,6 +4567,7 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
     if (mounted) {
       setState(() {
         _workingPaths[_curPageIndex] = croppedPath;
+        _originalRawPaths[_curPageIndex] = croppedPath;
         _pageEraserStrokes[_curPageIndex] = [];
         _pageCropCorners[_curPageIndex] = _defaultCropCorners();
         _activeTopTab = 1;
@@ -4344,7 +4594,7 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
 
     String processedPath;
     if (filterId == 'original' && !hasAdjustments) {
-      await ProDocImageProcessor.bakeOrientationToFile(_workingPaths[i], outPath, maxDimension: 3000);
+      await ProDocImageProcessor.bakeOrientationToFile(_workingPaths[i], outPath, maxDimension: 2600);
       processedPath = outPath;
     } else {
       processedPath = await ProDocImageProcessor.processAndSaveHighRes(
@@ -4373,7 +4623,7 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
   Future<void> _finishAndExport() async {
     setState(() {
       _isSaving = true;
-      _savingStatusText = 'Saving Page 1 of ${_workingPaths.length}...';
+      _savingStatusText = 'Saving ${_workingPaths.length} page(s) in Pro-Clarity...';
     });
     final appDir = await getApplicationDocumentsDirectory();
     final scansDir = Directory('${appDir.path}/scans');
@@ -4383,13 +4633,20 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
     final List<String> enhancedPaths = List<String>.filled(_workingPaths.length, '');
 
     try {
-      for (int i = 0; i < _workingPaths.length; i++) {
+      const int batchSize = 3;
+      for (int start = 0; start < _workingPaths.length; start += batchSize) {
+        final int end = min(_workingPaths.length, start + batchSize);
         if (mounted) {
-          setState(() => _savingStatusText = 'Saving Page ${i + 1} of ${_workingPaths.length}...');
+          setState(() => _savingStatusText = 'Saving ${start + 1}–$end of ${_workingPaths.length}...');
         }
-        final exported = await _exportSinglePage(i, scansDir.path, stamp);
-        enhancedPaths[i] = exported;
-        _finalExportedPaths.add(exported);
+        await Future.wait(
+          List.generate(end - start, (offset) async {
+            final int i = start + offset;
+            final exported = await _exportSinglePage(i, scansDir.path, stamp);
+            enhancedPaths[i] = exported;
+            _finalExportedPaths.add(exported);
+          }),
+        );
       }
 
       if (mounted) {
@@ -4406,7 +4663,8 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
       }
     }
   }
-
+// ==================== PART 4A OF 6 END ====================
+// ==================== PART 4B OF 6 START ====================
   @override
   Widget build(BuildContext context) {
     final activePreset = _currentPreset;
@@ -4430,347 +4688,362 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
       ),
       body: _isSaving
           ? Center(child: Column(mainAxisSize: MainAxisSize.min, children: [const CircularProgressIndicator(color: Colors.greenAccent), const SizedBox(height: 12), Text(_savingStatusText, style: const TextStyle(color: Colors.white70, fontSize: 13))]))
-          : Column(
-              children: [
-                SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                  child: Row(
-                    children: [
-                      _buildTopPill('Straighten AI', Icons.auto_awesome, _activeTopTab == 0, () { setState(() => _activeTopTab = 0); _runAutoStraightenAI(); }),
-                      const SizedBox(width: 8),
-                      _buildTopPill('Pro Filters', Icons.auto_fix_high_rounded, _activeTopTab == 1, () => setState(() => _activeTopTab = 1)),
-                      const SizedBox(width: 8),
-                      _buildTopPill('Crop', Icons.crop_rounded, _activeTopTab == 5, () async { await _ensureBaseDimensionsLoaded(_curPageIndex); setState(() => _activeTopTab = 5); }),
-                      const SizedBox(width: 8),
-                      _buildTopPill('Adjust', Icons.tune_rounded, _activeTopTab == 2, () => setState(() => _activeTopTab = 2)),
-                      const SizedBox(width: 8),
-                      _buildTopPill('Eraser', Icons.cleaning_services_rounded, _activeTopTab == 3, () async { await _ensureBaseDimensionsLoaded(_curPageIndex); setState(() => _activeTopTab = 3); }),
-                      const SizedBox(width: 8),
-                      _buildTopPill('Tilt & Rotate', Icons.crop_rotate_rounded, _activeTopTab == 4, () => setState(() => _activeTopTab = 4)),
-                    ],
+          : SafeArea(
+              top: false,
+              child: Column(
+                children: [
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    child: Row(
+                      children: [
+                        _buildTopPill('Straighten AI', Icons.auto_awesome, _activeTopTab == 0, () { setState(() => _activeTopTab = 0); _runAutoStraightenAI(); }),
+                        const SizedBox(width: 8),
+                        _buildTopPill('Pro Filters', Icons.auto_fix_high_rounded, _activeTopTab == 1, () => setState(() => _activeTopTab = 1)),
+                        const SizedBox(width: 8),
+                        _buildTopPill('Crop', Icons.crop_rounded, _activeTopTab == 5, () async { await _ensureBaseDimensionsLoaded(_curPageIndex); setState(() => _activeTopTab = 5); }),
+                        const SizedBox(width: 8),
+                        _buildTopPill('Adjust', Icons.tune_rounded, _activeTopTab == 2, () => setState(() => _activeTopTab = 2)),
+                        const SizedBox(width: 8),
+                        _buildTopPill('Eraser', Icons.cleaning_services_rounded, _activeTopTab == 3, () async { await _ensureBaseDimensionsLoaded(_curPageIndex); setState(() => _activeTopTab = 3); }),
+                        const SizedBox(width: 8),
+                        _buildTopPill('Tilt & Rotate', Icons.crop_rotate_rounded, _activeTopTab == 4, () => setState(() => _activeTopTab = 4)),
+                      ],
+                    ),
                   ),
-                ),
-                Expanded(
-                  child: Stack(
-                    alignment: Alignment.center,
-                    children: [
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                        child: Transform.rotate(
-                          angle: _activeTopTab == 5 ? 0.0 : (_currentTiltAngle * pi / 180),
-                          child: LayoutBuilder(
-                            builder: (ctx, box) {
-                              final double aspect = (wh != null && wh[1] > 0) ? (wh[0] / wh[1]) : 0.72;
-                              double dispW = box.maxWidth;
-                              double dispH = dispW / aspect;
-                              if (dispH > box.maxHeight) {
-                                dispH = box.maxHeight;
-                                dispW = dispH * aspect;
-                              }
-                              final Widget docImageWidget = ClipRRect(
-                                borderRadius: BorderRadius.circular(10),
-                                child: (_activeTopTab == 5 || _showOriginalHold || (activePreset.id == 'original' && previewUiImg == null) || previewUiImg == null)
-                                    ? Image.file(curImg, fit: BoxFit.contain)
-                                    : RawImage(image: previewUiImg, fit: BoxFit.contain),
-                              );
+                  Expanded(
+                    child: ClipRect(
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                            child: Transform.rotate(
+                              angle: _activeTopTab == 5 ? 0.0 : (_currentTiltAngle * pi / 180),
+                              child: LayoutBuilder(
+                                builder: (ctx, box) {
+                                  final double aspect = (wh != null && wh[1] > 0) ? (wh[0] / wh[1]) : 0.72;
+                                  double dispW = box.maxWidth;
+                                  double dispH = dispW / aspect;
+                                  if (dispH > box.maxHeight) {
+                                    dispH = box.maxHeight;
+                                    dispW = dispH * aspect;
+                                  }
+                                  final Widget docImageWidget = ClipRRect(
+                                    borderRadius: BorderRadius.circular(10),
+                                    child: (_activeTopTab == 5 || _showOriginalHold || (activePreset.id == 'original' && previewUiImg == null) || previewUiImg == null)
+                                        ? Image.file(curImg, fit: BoxFit.contain)
+                                        : RawImage(image: previewUiImg, fit: BoxFit.contain),
+                                  );
 
-                              if (_activeTopTab == 5) {
-                                return SizedBox(
-                                  width: dispW,
-                                  height: dispH,
-                                  child: GestureDetector(
-                                    onPanStart: (d) {
-                                      final pos = d.localPosition;
-                                      int? bestIdx;
-                                      double bestDist = 42.0;
-                                      for (int i = 0; i < 4; i++) {
-                                        final pt = Offset(cropCorners[i].dx * dispW, cropCorners[i].dy * dispH);
-                                        final dist = (pt - pos).distance;
-                                        if (dist < bestDist) {
-                                          bestDist = dist;
-                                          bestIdx = i;
-                                        }
-                                      }
-                                      setState(() => _draggingCornerIndex = bestIdx);
-                                    },
-                                    onPanUpdate: (d) {
-                                      final idx = _draggingCornerIndex;
-                                      if (idx == null) return;
-                                      final nx = (d.localPosition.dx / dispW).clamp(0.0, 1.0);
-                                      final ny = (d.localPosition.dy / dispH).clamp(0.0, 1.0);
-                                      final candidate = List<Offset>.from(cropCorners);
-                                      candidate[idx] = Offset(nx, ny);
-                                      if (_isConvexQuad(candidate)) {
-                                        setState(() => cropCorners[idx] = Offset(nx, ny));
-                                      }
-                                    },
-                                    onPanEnd: (_) => setState(() => _draggingCornerIndex = null),
-                                    child: Stack(
-                                      fit: StackFit.expand,
-                                      children: [
-                                        docImageWidget,
-                                        CustomPaint(painter: _CropQuadPainter(corners: cropCorners)),
-                                      ],
-                                    ),
-                                  ),
-                                );
-                              }
-
-                              if (_activeTopTab != 3) return docImageWidget;
-
-                              return SizedBox(
-                                width: dispW,
-                                height: dispH,
-                                child: GestureDetector(
-                                  onPanStart: (d) {
-                                    final nx = (d.localPosition.dx / dispW).clamp(0.0, 1.0);
-                                    final ny = (d.localPosition.dy / dispH).clamp(0.0, 1.0);
-                                    setState(() => _activeEraserPoints = [[nx, ny]]);
-                                  },
-                                  onPanUpdate: (d) {
-                                    if (_activeEraserPoints == null) return;
-                                    final nx = (d.localPosition.dx / dispW).clamp(0.0, 1.0);
-                                    final ny = (d.localPosition.dy / dispH).clamp(0.0, 1.0);
-                                    setState(() => _activeEraserPoints!.add([nx, ny]));
-                                  },
-                                  onPanEnd: (_) {
-                                    if (_activeEraserPoints != null && _activeEraserPoints!.isNotEmpty) {
-                                      final list = _pageEraserStrokes[_curPageIndex] ?? [];
-                                      list.add({'points': _activeEraserPoints!, 'radius': _eraserRadiusNorm});
-                                      _pageEraserStrokes[_curPageIndex] = list;
-                                      _activeEraserPoints = null;
-                                      _renderCurrentPagePreview();
-                                    }
-                                  },
-                                  child: Stack(
-                                    fit: StackFit.expand,
-                                    children: [
-                                      docImageWidget,
-                                      if (_activeEraserPoints != null)
-                                        CustomPaint(
-                                          painter: _LiveEraserStrokePainter(points: _activeEraserPoints!, radiusNorm: _eraserRadiusNorm),
+                                  if (_activeTopTab == 5) {
+                                    return SizedBox(
+                                      width: dispW,
+                                      height: dispH,
+                                      child: GestureDetector(
+                                        onPanStart: (d) {
+                                          final pos = d.localPosition;
+                                          int? bestIdx;
+                                          double bestDist = 42.0;
+                                          for (int i = 0; i < 4; i++) {
+                                            final pt = Offset(cropCorners[i].dx * dispW, cropCorners[i].dy * dispH);
+                                            final dist = (pt - pos).distance;
+                                            if (dist < bestDist) {
+                                              bestDist = dist;
+                                              bestIdx = i;
+                                            }
+                                          }
+                                          setState(() => _draggingCornerIndex = bestIdx);
+                                        },
+                                        onPanUpdate: (d) {
+                                          final idx = _draggingCornerIndex;
+                                          if (idx == null) return;
+                                          final nx = (d.localPosition.dx / dispW).clamp(0.0, 1.0);
+                                          final ny = (d.localPosition.dy / dispH).clamp(0.0, 1.0);
+                                          final candidate = List<Offset>.from(cropCorners);
+                                          candidate[idx] = Offset(nx, ny);
+                                          if (_isConvexQuad(candidate)) {
+                                            setState(() => cropCorners[idx] = Offset(nx, ny));
+                                          }
+                                        },
+                                        onPanEnd: (_) => setState(() => _draggingCornerIndex = null),
+                                        onPanCancel: () => setState(() => _draggingCornerIndex = null),
+                                        child: Stack(
+                                          fit: StackFit.expand,
+                                          children: [
+                                            docImageWidget,
+                                            CustomPaint(painter: _CropQuadPainter(corners: cropCorners)),
+                                          ],
                                         ),
-                                    ],
-                                  ),
+                                      ),
+                                    );
+                                  }
+
+                                  if (_activeTopTab != 3) return docImageWidget;
+
+                                  return SizedBox(
+                                    width: dispW,
+                                    height: dispH,
+                                    child: GestureDetector(
+                                      onTapUp: (d) {
+                                        final nx = (d.localPosition.dx / dispW).clamp(0.0, 1.0);
+                                        final ny = (d.localPosition.dy / dispH).clamp(0.0, 1.0);
+                                        final list = _pageEraserStrokes[_curPageIndex] ?? [];
+                                        list.add({'points': [[nx, ny]], 'radius': _eraserRadiusNorm});
+                                        _pageEraserStrokes[_curPageIndex] = list;
+                                        _renderCurrentPagePreview();
+                                      },
+                                      onPanStart: (d) {
+                                        final nx = (d.localPosition.dx / dispW).clamp(0.0, 1.0);
+                                        final ny = (d.localPosition.dy / dispH).clamp(0.0, 1.0);
+                                        setState(() => _activeEraserPoints = [[nx, ny]]);
+                                      },
+                                      onPanUpdate: (d) {
+                                        if (_activeEraserPoints == null) return;
+                                        final nx = (d.localPosition.dx / dispW).clamp(0.0, 1.0);
+                                        final ny = (d.localPosition.dy / dispH).clamp(0.0, 1.0);
+                                        setState(() => _activeEraserPoints!.add([nx, ny]));
+                                      },
+                                      onPanEnd: (_) {
+                                        if (_activeEraserPoints != null && _activeEraserPoints!.isNotEmpty) {
+                                          final list = _pageEraserStrokes[_curPageIndex] ?? [];
+                                          list.add({'points': _activeEraserPoints!, 'radius': _eraserRadiusNorm});
+                                          _pageEraserStrokes[_curPageIndex] = list;
+                                          _activeEraserPoints = null;
+                                          _renderCurrentPagePreview();
+                                        }
+                                      },
+                                      onPanCancel: () => setState(() => _activeEraserPoints = null),
+                                      child: Stack(
+                                        fit: StackFit.expand,
+                                        children: [
+                                          docImageWidget,
+                                          if (_activeEraserPoints != null)
+                                            CustomPaint(
+                                              painter: _LiveEraserStrokePainter(points: _activeEraserPoints!, radiusNorm: _eraserRadiusNorm),
+                                            ),
+                                        ],
+                                      ),
+                                    ),
+                                  );
+                                },
+                              ),
+                            ),
+                          ),
+                          if (_isRenderingPreview)
+                            Positioned(
+                              top: 10,
+                              right: 18,
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                                decoration: BoxDecoration(color: Colors.black87, borderRadius: BorderRadius.circular(20)),
+                                child: const Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.greenAccent)),
+                                    SizedBox(width: 6),
+                                    Text('Enhancing...', style: TextStyle(color: Colors.white, fontSize: 10)),
+                                  ],
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  if (_activeTopTab == 5)
+                    Container(
+                      color: const Color(0xFF1F2229),
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Expanded(child: Text('Drag 4 green corners to document edges', style: TextStyle(color: Colors.white70, fontSize: 11))),
+                          TextButton.icon(
+                            icon: const Icon(Icons.refresh_rounded, size: 16, color: Colors.white70),
+                            label: const Text('Reset', style: TextStyle(color: Colors.white70, fontSize: 12)),
+                            onPressed: () => setState(() => _pageCropCorners[_curPageIndex] = _defaultCropCorners()),
+                          ),
+                          const SizedBox(width: 8),
+                          ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF2E7D32), foregroundColor: Colors.white),
+                            icon: const Icon(Icons.check_rounded, size: 17),
+                            label: const Text('Apply Crop', style: TextStyle(fontSize: 12)),
+                            onPressed: _applyManualPerspectiveCrop,
+                          ),
+                        ],
+                      ),
+                    )
+                  else if (_activeTopTab == 4)
+                    Container(
+                      color: const Color(0xFF1F2229),
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Row(children: [const Icon(Icons.straighten, color: Colors.white70, size: 18), const SizedBox(width: 8), Text('Tilt Angle: ${_currentTiltAngle.toStringAsFixed(1)}°', style: const TextStyle(color: Colors.white, fontSize: 12)), const Spacer(), LabeledIconButton(icon: Icons.refresh_rounded, label: 'Reset', color: const Color(0xFF81C784), onPressed: () => setState(() => _pageDeskewAngles[_curPageIndex] = 0.0)), LabeledIconButton(icon: Icons.rotate_right_rounded, label: 'Rotate 90°', color: Colors.white, onPressed: _rotateCurrentPage90)]),
+                          Slider(value: _currentTiltAngle, min: -30.0, max: 30.0, activeColor: const Color(0xFF81C784), inactiveColor: Colors.grey.shade800, onChanged: (val) => setState(() => _pageDeskewAngles[_curPageIndex] = val)),
+                        ],
+                      ),
+                    )
+                  else if (_activeTopTab == 3)
+                    Container(
+                      color: const Color(0xFF1F2229),
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Row(
+                            children: [
+                              const Icon(Icons.cleaning_services_rounded, color: Colors.greenAccent, size: 18),
+                              const SizedBox(width: 8),
+                              const Expanded(child: Text('Tap or swipe on stains/fingers to erase', style: TextStyle(color: Colors.white70, fontSize: 11))),
+                              LabeledIconButton(
+                                icon: Icons.undo_rounded,
+                                label: 'Undo',
+                                color: Colors.white,
+                                onPressed: _currentEraserStrokes.isEmpty
+                                    ? null
+                                    : () {
+                                        setState(() => _pageEraserStrokes[_curPageIndex]!.removeLast());
+                                        _renderCurrentPagePreview();
+                                      },
+                              ),
+                              LabeledIconButton(
+                                icon: Icons.delete_sweep_rounded,
+                                label: 'Clear',
+                                color: Colors.redAccent,
+                                onPressed: _currentEraserStrokes.isEmpty
+                                    ? null
+                                    : () {
+                                        setState(() => _pageEraserStrokes[_curPageIndex] = []);
+                                        _renderCurrentPagePreview();
+                                      },
+                              ),
+                            ],
+                          ),
+                          Row(
+                            children: [
+                              const Text('Brush Size:', style: TextStyle(color: Colors.white70, fontSize: 11)),
+                              Expanded(
+                                child: Slider(
+                                  value: _eraserRadiusNorm,
+                                  min: 0.015,
+                                  max: 0.08,
+                                  activeColor: const Color(0xFF81C784),
+                                  inactiveColor: Colors.grey.shade700,
+                                  onChanged: (v) => setState(() => _eraserRadiusNorm = v),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    )
+                  else if (_activeTopTab == 2)
+                    Container(
+                      color: const Color(0xFF1F2229),
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              const Text('Manual Clarity Tuning', style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
+                              TextButton.icon(
+                                icon: const Icon(Icons.refresh_rounded, size: 15, color: Color(0xFF81C784)),
+                                label: const Text('Reset Adjust', style: TextStyle(color: Color(0xFF81C784), fontSize: 11)),
+                                onPressed: () {
+                                  setState(() {
+                                    _pageBrightness[_curPageIndex] = 0.0;
+                                    _pageContrast[_curPageIndex] = 1.0;
+                                    _pageSharpness[_curPageIndex] = 0.72;
+                                  });
+                                  _renderCurrentPagePreview();
+                                },
+                              ),
+                            ],
+                          ),
+                          _buildAdjustSliderRow('Brightness', _currentBrightness, -0.35, 0.35, '${(_currentBrightness * 100).round()}', (v) => setState(() => _pageBrightness[_curPageIndex] = v)),
+                          _buildAdjustSliderRow('Contrast', _currentContrast, 0.6, 1.8, '${_currentContrast.toStringAsFixed(2)}x', (v) => setState(() => _pageContrast[_curPageIndex] = v)),
+                          _buildAdjustSliderRow('Sharpness', _currentSharpness, 0.0, 1.3, '${(_currentSharpness * 100).round()}%', (v) => setState(() => _pageSharpness[_curPageIndex] = v)),
+                        ],
+                      ),
+                    )
+                  else
+                    Container(
+                      color: const Color(0xFF1F2229),
+                      padding: const EdgeInsets.fromLTRB(10, 4, 10, 6),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Row(children: [const Text('Filter Strength:', style: TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.bold)), Expanded(child: Slider(value: _currentIntensity, min: 0.0, max: 1.0, divisions: 10, activeColor: const Color(0xFF81C784), inactiveColor: Colors.grey.shade700, onChanged: (val) => setState(() => _pageFilterIntensities[_curPageIndex] = val), onChangeEnd: (_) => _renderCurrentPagePreview())), Text('${(_currentIntensity * 100).toInt()}%', style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold))]),
+                          GridView.builder(
+                            shrinkWrap: true,
+                            physics: const NeverScrollableScrollPhysics(),
+                            itemCount: kDocFilters.length,
+                            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 4, crossAxisSpacing: 6, mainAxisSpacing: 6, childAspectRatio: 1.65),
+                            itemBuilder: (ctx, i) {
+                              final f = kDocFilters[i];
+                              final isSel = activePreset.id == f.id;
+                              return InkWell(
+                                borderRadius: BorderRadius.circular(10),
+                                onTap: () { setState(() { _showOriginalHold = false; _pageFilterSelections[_curPageIndex] = f.id; }); _renderCurrentPagePreview(); },
+                                child: Container(
+                                  decoration: BoxDecoration(color: isSel ? const Color(0xFF1E4628) : const Color(0xFF2A2D36), borderRadius: BorderRadius.circular(10), border: Border.all(color: isSel ? const Color(0xFF81C784) : Colors.white12, width: isSel ? 2 : 1)),
+                                  child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(f.icon, color: isSel ? const Color(0xFF81C784) : Colors.white70, size: 17), const SizedBox(height: 2), Text(f.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: isSel ? Colors.white : Colors.white70, fontSize: 9.5, fontWeight: isSel ? FontWeight.bold : FontWeight.w500))]),
                                 ),
                               );
                             },
                           ),
-                        ),
+                        ],
                       ),
-                      if (_isRenderingPreview)
-                        Positioned(
-                          top: 10,
-                          right: 18,
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                            decoration: BoxDecoration(color: Colors.black87, borderRadius: BorderRadius.circular(20)),
-                            child: const Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.greenAccent)),
-                                SizedBox(width: 6),
-                                Text('Enhancing...', style: TextStyle(color: Colors.white, fontSize: 10)),
-                              ],
-                            ),
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-                if (_activeTopTab == 5)
-                  Container(
-                    color: const Color(0xFF1F2229),
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Expanded(child: Text('Drag 4 green corners to document edges', style: TextStyle(color: Colors.white70, fontSize: 11))),
-                        TextButton.icon(
-                          icon: const Icon(Icons.refresh_rounded, size: 16, color: Colors.white70),
-                          label: const Text('Reset', style: TextStyle(color: Colors.white70, fontSize: 12)),
-                          onPressed: () => setState(() => _pageCropCorners[_curPageIndex] = _defaultCropCorners()),
-                        ),
-                        const SizedBox(width: 8),
-                        ElevatedButton.icon(
-                          style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF2E7D32), foregroundColor: Colors.white),
-                          icon: const Icon(Icons.check_rounded, size: 17),
-                          label: const Text('Apply Crop', style: TextStyle(fontSize: 12)),
-                          onPressed: _applyManualPerspectiveCrop,
-                        ),
-                      ],
                     ),
-                  )
-                else if (_activeTopTab == 4)
                   Container(
-                    color: const Color(0xFF1F2229),
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Row(children: [const Icon(Icons.straighten, color: Colors.white70, size: 18), const SizedBox(width: 8), Text('Tilt Angle: ${_currentTiltAngle.toStringAsFixed(1)}°', style: const TextStyle(color: Colors.white, fontSize: 12)), const Spacer(), LabeledIconButton(icon: Icons.refresh_rounded, label: 'Reset', color: const Color(0xFF81C784), onPressed: () => setState(() => _pageDeskewAngles[_curPageIndex] = 0.0)), LabeledIconButton(icon: Icons.rotate_right_rounded, label: 'Rotate 90°', color: Colors.white, onPressed: _rotateCurrentPage90)]),
-                        Slider(value: _currentTiltAngle, min: -30.0, max: 30.0, activeColor: const Color(0xFF81C784), inactiveColor: Colors.grey.shade800, onChanged: (val) => setState(() => _pageDeskewAngles[_curPageIndex] = val)),
-                      ],
-                    ),
-                  )
-                else if (_activeTopTab == 3)
-                  Container(
-                    color: const Color(0xFF1F2229),
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Row(
-                          children: [
-                            const Icon(Icons.cleaning_services_rounded, color: Colors.greenAccent, size: 18),
-                            const SizedBox(width: 8),
-                            const Expanded(child: Text('Swipe on stains/fingers to erase cleanly', style: TextStyle(color: Colors.white70, fontSize: 11))),
-                            LabeledIconButton(
-                              icon: Icons.undo_rounded,
-                              label: 'Undo',
-                              color: Colors.white,
-                              onPressed: _currentEraserStrokes.isEmpty
-                                  ? null
-                                  : () {
-                                      setState(() => _pageEraserStrokes[_curPageIndex]!.removeLast());
-                                      _renderCurrentPagePreview();
-                                    },
-                            ),
-                            LabeledIconButton(
-                              icon: Icons.delete_sweep_rounded,
-                              label: 'Clear',
-                              color: Colors.redAccent,
-                              onPressed: _currentEraserStrokes.isEmpty
-                                  ? null
-                                  : () {
-                                      setState(() => _pageEraserStrokes[_curPageIndex] = []);
-                                      _renderCurrentPagePreview();
-                                    },
-                            ),
-                          ],
-                        ),
-                        Row(
-                          children: [
-                            const Text('Brush Size:', style: TextStyle(color: Colors.white70, fontSize: 11)),
-                            Expanded(
-                              child: Slider(
-                                value: _eraserRadiusNorm,
-                                min: 0.015,
-                                max: 0.08,
-                                activeColor: const Color(0xFF81C784),
-                                inactiveColor: Colors.grey.shade700,
-                                onChanged: (v) => setState(() => _eraserRadiusNorm = v),
+                    height: 68,
+                    color: const Color(0xFF14161B),
+                    padding: const EdgeInsets.symmetric(vertical: 5),
+                    child: ListView.builder(
+                      scrollDirection: Axis.horizontal,
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      itemCount: _workingPaths.length + 1,
+                      itemBuilder: (ctx, idx) {
+                        if (idx == _workingPaths.length) {
+                          return GestureDetector(
+                            onTap: _openAddMorePagesInsideReview,
+                            child: Container(
+                              width: 50,
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF262A34),
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(color: Colors.greenAccent.withAlpha(140), width: 1.2),
+                              ),
+                              child: const Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(Icons.add_rounded, color: Colors.greenAccent, size: 22),
+                                  Text('Add', style: TextStyle(color: Colors.greenAccent, fontSize: 9, fontWeight: FontWeight.bold)),
+                                ],
                               ),
                             ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  )
-                else if (_activeTopTab == 2)
-                  Container(
-                    color: const Color(0xFF1F2229),
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            const Text('Manual Clarity Tuning', style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
-                            TextButton.icon(
-                              icon: const Icon(Icons.refresh_rounded, size: 15, color: Color(0xFF81C784)),
-                              label: const Text('Reset Adjust', style: TextStyle(color: Color(0xFF81C784), fontSize: 11)),
-                              onPressed: () {
-                                setState(() {
-                                  _pageBrightness[_curPageIndex] = 0.0;
-                                  _pageContrast[_curPageIndex] = 1.0;
-                                  _pageSharpness[_curPageIndex] = 0.72;
-                                });
-                                _renderCurrentPagePreview();
-                              },
-                            ),
-                          ],
-                        ),
-                        _buildAdjustSliderRow('Brightness', _currentBrightness, -0.35, 0.35, '${(_currentBrightness * 100).round()}', (v) => setState(() => _pageBrightness[_curPageIndex] = v)),
-                        _buildAdjustSliderRow('Contrast', _currentContrast, 0.6, 1.8, '${_currentContrast.toStringAsFixed(2)}x', (v) => setState(() => _pageContrast[_curPageIndex] = v)),
-                        _buildAdjustSliderRow('Sharpness', _currentSharpness, 0.0, 1.3, '${(_currentSharpness * 100).round()}%', (v) => setState(() => _pageSharpness[_curPageIndex] = v)),
-                      ],
-                    ),
-                  )
-                else
-                  Container(
-                    color: const Color(0xFF1F2229),
-                    padding: const EdgeInsets.fromLTRB(10, 4, 10, 6),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Row(children: [const Text('Filter Strength:', style: TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.bold)), Expanded(child: Slider(value: _currentIntensity, min: 0.0, max: 1.0, divisions: 10, activeColor: const Color(0xFF81C784), inactiveColor: Colors.grey.shade700, onChanged: (val) => setState(() => _pageFilterIntensities[_curPageIndex] = val), onChangeEnd: (_) => _renderCurrentPagePreview())), Text('${(_currentIntensity * 100).toInt()}%', style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold))]),
-                        GridView.builder(
-                          shrinkWrap: true,
-                          physics: const NeverScrollableScrollPhysics(),
-                          itemCount: kDocFilters.length,
-                          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 4, crossAxisSpacing: 6, mainAxisSpacing: 6, childAspectRatio: 1.65),
-                          itemBuilder: (ctx, i) {
-                            final f = kDocFilters[i];
-                            final isSel = activePreset.id == f.id;
-                            return InkWell(
-                              borderRadius: BorderRadius.circular(10),
-                              onTap: () { setState(() { _showOriginalHold = false; _pageFilterSelections[_curPageIndex] = f.id; }); _renderCurrentPagePreview(); },
-                              child: Container(
-                                decoration: BoxDecoration(color: isSel ? const Color(0xFF1E4628) : const Color(0xFF2A2D36), borderRadius: BorderRadius.circular(10), border: Border.all(color: isSel ? const Color(0xFF81C784) : Colors.white12, width: isSel ? 2 : 1)),
-                                child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(f.icon, color: isSel ? const Color(0xFF81C784) : Colors.white70, size: 17), const SizedBox(height: 2), Text(f.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: isSel ? Colors.white : Colors.white70, fontSize: 9.5, fontWeight: isSel ? FontWeight.bold : FontWeight.w500))]),
-                              ),
-                            );
-                          },
-                        ),
-                      ],
-                    ),
-                  ),
-                Container(
-                  height: 68,
-                  color: const Color(0xFF14161B),
-                  padding: const EdgeInsets.symmetric(vertical: 5),
-                  child: ListView.builder(
-                    scrollDirection: Axis.horizontal,
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                    itemCount: _workingPaths.length + 1,
-                    itemBuilder: (ctx, idx) {
-                      if (idx == _workingPaths.length) {
+                          );
+                        }
+                        final isSelectedPage = _curPageIndex == idx;
                         return GestureDetector(
-                          onTap: _openAddMorePagesInsideReview,
+                          onTap: () { setState(() { _curPageIndex = idx; _showOriginalHold = false; _activeEraserPoints = null; }); _renderCurrentPagePreview(); },
                           child: Container(
                             width: 50,
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF262A34),
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(color: Colors.greenAccent.withAlpha(140), width: 1.2),
-                            ),
-                            child: const Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Icon(Icons.add_rounded, color: Colors.greenAccent, size: 22),
-                                Text('Add', style: TextStyle(color: Colors.greenAccent, fontSize: 9, fontWeight: FontWeight.bold)),
-                              ],
-                            ),
+                            margin: const EdgeInsets.only(right: 10),
+                            decoration: BoxDecoration(borderRadius: BorderRadius.circular(8), border: Border.all(color: isSelectedPage ? const Color(0xFF81C784) : Colors.grey.shade700, width: isSelectedPage ? 2.5 : 1)),
+                            child: Stack(children: [Positioned.fill(child: ClipRRect(borderRadius: BorderRadius.circular(6), child: Image.file(File(_workingPaths[idx]), fit: BoxFit.cover, cacheWidth: 140))), Positioned(bottom: 2, left: 2, right: 2, child: Container(padding: const EdgeInsets.symmetric(vertical: 1), decoration: BoxDecoration(color: Colors.black.withAlpha(190), borderRadius: BorderRadius.circular(4)), child: Text('P${idx + 1}', textAlign: TextAlign.center, style: const TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold))))]),
                           ),
                         );
-                      }
-                      final isSelectedPage = _curPageIndex == idx;
-                      return GestureDetector(
-                        onTap: () { setState(() { _curPageIndex = idx; _showOriginalHold = false; _activeEraserPoints = null; }); _renderCurrentPagePreview(); },
-                        child: Container(
-                          width: 50,
-                          margin: const EdgeInsets.only(right: 10),
-                          decoration: BoxDecoration(borderRadius: BorderRadius.circular(8), border: Border.all(color: isSelectedPage ? const Color(0xFF81C784) : Colors.grey.shade700, width: isSelectedPage ? 2.5 : 1)),
-                          child: Stack(children: [Positioned.fill(child: ClipRRect(borderRadius: BorderRadius.circular(6), child: Image.file(File(_workingPaths[idx]), fit: BoxFit.cover, cacheWidth: 140))), Positioned(bottom: 2, left: 2, right: 2, child: Container(padding: const EdgeInsets.symmetric(vertical: 1), decoration: BoxDecoration(color: Colors.black.withAlpha(190), borderRadius: BorderRadius.circular(4)), child: Text('P${idx + 1}', textAlign: TextAlign.center, style: const TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold))))]),
-                        ),
-                      );
-                    },
+                      },
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
     );
   }
@@ -4869,8 +5142,8 @@ class _LiveEraserStrokePainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _LiveEraserStrokePainter oldDelegate) => true;
 }
-// ==================== PART 4A OF 4 END ====================
-// ==================== PART 4B OF 4 START ====================
+// ==================== PART 4B OF 6 END ====================
+// ==================== PART 5A OF 6 START ====================
 // 4. DOCUMENT DETAIL SCREEN (MOVE/COPY PAGES BETWEEN DOCS & FOLDERS)
 class DocumentDetailScreen extends StatefulWidget {
   final Map<String, dynamic> doc;
@@ -5115,7 +5388,11 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
           onApplyAndProceed: (retouchedPaths, updatedRawPaths) {
             setState(() {
               for (int k = 0; k < indicesToEdit.length; k++) {
-                if (k < retouchedPaths.length) _images[indicesToEdit[k]] = retouchedPaths[k];
+                final int targetIdx = indicesToEdit[k];
+                if (k < retouchedPaths.length) _images[targetIdx] = retouchedPaths[k];
+                if (k < updatedRawPaths.length && targetIdx < _originalImages.length) {
+                  _originalImages[targetIdx] = updatedRawPaths[k];
+                }
               }
               if (retouchedPaths.length > indicesToEdit.length) {
                 for (int k = indicesToEdit.length; k < retouchedPaths.length; k++) {
@@ -5234,22 +5511,30 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
       ),
     );
 
-    final List<String> copiedRaw = [];
+    final List<String?> slots = List<String?>.filled(picked.length, null);
     try {
       final appDir = await getApplicationDocumentsDirectory();
       final scansDir = Directory('${appDir.path}/scans');
       if (!await scansDir.exists()) await scansDir.create(recursive: true);
-      for (int i = 0; i < picked.length; i++) {
-        progressNotifier.value = 'Importing ${i + 1}/${picked.length}...';
-        final target = '${scansDir.path}/addgal_${DateTime.now().millisecondsSinceEpoch}_$i.jpg';
-        final saved = await importXFileSafely(picked[i], target, maxDimension: 3000);
-        if (saved != null) copiedRaw.add(saved);
+      final int stamp = DateTime.now().millisecondsSinceEpoch;
+      const int batchSize = 3;
+      for (int start = 0; start < picked.length; start += batchSize) {
+        final int end = min(picked.length, start + batchSize);
+        progressNotifier.value = 'Importing $end/${picked.length}...';
+        await Future.wait(
+          List.generate(end - start, (offset) async {
+            final int i = start + offset;
+            final target = '${scansDir.path}/addgal_${stamp}_$i.jpg';
+            slots[i] = await importXFileSafely(picked[i], target, maxDimension: 2600);
+          }),
+        );
       }
     } finally {
       if (mounted) Navigator.of(context, rootNavigator: true).pop();
       Future.delayed(const Duration(milliseconds: 450), progressNotifier.dispose);
     }
 
+    final copiedRaw = slots.whereType<String>().toList();
     if (!mounted || copiedRaw.isEmpty) return;
     Navigator.push(
       context,
@@ -5272,15 +5557,23 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
     final appDir = await getApplicationDocumentsDirectory();
     final scansDir = Directory('${appDir.path}/scans');
     if (!await scansDir.exists()) await scansDir.create(recursive: true);
-    final List<String> copiedRaw = [];
-    for (int i = 0; i < rawPaths.length; i++) {
-      final f = File(normalizeLocalFilePath(rawPaths[i]));
-      if (await f.exists()) {
-        final target = '${scansDir.path}/add_${DateTime.now().millisecondsSinceEpoch}_$i.jpg';
-        await ProDocImageProcessor.bakeOrientationToFile(f.path, target, maxDimension: 3000);
-        copiedRaw.add(target);
-      }
+    final int stamp = DateTime.now().millisecondsSinceEpoch;
+    final List<String?> slots = List<String?>.filled(rawPaths.length, null);
+    const int batchSize = 3;
+    for (int start = 0; start < rawPaths.length; start += batchSize) {
+      final int end = min(rawPaths.length, start + batchSize);
+      await Future.wait(
+        List.generate(end - start, (offset) async {
+          final int i = start + offset;
+          final f = File(normalizeLocalFilePath(rawPaths[i]));
+          if (await f.exists()) {
+            final target = '${scansDir.path}/add_${stamp}_$i.jpg';
+            slots[i] = await ProDocImageProcessor.bakeOrientationToFile(f.path, target, maxDimension: 2600);
+          }
+        }),
+      );
     }
+    final copiedRaw = slots.whereType<String>().toList();
     if (!mounted || copiedRaw.isEmpty) return;
     Navigator.push(
       context,
@@ -5314,18 +5607,45 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
   Future<void> _shareOrderedPdf() async {
     final imgs = _targetImagesInOrder;
     if (imgs.isEmpty) return;
-    final pdfBytes = await _buildOrderedPdfBytes(imgs);
-    final tempDir = await getTemporaryDirectory();
-    final file = File('${tempDir.path}/${_title.replaceAll(' ', '_')}.pdf');
-    await file.writeAsBytes(pdfBytes);
-    await Share.shareXFiles([XFile(file.path)], text: '$_title (${imgs.length} Pages PDF)');
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const PopScope(canPop: false, child: AlertDialog(content: Row(children: [CircularProgressIndicator(), SizedBox(width: 16), Expanded(child: Text('Preparing PDF...'))]))),
+    );
+    try {
+      final pdfBytes = await _buildOrderedPdfBytes(imgs);
+      final tempDir = await getTemporaryDirectory();
+      final file = File('${tempDir.path}/${_title.replaceAll(RegExp(r'[^\w\s\-]'), '_')}.pdf');
+      await file.writeAsBytes(pdfBytes);
+      if (mounted) Navigator.of(context, rootNavigator: true).pop();
+      await Share.shareXFiles([XFile(file.path)], text: '$_title (${imgs.length} Pages PDF)');
+    } catch (e) {
+      if (mounted) {
+        Navigator.of(context, rootNavigator: true).pop();
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('❌ PDF Error: $e')));
+      }
+    }
   }
 
   Future<void> _saveOrderedPdfToPhone() async {
     final imgs = _targetImagesInOrder;
     if (imgs.isEmpty) return;
-    final res = await PhoneStorageManager.savePdfBytesToPublicDownloads(await _buildOrderedPdfBytes(imgs), _title);
-    if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(res.savedPath != null ? '✅ PDF (${imgs.length} pages) saved to ${res.folderLabel}!' : '❌ Failed to save PDF'), backgroundColor: Colors.green.shade700));
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const PopScope(canPop: false, child: AlertDialog(content: Row(children: [CircularProgressIndicator(), SizedBox(width: 16), Expanded(child: Text('Saving PDF to Downloads...'))]))),
+    );
+    try {
+      final pdfBytes = await _buildOrderedPdfBytes(imgs);
+      final res = await PhoneStorageManager.savePdfBytesToPublicDownloads(pdfBytes, _title);
+      if (mounted) Navigator.of(context, rootNavigator: true).pop();
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(res.savedPath != null ? '✅ PDF (${imgs.length} pages) saved to ${res.folderLabel}!' : '❌ Failed to save PDF'), backgroundColor: Colors.green.shade700));
+    } catch (e) {
+      if (mounted) {
+        Navigator.of(context, rootNavigator: true).pop();
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('❌ Save PDF Error: $e')));
+      }
+    }
   }
 
   Future<void> _shareImagesDirectly() async {
@@ -5462,6 +5782,9 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
                                           onApplyAndProceed: (retouched, updatedRaws) {
                                             setState(() {
                                               _images[pageIdx] = retouched.first;
+                                              if (updatedRaws.isNotEmpty && pageIdx < _originalImages.length) {
+                                                _originalImages[pageIdx] = updatedRaws.first;
+                                              }
                                               if (retouched.length > 1) {
                                                 for (int k = 1; k < retouched.length; k++) {
                                                   _images.add(retouched[k]);
@@ -5645,8 +5968,8 @@ class _FullScreenPhotoViewerState extends State<FullScreenPhotoViewer> {
     );
   }
 }
-// ==================== PART 4B OF 4 END ====================
-// ==================== PART 4C-1 OF 4 START ====================
+// ==================== PART 5A OF 6 END ====================
+// ==================== PART 5B OF 6 START ====================
 // HELPER FOR MULTI-PAGE HINDI / UNICODE / RUPEE SYMBOL PDF RENDERING
 class _UnicodePdfHelper {
   static bool hasNonAscii(String s) => s.runes.any((r) => r > 127);
@@ -5754,7 +6077,7 @@ class _UnicodePdfHelper {
   }
 }
 
-// 6. PASSPORT PHOTO STUDIO
+// 6. PASSPORT PHOTO STUDIO (MULTI-PAGE PAGINATION FIXED FOR 16/32 COPIES)
 class PassportPhotoStudioScreen extends StatefulWidget {
   const PassportPhotoStudioScreen({super.key});
   @override
@@ -5819,29 +6142,44 @@ class _PassportPhotoStudioScreenState extends State<PassportPhotoStudioScreen> {
     if (_bgChoice == 'Studio Blue') bgColor = PdfColor.fromInt(0xFFBBDEFB);
     if (_bgChoice == 'Light Grey') bgColor = PdfColor.fromInt(0xFFECEFF1);
 
-    pdf.addPage(
-      pw.Page(
-        pageFormat: PdfPageFormat.a4,
-        build: (_) => pw.Container(
-          padding: const pw.EdgeInsets.all(24),
-          child: pw.Wrap(
-            spacing: 16,
-            runSpacing: 20,
+    const double pageMargin = 24.0;
+    const double gap = 14.0;
+    final double usableW = PdfPageFormat.a4.width - pageMargin * 2;
+    final int cols = max(1, ((usableW + gap) / (w + gap)).floor());
+
+    final List<pw.Widget> rows = [];
+    for (int start = 0; start < _copies; start += cols) {
+      final int count = min(cols, _copies - start);
+      rows.add(
+        pw.Padding(
+          padding: const pw.EdgeInsets.only(bottom: 16),
+          child: pw.Row(
             children: List.generate(
-              _copies,
-              (_) => pw.Container(
-                width: w,
-                height: h,
-                color: bgColor,
-                padding: const pw.EdgeInsets.all(2),
+              count,
+              (c) => pw.Padding(
+                padding: pw.EdgeInsets.only(right: c < count - 1 ? gap : 0),
                 child: pw.Container(
-                  decoration: pw.BoxDecoration(border: pw.Border.all(color: PdfColors.grey400, width: 1)),
-                  child: pw.ClipRect(child: pw.Image(passImg, width: w - 4, height: h - 4, fit: pw.BoxFit.cover)),
+                  width: w,
+                  height: h,
+                  color: bgColor,
+                  padding: const pw.EdgeInsets.all(2),
+                  child: pw.Container(
+                    decoration: pw.BoxDecoration(border: pw.Border.all(color: PdfColors.grey400, width: 1)),
+                    child: pw.ClipRect(child: pw.Image(passImg, width: w - 4, height: h - 4, fit: pw.BoxFit.cover)),
+                  ),
                 ),
               ),
             ),
           ),
         ),
+      );
+    }
+
+    pdf.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.a4,
+        margin: const pw.EdgeInsets.all(pageMargin),
+        build: (_) => rows,
       ),
     );
     final file = File("${tempDir.path}/Passport_Sheet_${_copies}_Prints.pdf");
@@ -5942,50 +6280,53 @@ class _DigitalSignatureScreenState extends State<DigitalSignatureScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Digital Signature'), actions: [LabeledIconButton(icon: Icons.undo, label: 'Undo', onPressed: () { if (_strokes.isNotEmpty) setState(() => _strokes.removeLast()); }), LabeledIconButton(icon: Icons.clear_all, label: 'Clear', onPressed: () => setState(() => _strokes.clear()))]),
-      body: Column(
-        children: [
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            color: Colors.grey.shade100,
-            child: Row(
-              children: [
-                const Text('Ink: ', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black87, fontSize: 12)),
-                ...[Colors.black, const Color(0xFF0D47A1), const Color(0xFFB71C1C), const Color(0xFF1B5E20)].map((c) => GestureDetector(onTap: () => setState(() => _inkColor = c), child: Container(margin: const EdgeInsets.symmetric(horizontal: 3), width: 24, height: 24, decoration: BoxDecoration(color: c, shape: BoxShape.circle, border: Border.all(color: _inkColor == c ? Colors.amber : Colors.transparent, width: 2))))),
-                const SizedBox(width: 8),
-                const Text('Size:', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black87, fontSize: 12)),
-                Expanded(child: Slider(value: _strokeWidth, min: 1.5, max: 8.0, onChanged: (v) => setState(() => _strokeWidth = v))),
-              ],
-            ),
-          ),
-          Expanded(
-            child: Container(
-              margin: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.grey.shade300),
+      body: SafeArea(
+        top: false,
+        child: Column(
+          children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              color: Colors.grey.shade100,
+              child: Row(
+                children: [
+                  const Text('Ink: ', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black87, fontSize: 12)),
+                  ...[Colors.black, const Color(0xFF0D47A1), const Color(0xFFB71C1C), const Color(0xFF1B5E20)].map((c) => GestureDetector(onTap: () => setState(() => _inkColor = c), child: Container(margin: const EdgeInsets.symmetric(horizontal: 3), width: 24, height: 24, decoration: BoxDecoration(color: c, shape: BoxShape.circle, border: Border.all(color: _inkColor == c ? Colors.amber : Colors.transparent, width: 2))))),
+                  const SizedBox(width: 8),
+                  const Text('Size:', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black87, fontSize: 12)),
+                  Expanded(child: Slider(value: _strokeWidth, min: 1.5, max: 8.0, onChanged: (v) => setState(() => _strokeWidth = v))),
+                ],
               ),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(12),
-                child: LayoutBuilder(
-                  builder: (_, box) => GestureDetector(
-                    onPanStart: (d) {
-                      final p = Offset(d.localPosition.dx.clamp(0.0, box.maxWidth), d.localPosition.dy.clamp(0.0, box.maxHeight));
-                      setState(() => _strokes.add([p]));
-                    },
-                    onPanUpdate: (d) {
-                      if (_strokes.isEmpty) return;
-                      final p = Offset(d.localPosition.dx.clamp(0.0, box.maxWidth), d.localPosition.dy.clamp(0.0, box.maxHeight));
-                      setState(() => _strokes.last.add(p));
-                    },
-                    child: CustomPaint(painter: _SignPainter(_strokes, _inkColor, _strokeWidth), size: Size.infinite),
+            ),
+            Expanded(
+              child: Container(
+                margin: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.grey.shade300),
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: LayoutBuilder(
+                    builder: (_, box) => GestureDetector(
+                      onPanStart: (d) {
+                        final p = Offset(d.localPosition.dx.clamp(0.0, box.maxWidth), d.localPosition.dy.clamp(0.0, box.maxHeight));
+                        setState(() => _strokes.add([p]));
+                      },
+                      onPanUpdate: (d) {
+                        if (_strokes.isEmpty) return;
+                        final p = Offset(d.localPosition.dx.clamp(0.0, box.maxWidth), d.localPosition.dy.clamp(0.0, box.maxHeight));
+                        setState(() => _strokes.last.add(p));
+                      },
+                      child: CustomPaint(painter: _SignPainter(_strokes, _inkColor, _strokeWidth), size: Size.infinite),
+                    ),
                   ),
                 ),
               ),
             ),
-          ),
-          Padding(padding: const EdgeInsets.all(16), child: SizedBox(width: double.infinity, height: 48, child: ElevatedButton.icon(style: ElevatedButton.styleFrom(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white), icon: const Icon(Icons.download_rounded), label: const Text('Export Transparent PNG Sign'), onPressed: _strokes.isEmpty ? null : _exportSignaturePng))),
-        ],
+            Padding(padding: const EdgeInsets.all(16), child: SizedBox(width: double.infinity, height: 48, child: ElevatedButton.icon(style: ElevatedButton.styleFrom(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white), icon: const Icon(Icons.download_rounded), label: const Text('Export Transparent PNG Sign'), onPressed: _strokes.isEmpty ? null : _exportSignaturePng))),
+          ],
+        ),
       ),
     );
   }
@@ -6170,8 +6511,7 @@ class _InvoiceMakerProScreenState extends State<InvoiceMakerProScreen> {
     );
   }
 }
-// ==================== PART 4C-1 OF 4 END ====================
-// ==================== PART 4C-2 OF 4 START ====================
+
 // 9. RESUME / CV BUILDER
 class ResumeBuilderScreen extends StatefulWidget {
   const ResumeBuilderScreen({super.key});
@@ -6253,7 +6593,8 @@ class _ResumeBuilderScreenState extends State<ResumeBuilderScreen> {
     );
   }
 }
-
+// ==================== PART 5B OF 6 END ====================
+// ==================== PART 5C OF 6 START ====================
 // 10. POWERPOINT / SLIDES MAKER
 class PowerPointStudioScreen extends StatefulWidget {
   const PowerPointStudioScreen({super.key});
@@ -6365,21 +6706,24 @@ class _LetterTemplatesScreenState extends State<LetterTemplatesScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Letter Maker'), actions: [LabeledIconButton(icon: Icons.share, label: 'Share PDF', onPressed: _exportLetter)]),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          children: [
-            Wrap(
-              spacing: 8,
-              children: [
-                ActionChip(label: const Text('Leave Letter'), onPressed: () => setState(() => _ctrl.text = "To,\nThe HR Manager,\nSubject: Leave Application\n\nRespected Sir/Madam,\nI am writing to formally request 3 days of leave from [Start Date] to [End Date] due to urgent personal reasons.\n\nThank you.\nSincerely,\n[Your Name]")),
-                ActionChip(label: const Text('Resignation'), onPressed: () => setState(() => _ctrl.text = "To,\nThe Management,\nSubject: Notice of Resignation\n\nPlease accept this letter as formal notification that I am resigning from my position as [Designation]. My last working day will be [Date].\n\nRegards,\n[Your Name]")),
-                ActionChip(label: const Text('Bank Manager'), onPressed: () => setState(() => _ctrl.text = "To,\nThe Branch Manager,\nSubject: Request to Update Phone Number\n\nRespected Sir,\nKindly update my mobile number [New Number] in my bank account [Account No].\n\nThanking you,\n[Your Name]")),
-              ],
-            ),
-            const SizedBox(height: 10),
-            Expanded(child: TextField(controller: _ctrl, maxLines: null, expands: true, decoration: const InputDecoration(border: OutlineInputBorder()))),
-          ],
+      body: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            children: [
+              Wrap(
+                spacing: 8,
+                children: [
+                  ActionChip(label: const Text('Leave Letter'), onPressed: () => setState(() => _ctrl.text = "To,\nThe HR Manager,\nSubject: Leave Application\n\nRespected Sir/Madam,\nI am writing to formally request 3 days of leave from [Start Date] to [End Date] due to urgent personal reasons.\n\nThank you.\nSincerely,\n[Your Name]")),
+                  ActionChip(label: const Text('Resignation'), onPressed: () => setState(() => _ctrl.text = "To,\nThe Management,\nSubject: Notice of Resignation\n\nPlease accept this letter as formal notification that I am resigning from my position as [Designation]. My last working day will be [Date].\n\nRegards,\n[Your Name]")),
+                  ActionChip(label: const Text('Bank Manager'), onPressed: () => setState(() => _ctrl.text = "To,\nThe Branch Manager,\nSubject: Request to Update Phone Number\n\nRespected Sir,\nKindly update my mobile number [New Number] in my bank account [Account No].\n\nThanking you,\n[Your Name]")),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Expanded(child: TextField(controller: _ctrl, maxLines: null, expands: true, decoration: const InputDecoration(border: OutlineInputBorder()))),
+            ],
+          ),
         ),
       ),
     );
@@ -6414,7 +6758,10 @@ class _TxtEditorNotesScreenState extends State<TxtEditorNotesScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Notes & TXT Studio'), actions: [LabeledIconButton(icon: Icons.share, label: 'Share TXT', onPressed: _exportTxt)]),
-      body: Padding(padding: const EdgeInsets.all(16), child: Column(children: [TextField(controller: _titleCtrl, decoration: const InputDecoration(labelText: 'Title', border: OutlineInputBorder())), const SizedBox(height: 10), Expanded(child: TextField(controller: _bodyCtrl, maxLines: null, expands: true, decoration: const InputDecoration(hintText: 'Start writing notes...', border: OutlineInputBorder())))])),
+      body: SafeArea(
+        top: false,
+        child: Padding(padding: const EdgeInsets.all(16), child: Column(children: [TextField(controller: _titleCtrl, decoration: const InputDecoration(labelText: 'Title', border: OutlineInputBorder())), const SizedBox(height: 10), Expanded(child: TextField(controller: _bodyCtrl, maxLines: null, expands: true, decoration: const InputDecoration(hintText: 'Start writing notes...', border: OutlineInputBorder())))])),
+      ),
     );
   }
 }
@@ -6517,6 +6864,7 @@ class WatermarkToolScreen extends StatefulWidget {
 class _WatermarkToolScreenState extends State<WatermarkToolScreen> {
   final _wmCtrl = TextEditingController(text: 'CONFIDENTIAL');
   String? _selectedDocId;
+  bool _isExporting = false;
 
   @override
   void dispose() {
@@ -6525,38 +6873,45 @@ class _WatermarkToolScreenState extends State<WatermarkToolScreen> {
   }
 
   Future<void> _exportWatermarkedPdf() async {
-    if (_selectedDocId == null) return;
-    final doc = widget.savedDocs.firstWhere((d) => d['id'].toString() == _selectedDocId);
-    final pdf = pw.Document();
-    final String wmText = _wmCtrl.text;
-    pw.MemoryImage? unicodeStamp;
-    if (_UnicodePdfHelper.hasNonAscii(wmText)) {
-      unicodeStamp = pw.MemoryImage(await _UnicodePdfHelper.renderRotatedWatermarkPng(wmText));
-    }
-
-    for (var path in (doc['images'] as List)) {
-      final f = File(path.toString());
-      if (await f.exists()) {
-        final imgMem = pw.MemoryImage(await f.readAsBytes());
-        pdf.addPage(
-          pw.Page(
-            pageFormat: PdfPageFormat.a4,
-            build: (_) => pw.Stack(
-              children: [
-                pw.Center(child: pw.Image(imgMem, fit: pw.BoxFit.contain)),
-                if (unicodeStamp != null)
-                  pw.Center(child: pw.Image(unicodeStamp, width: 420, height: 420))
-                else
-                  pw.Center(child: pw.Transform.rotate(angle: -0.6, child: pw.Text(wmText, style: pw.TextStyle(fontSize: 48, fontWeight: pw.FontWeight.bold, color: PdfColor.fromInt(0x35000000))))),
-              ],
-            ),
-          ),
-        );
+    if (_selectedDocId == null || _isExporting) return;
+    setState(() => _isExporting = true);
+    try {
+      final doc = widget.savedDocs.firstWhere((d) => d['id'].toString() == _selectedDocId);
+      final pdf = pw.Document();
+      final String wmText = _wmCtrl.text;
+      pw.MemoryImage? unicodeStamp;
+      if (_UnicodePdfHelper.hasNonAscii(wmText)) {
+        unicodeStamp = pw.MemoryImage(await _UnicodePdfHelper.renderRotatedWatermarkPng(wmText));
       }
+
+      for (var path in (doc['images'] as List)) {
+        final f = File(path.toString());
+        if (await f.exists()) {
+          final imgMem = pw.MemoryImage(await f.readAsBytes());
+          pdf.addPage(
+            pw.Page(
+              pageFormat: PdfPageFormat.a4,
+              build: (_) => pw.Stack(
+                children: [
+                  pw.Center(child: pw.Image(imgMem, fit: pw.BoxFit.contain)),
+                  if (unicodeStamp != null)
+                    pw.Center(child: pw.Image(unicodeStamp, width: 420, height: 420))
+                  else
+                    pw.Center(child: pw.Transform.rotate(angle: -0.6, child: pw.Text(wmText, style: pw.TextStyle(fontSize: 48, fontWeight: pw.FontWeight.bold, color: PdfColor.fromInt(0x35000000))))),
+                ],
+              ),
+            ),
+          );
+        }
+      }
+      final file = File("${(await getTemporaryDirectory()).path}/${doc['title']}_Watermarked.pdf");
+      await file.writeAsBytes(await pdf.save());
+      await Share.shareXFiles([XFile(file.path)], text: 'Watermarked PDF');
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('❌ Watermark error: $e')));
+    } finally {
+      if (mounted) setState(() => _isExporting = false);
     }
-    final file = File("${(await getTemporaryDirectory()).path}/${doc['title']}_Watermarked.pdf");
-    await file.writeAsBytes(await pdf.save());
-    await Share.shareXFiles([XFile(file.path)], text: 'Watermarked PDF');
   }
 
   @override
@@ -6571,7 +6926,12 @@ class _WatermarkToolScreenState extends State<WatermarkToolScreen> {
             const SizedBox(height: 12),
             TextField(controller: _wmCtrl, decoration: const InputDecoration(labelText: 'Watermark Stamp Text', border: OutlineInputBorder())),
             const SizedBox(height: 24),
-            ElevatedButton.icon(style: ElevatedButton.styleFrom(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white, minimumSize: const Size.fromHeight(48)), icon: const Icon(Icons.branding_watermark_outlined), label: const Text('Apply Stamp & Share PDF'), onPressed: _selectedDocId == null ? null : _exportWatermarkedPdf),
+            ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white, minimumSize: const Size.fromHeight(48)),
+              icon: _isExporting ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Icon(Icons.branding_watermark_outlined),
+              label: Text(_isExporting ? 'Generating PDF...' : 'Apply Stamp & Share PDF'),
+              onPressed: (_selectedDocId == null || _isExporting) ? null : _exportWatermarkedPdf,
+            ),
           ],
         ),
       ),
@@ -6610,7 +6970,7 @@ class _UniversalImageToolScreenState extends State<UniversalImageToolScreen> {
     if (x == null || !mounted) return;
     final tempDir = await getTemporaryDirectory();
     final dest = '${tempDir.path}/uni_gal_${DateTime.now().millisecondsSinceEpoch}.jpg';
-    final saved = await importXFileSafely(x, dest, maxDimension: 3000);
+    final saved = await importXFileSafely(x, dest, maxDimension: 2600);
     if (saved != null && mounted) {
       _deleteTempQuietly(_lastTempPath);
       _lastTempPath = saved;
@@ -6831,4 +7191,4 @@ class _QrRectPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _QrRectPainter oldDelegate) => true;
 }
-// ==================== PART 4C-2 OF 4 END ====================
+// ==================== PART 5C OF 6 END ====================
