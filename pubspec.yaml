@@ -1,4 +1,4 @@
- name: bharat_document_scanner_ai
+name: bharat_document_scanner_ai
 description: "Bharat Document Scanner AI"
 publish_to: 'none'
 version: 1.0.0+1
@@ -10,7 +10,7 @@ dependencies:
   flutter:
     sdk: flutter
   camera: ^0.11.0+2
-  google_mlkit_document_scanner: ^0.5.0
+  google_mlkit_document_scanner: ^0.4.0
   google_mlkit_text_recognition: '>=0.14.0 <2.0.0'
   google_mobile_ads: ^8.0.0
   pdf: ^3.11.3
