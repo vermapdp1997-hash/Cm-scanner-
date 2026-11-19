@@ -3050,7 +3050,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     DocumentScanningResult? result;
     final scanner = DocumentScanner(
       options: DocumentScannerOptions(
-        documentFormat: DocumentFormat.jpeg,
+        documentFormats: const {DocumentFormat.jpeg},
         mode: ScannerMode.base,
         isGalleryImport: true,
         pageLimit: limit,
@@ -3070,8 +3070,9 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     if (!mounted) return;
     final List<String> persistentRawPaths = List<String>.from(preCapturedPaths);
 
-    if (result != null && result.images.isNotEmpty) {
-      final progressNotifier = ValueNotifier<String>('Preparing 1/${result.images.length}...');
+    final List<String> mlImages = result?.images ?? const [];
+    if (mlImages.isNotEmpty) {
+      final progressNotifier = ValueNotifier<String>('Preparing 1/${mlImages.length}...');
       showDialog(
         context: context,
         barrierDismissible: false,
@@ -3090,16 +3091,16 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
         final scansDir = Directory('${appDir.path}/scans');
         if (!await scansDir.exists()) await scansDir.create(recursive: true);
         final int stamp = DateTime.now().millisecondsSinceEpoch;
-        final List<String?> prepared = List<String?>.filled(result.images.length, null);
+        final List<String?> prepared = List<String?>.filled(mlImages.length, null);
 
         const int batchSize = 3;
-        for (int start = 0; start < result.images.length; start += batchSize) {
-          final int end = min(result.images.length, start + batchSize);
-          progressNotifier.value = 'Preparing $end/${result.images.length}...';
+        for (int start = 0; start < mlImages.length; start += batchSize) {
+          final int end = min(mlImages.length, start + batchSize);
+          progressNotifier.value = 'Preparing $end/${mlImages.length}...';
           await Future.wait(
             List.generate(end - start, (offset) async {
               final int i = start + offset;
-              final cleanPath = normalizeLocalFilePath(result!.images[i]);
+              final cleanPath = normalizeLocalFilePath(mlImages[i]);
               final f = File(cleanPath);
               if (await f.exists()) {
                 final targetPath = '${scansDir.path}/mlkit_${stamp}_$i.jpg';
@@ -4405,7 +4406,7 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
     DocumentScanningResult? res;
     final scanner = DocumentScanner(
       options: DocumentScannerOptions(
-        documentFormat: DocumentFormat.jpeg,
+        documentFormats: const {DocumentFormat.jpeg},
         mode: ScannerMode.base,
         isGalleryImport: true,
         pageLimit: 30,
@@ -4420,7 +4421,8 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
     }
     if (!mounted) return;
     final List<String> added = List<String>.from(preCaptured);
-    if (res != null && res.images.isNotEmpty) {
+    final List<String> mlImages = res?.images ?? const [];
+    if (mlImages.isNotEmpty) {
       setState(() {
         _isSaving = true;
         _savingStatusText = 'Preparing scanned pages...';
@@ -4430,14 +4432,14 @@ class _ScanFilterReviewScreenState extends State<ScanFilterReviewScreen> {
         final scansDir = Directory('${appDir.path}/scans');
         if (!await scansDir.exists()) await scansDir.create(recursive: true);
         final int stamp = DateTime.now().millisecondsSinceEpoch;
-        final List<String?> prepared = List<String?>.filled(res.images.length, null);
+        final List<String?> prepared = List<String?>.filled(mlImages.length, null);
         const int batchSize = 3;
-        for (int start = 0; start < res.images.length; start += batchSize) {
-          final int end = min(res.images.length, start + batchSize);
+        for (int start = 0; start < mlImages.length; start += batchSize) {
+          final int end = min(mlImages.length, start + batchSize);
           await Future.wait(
             List.generate(end - start, (offset) async {
               final int i = start + offset;
-              final f = File(normalizeLocalFilePath(res!.images[i]));
+              final f = File(normalizeLocalFilePath(mlImages[i]));
               if (await f.exists()) {
                 final dest = '${scansDir.path}/rev_mlkit_${stamp}_$i.jpg';
                 prepared[i] = await ProDocImageProcessor.bakeOrientationToFile(f.path, dest, maxDimension: 2600);
@@ -5413,7 +5415,7 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
     DocumentScanningResult? res;
     final scanner = DocumentScanner(
       options: DocumentScannerOptions(
-        documentFormat: DocumentFormat.jpeg,
+        documentFormats: const {DocumentFormat.jpeg},
         mode: ScannerMode.base,
         isGalleryImport: true,
         pageLimit: 30,
@@ -5428,8 +5430,9 @@ class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
     }
     if (!mounted) return;
     final List<String> combinedRaw = List<String>.from(preCapturedPaths);
-    if (res != null && res.images.isNotEmpty) {
-      combinedRaw.addAll(res.images.map(normalizeLocalFilePath));
+    final List<String> mlImages = res?.images ?? const [];
+    if (mlImages.isNotEmpty) {
+      combinedRaw.addAll(mlImages.map(normalizeLocalFilePath));
     }
     if (combinedRaw.isNotEmpty) {
       await _appendNewImagesThroughFilter(combinedRaw);
@@ -6101,12 +6104,13 @@ class _PassportPhotoStudioScreenState extends State<PassportPhotoStudioScreen> {
 
   Future<void> _scanPhotoMlKit() async {
     final scanner = DocumentScanner(
-      options: DocumentScannerOptions(documentFormat: DocumentFormat.jpeg, mode: ScannerMode.base, isGalleryImport: true, pageLimit: 1),
+      options: DocumentScannerOptions(documentFormats: const {DocumentFormat.jpeg}, mode: ScannerMode.base, isGalleryImport: true, pageLimit: 1),
     );
     try {
       final res = await scanner.scanDocument();
-      if (res.images.isNotEmpty && mounted) {
-        setState(() => _photoPath = normalizeLocalFilePath(res.images.first));
+      final List<String> mlImages = res.images ?? const [];
+      if (mlImages.isNotEmpty && mounted) {
+        setState(() => _photoPath = normalizeLocalFilePath(mlImages.first));
       }
     } catch (e) {
       debugPrint("Passport ML Kit err: $e");
@@ -6980,14 +6984,15 @@ class _UniversalImageToolScreenState extends State<UniversalImageToolScreen> {
 
   Future<void> _pickImageMlKit() async {
     final scanner = DocumentScanner(
-      options: DocumentScannerOptions(documentFormat: DocumentFormat.jpeg, mode: ScannerMode.base, isGalleryImport: true, pageLimit: 1),
+      options: DocumentScannerOptions(documentFormats: const {DocumentFormat.jpeg}, mode: ScannerMode.base, isGalleryImport: true, pageLimit: 1),
     );
     try {
       final res = await scanner.scanDocument();
-      if (res.images.isNotEmpty && mounted) {
+      final List<String> mlImages = res.images ?? const [];
+      if (mlImages.isNotEmpty && mounted) {
         _deleteTempQuietly(_lastTempPath);
         _lastTempPath = null;
-        setState(() => _imgPath = normalizeLocalFilePath(res.images.first));
+        setState(() => _imgPath = normalizeLocalFilePath(mlImages.first));
       }
     } catch (e) {
       debugPrint("Universal ML Kit err: $e");
