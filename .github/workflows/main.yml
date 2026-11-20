@@ -25,11 +25,16 @@ jobs:
           cache: true
 
       - name: Configure Android and Inject Native MediaStore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
         run: |
-          # 1. Android प्रोजेक्ट बनाना
-          flutter create --project-name cam_scanner --org com.mycompany.scanner .
+          # 1. Android प्रोजेक्ट बनाना (Unique Package ID for Play Store)
+          flutter create --platforms=android --project-name bharat_document_scanner_ai --org com.yogeshverma .
 
-          # 2. MainActivity.kt को MediaStore (Gallery + Downloads + Fast JPEG) से अपडेट करना
+          # 2. MainActivity.kt को MediaStore + Fast JPEG Resize/Rotate/Compress से अपडेट करना
           MAIN_KT=$(find android/app/src/main/kotlin -name "MainActivity.kt" | head -n 1)
           PKG_LINE=$(grep -m 1 "^package " "$MAIN_KT")
           echo "Updating $MAIN_KT ($PKG_LINE)"
@@ -52,13 +57,16 @@ jobs:
           import io.flutter.embedding.android.FlutterActivity
           import io.flutter.embedding.engine.FlutterEngine
           import io.flutter.plugin.common.MethodChannel
+          import java.io.ByteArrayOutputStream
           import java.io.File
           import java.io.FileOutputStream
           import java.util.concurrent.Executors
+          import kotlin.math.max
+          import kotlin.math.roundToInt
 
           class MainActivity : FlutterActivity() {
               private val channelName = "bharat_scanner/media_store"
-              private val ioExecutor = Executors.newCachedThreadPool()
+              private val ioExecutor = Executors.newFixedThreadPool(3)
               private val mainHandler = Handler(Looper.getMainLooper())
 
               override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -97,8 +105,8 @@ jobs:
                               "bakeAndResizeJpg" -> {
                                   val srcPath = call.argument<String>("srcPath")
                                   val dstPath = call.argument<String>("dstPath")
-                                  val maxDim = call.argument<Int>("maxDim") ?: 2600
-                                  val quality = call.argument<Int>("quality") ?: 92
+                                  val maxDim = call.argument<Int>("maxDim") ?: 2400
+                                  val quality = call.argument<Int>("quality") ?: 90
                                   if (srcPath.isNullOrBlank() || dstPath.isNullOrBlank()) {
                                       result.success(false)
                                       return@setMethodCallHandler
@@ -112,13 +120,27 @@ jobs:
                               "rotateJpg90" -> {
                                   val srcPath = call.argument<String>("srcPath")
                                   val dstPath = call.argument<String>("dstPath")
-                                  val quality = call.argument<Int>("quality") ?: 93
+                                  val quality = call.argument<Int>("quality") ?: 92
                                   if (srcPath.isNullOrBlank() || dstPath.isNullOrBlank()) {
                                       result.success(false)
                                       return@setMethodCallHandler
                                   }
                                   ioExecutor.execute {
-                                      val ok = bakeAndResizeJpgNative(srcPath, dstPath, maxDim = 4500, quality = quality, extraRotate90 = true)
+                                      val ok = bakeAndResizeJpgNative(srcPath, dstPath, maxDim = 2600, quality = quality, extraRotate90 = true)
+                                      mainHandler.post { result.success(ok) }
+                                  }
+                              }
+
+                              "compressJpgToTarget" -> {
+                                  val srcPath = call.argument<String>("srcPath")
+                                  val dstPath = call.argument<String>("dstPath")
+                                  val targetBytes = call.argument<Int>("targetBytes") ?: (100 * 1024)
+                                  if (srcPath.isNullOrBlank() || dstPath.isNullOrBlank()) {
+                                      result.success(false)
+                                      return@setMethodCallHandler
+                                  }
+                                  ioExecutor.execute {
+                                      val ok = compressJpgToTargetNative(srcPath, dstPath, targetBytes)
                                       mainHandler.post { result.success(ok) }
                                   }
                               }
@@ -126,6 +148,11 @@ jobs:
                               else -> result.notImplemented()
                           }
                       }
+              }
+
+              override fun onDestroy() {
+                  ioExecutor.shutdownNow()
+                  super.onDestroy()
               }
 
               private fun saveImageToMediaStore(bytes: ByteArray, fileName: String, album: String): String? {
@@ -200,6 +227,77 @@ jobs:
                   }
               }
 
+              private fun readExifOrient(path: String): Int {
+                  return try {
+                      ExifInterface(path).getAttributeInt(
+                          ExifInterface.TAG_ORIENTATION,
+                          ExifInterface.ORIENTATION_NORMAL
+                      )
+                  } catch (_: Exception) {
+                      ExifInterface.ORIENTATION_NORMAL
+                  }
+              }
+
+              private fun applyExifToMatrix(matrix: Matrix, exifOrient: Int) {
+                  when (exifOrient) {
+                      ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.setScale(-1f, 1f)
+                      ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
+                      ExifInterface.ORIENTATION_FLIP_VERTICAL -> matrix.setScale(1f, -1f)
+                      ExifInterface.ORIENTATION_TRANSPOSE -> {
+                          matrix.setRotate(90f)
+                          matrix.postScale(-1f, 1f)
+                      }
+                      ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
+                      ExifInterface.ORIENTATION_TRANSVERSE -> {
+                          matrix.setRotate(-90f)
+                          matrix.postScale(-1f, 1f)
+                      }
+                      ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+                  }
+              }
+
+              private fun writeBytesSafely(bytes: ByteArray, dstPath: String): Boolean {
+                  val dstFile = File(dstPath)
+                  dstFile.parentFile?.mkdirs()
+                  val tmpFile = File(dstFile.parentFile, "${dstFile.name}.tmp_${System.nanoTime()}")
+                  return try {
+                      FileOutputStream(tmpFile).use {
+                          it.write(bytes)
+                          it.flush()
+                      }
+                      if (dstFile.exists()) dstFile.delete()
+                      if (!tmpFile.renameTo(dstFile)) {
+                          tmpFile.copyTo(dstFile, overwrite = true)
+                          tmpFile.delete()
+                      }
+                      true
+                  } catch (_: Exception) {
+                      try { if (tmpFile.exists()) tmpFile.delete() } catch (_: Exception) {}
+                      false
+                  }
+              }
+
+              private fun writeBitmapSafely(bmp: Bitmap, dstPath: String, quality: Int): Boolean {
+                  val dstFile = File(dstPath)
+                  dstFile.parentFile?.mkdirs()
+                  val tmpFile = File(dstFile.parentFile, "${dstFile.name}.tmp_${System.nanoTime()}")
+                  return try {
+                      FileOutputStream(tmpFile).use {
+                          bmp.compress(Bitmap.CompressFormat.JPEG, quality.coerceIn(5, 100), it)
+                          it.flush()
+                      }
+                      if (dstFile.exists()) dstFile.delete()
+                      if (!tmpFile.renameTo(dstFile)) {
+                          tmpFile.copyTo(dstFile, overwrite = true)
+                          tmpFile.delete()
+                      }
+                      true
+                  } catch (_: Exception) {
+                      try { if (tmpFile.exists()) tmpFile.delete() } catch (_: Exception) {}
+                      false
+                  }
+              }
+
               private fun bakeAndResizeJpgNative(
                   srcPath: String,
                   dstPath: String,
@@ -212,15 +310,7 @@ jobs:
                   return try {
                       val srcFile = File(srcPath)
                       if (!srcFile.exists()) return false
-
-                      val exifOrient = try {
-                          ExifInterface(srcPath).getAttributeInt(
-                              ExifInterface.TAG_ORIENTATION,
-                              ExifInterface.ORIENTATION_NORMAL
-                          )
-                      } catch (_: Exception) {
-                          ExifInterface.ORIENTATION_NORMAL
-                      }
+                      val exifOrient = readExifOrient(srcPath)
 
                       val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                       BitmapFactory.decodeFile(srcPath, boundsOpts)
@@ -233,7 +323,7 @@ jobs:
                           rawW <= maxDim && rawH <= maxDim &&
                           srcPath.lowercase().endsWith(".jpg")
                       ) {
-                          if (srcPath != dstPath) {
+                          if (srcFile.absolutePath != File(dstPath).absolutePath) {
                               File(dstPath).parentFile?.mkdirs()
                               srcFile.copyTo(File(dstPath), overwrite = true)
                           }
@@ -241,7 +331,8 @@ jobs:
                       }
 
                       var sampleSize = 1
-                      while ((rawW / (sampleSize * 2)) >= maxDim && (rawH / (sampleSize * 2)) >= maxDim) {
+                      val longestRaw = max(rawW, rawH)
+                      while ((longestRaw / (sampleSize * 2)) >= maxDim) {
                           sampleSize *= 2
                       }
 
@@ -252,38 +343,9 @@ jobs:
                       decoded = BitmapFactory.decodeFile(srcPath, decodeOpts) ?: return false
 
                       val matrix = Matrix()
-                      when (exifOrient) {
-                          ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.setScale(-1f, 1f)
-                          ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
-                          ExifInterface.ORIENTATION_FLIP_VERTICAL -> matrix.setScale(1f, -1f)
-                          ExifInterface.ORIENTATION_TRANSPOSE -> {
-                              matrix.setRotate(90f)
-                              matrix.postScale(-1f, 1f)
-                          }
-                          ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
-                          ExifInterface.ORIENTATION_TRANSVERSE -> {
-                              matrix.setRotate(-90f)
-                              matrix.postScale(-1f, 1f)
-                          }
-                          ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
-                      }
+                      applyExifToMatrix(matrix, exifOrient)
                       if (extraRotate90) {
                           matrix.postRotate(90f)
-                      }
-
-                      val swapAfterExif = exifOrient in listOf(
-                          ExifInterface.ORIENTATION_TRANSPOSE,
-                          ExifInterface.ORIENTATION_ROTATE_90,
-                          ExifInterface.ORIENTATION_TRANSVERSE,
-                          ExifInterface.ORIENTATION_ROTATE_270
-                      )
-                      val swapFinal = swapAfterExif xor extraRotate90
-                      val uprightW = if (swapFinal) decoded.height else decoded.width
-                      val uprightH = if (swapFinal) decoded.width else decoded.height
-                      val longest = maxOf(uprightW, uprightH)
-                      if (longest > maxDim && maxDim > 0) {
-                          val scale = maxDim.toFloat() / longest.toFloat()
-                          matrix.postScale(scale, scale)
                       }
 
                       transformed = if (matrix.isIdentity) {
@@ -291,44 +353,126 @@ jobs:
                       } else {
                           Bitmap.createBitmap(decoded, 0, 0, decoded.width, decoded.height, matrix, true)
                       }
+                      if (transformed !== decoded) decoded.recycle()
 
-                      val outFile = File(dstPath)
-                      outFile.parentFile?.mkdirs()
-                      FileOutputStream(outFile).use { out ->
-                          transformed.compress(Bitmap.CompressFormat.JPEG, quality.coerceIn(50, 98), out)
+                      val longest = max(transformed.width, transformed.height)
+                      if (longest > maxDim && maxDim > 0) {
+                          val scale = maxDim.toFloat() / longest.toFloat()
+                          val dstW = max(1, (transformed.width * scale).roundToInt())
+                          val dstH = max(1, (transformed.height * scale).roundToInt())
+                          val scaled = Bitmap.createScaledBitmap(transformed, dstW, dstH, true)
+                          if (scaled !== transformed) transformed.recycle()
+                          transformed = scaled
                       }
-                      true
+
+                      writeBitmapSafely(transformed, dstPath, quality)
                   } catch (_: Exception) {
                       false
                   } finally {
-                      if (transformed != null && transformed !== decoded && !transformed.isRecycled) {
-                          transformed.recycle()
+                      try { if (transformed != null && !transformed.isRecycled) transformed.recycle() } catch (_: Exception) {}
+                      try { if (decoded != null && !decoded.isRecycled) decoded.recycle() } catch (_: Exception) {}
+                  }
+              }
+
+              private fun compressJpgToTargetNative(srcPath: String, dstPath: String, targetBytes: Int): Boolean {
+                  var working: Bitmap? = null
+                  return try {
+                      val maxDim = when {
+                          targetBytes < 12 * 1024 -> 360
+                          targetBytes < 24 * 1024 -> 500
+                          targetBytes < 50 * 1024 -> 720
+                          targetBytes < 110 * 1024 -> 1020
+                          targetBytes < 250 * 1024 -> 1380
+                          else -> 1650
                       }
-                      if (decoded != null && !decoded.isRecycled) {
-                          decoded.recycle()
+                      val exifOrient = readExifOrient(srcPath)
+                      val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                      BitmapFactory.decodeFile(srcPath, bounds)
+                      if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return false
+
+                      var sample = 1
+                      val longestRaw = max(bounds.outWidth, bounds.outHeight)
+                      while ((longestRaw / (sample * 2)) >= maxDim) {
+                          sample *= 2
                       }
+                      val raw = BitmapFactory.decodeFile(srcPath, BitmapFactory.Options().apply {
+                          inSampleSize = sample
+                          inPreferredConfig = Bitmap.Config.ARGB_8888
+                      }) ?: return false
+
+                      val matrix = Matrix()
+                      applyExifToMatrix(matrix, exifOrient)
+                      working = if (matrix.isIdentity) raw else Bitmap.createBitmap(raw, 0, 0, raw.width, raw.height, matrix, true)
+                      if (working !== raw) raw.recycle()
+
+                      val curLong = max(working!!.width, working!!.height)
+                      if (curLong > maxDim) {
+                          val s = maxDim.toFloat() / curLong.toFloat()
+                          val scaled = Bitmap.createScaledBitmap(working!!, max(1, (working!!.width * s).roundToInt()), max(1, (working!!.height * s).roundToInt()), true)
+                          if (scaled !== working) working!!.recycle()
+                          working = scaled
+                      }
+
+                      fun binarySearchJpg(bmp: Bitmap): ByteArray {
+                          var lo = 8
+                          var hi = 92
+                          val baos = ByteArrayOutputStream()
+                          bmp.compress(Bitmap.CompressFormat.JPEG, 42, baos)
+                          var best = baos.toByteArray()
+                          for (i in 0 until 6) {
+                              val mid = (lo + hi) / 2
+                              baos.reset()
+                              bmp.compress(Bitmap.CompressFormat.JPEG, mid, baos)
+                              val cand = baos.toByteArray()
+                              if (cand.size <= targetBytes) {
+                                  best = cand
+                                  lo = mid + 1
+                              } else {
+                                  if (best.size > targetBytes) best = cand
+                                  hi = mid - 1
+                              }
+                          }
+                          return best
+                      }
+
+                      var bestBytes = binarySearchJpg(working!!)
+                      var tries = 0
+                      while (bestBytes.size > targetBytes && working!!.width > 120 && working!!.height > 120 && tries < 6) {
+                          val scaled = Bitmap.createScaledBitmap(working!!, max(120, (working!!.width * 0.72f).roundToInt()), max(120, (working!!.height * 0.72f).roundToInt()), true)
+                          if (scaled !== working) working!!.recycle()
+                          working = scaled
+                          bestBytes = binarySearchJpg(working!!)
+                          tries++
+                      }
+                      writeBytesSafely(bestBytes, dstPath)
+                  } catch (_: Exception) {
+                      false
+                  } finally {
+                      try { if (working != null && !working.isRecycled) working.recycle() } catch (_: Exception) {}
                   }
               }
           }
           EOF
           } > "$MAIN_KT"
 
-          # 3. AndroidManifest.xml (Play Store Compliant Permissions + AdMob App ID)
+          # 3. AndroidManifest.xml (असली AdMob App ID + AD_ID + Play Store Scoped Storage)
           cat << 'EOF' > android/app/src/main/AndroidManifest.xml
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <uses-permission android:name="android.permission.CAMERA" />
               <uses-permission android:name="android.permission.INTERNET" />
               <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
+              <uses-permission android:name="com.google.android.gms.permission.AD_ID" />
+              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
               <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
 
               <uses-feature android:name="android.hardware.camera" android:required="false" />
               <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
 
               <application
-                  android:label="Bharat Document Scanner AI"
+                  android:label="Bharat Document Scanner PDF AI"
                   android:name="${applicationName}"
-                  android:icon="@mipmap/ic_launcher">
+                  android:icon="@mipmap/ic_launcher"
+                  android:requestLegacyExternalStorage="false">
                   <activity
                       android:name=".MainActivity"
                       android:exported="true"
@@ -348,26 +492,72 @@ jobs:
                   </activity>
                   <meta-data
                       android:name="com.google.android.gms.ads.APPLICATION_ID"
-                      android:value="ca-app-pub-3940256099942544~3347511713" />
+                      android:value="ca-app-pub-7940311763952252~7807809920" />
                   <meta-data
                       android:name="flutterEmbedding"
                       android:value="2" />
               </application>
+
+              <queries>
+                  <intent>
+                      <action android:name="android.intent.action.PROCESS_TEXT" />
+                      <data android:mimeType="text/plain" />
+                  </intent>
+              </queries>
           </manifest>
           EOF
 
-          # 4. Play Store API 36 (compileSdk 36, targetSdk 36, minSdk 24) व सुरक्षित R8 सेटिंग
-          if [ -f android/app/build.gradle.kts ]; then
-            sed -i 's/compileSdk = .*/compileSdk = 36/' android/app/build.gradle.kts
-            sed -i 's/minSdk = .*/minSdk = 24/' android/app/build.gradle.kts
-            sed -i 's/targetSdk = .*/targetSdk = 36/' android/app/build.gradle.kts
-            sed -i '/signingConfig/a \            isMinifyEnabled = false\n            isShrinkResources = false' android/app/build.gradle.kts
-          elif [ -f android/app/build.gradle ]; then
-            sed -i 's/compileSdk.*/compileSdk 36/' android/app/build.gradle
-            sed -i 's/minSdk.*/minSdkVersion 24/' android/app/build.gradle
-            sed -i 's/targetSdk.*/targetSdkVersion 36/' android/app/build.gradle
-            sed -i '/signingConfig/a \            minifyEnabled false\n            shrinkResources false' android/app/build.gradle
+          # 4. Optional Release Keystore (अगर GitHub Secrets जुड़े हों तो Play Store Signed AAB बनेगा)
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > android/app/upload-keystore.jks
+            cat << EOF > android/key.properties
+          storePassword=$KEYSTORE_PASSWORD
+          keyPassword=$KEY_PASSWORD
+          keyAlias=$KEY_ALIAS
+          storeFile=upload-keystore.jks
+          EOF
           fi
+
+          # 5. Play Store API 36 (compileSdk 36, targetSdk 36, minSdk 23) + Safe Signing Config
+          python3 - << 'PYEOF'
+          import re
+          from pathlib import Path
+
+          kts = Path("android/app/build.gradle.kts")
+          if kts.exists():
+              txt = kts.read_text()
+              txt = re.sub(r'compileSdk\s*=\s*.*', 'compileSdk = 36', txt)
+              txt = re.sub(r'minSdk\s*=\s*.*', 'minSdk = 23', txt)
+              txt = re.sub(r'targetSdk\s*=\s*.*', 'targetSdk = 36', txt)
+              if 'java.util.Properties' not in txt:
+                  txt = 'import java.util.Properties\nimport java.io.FileInputStream\n\n' + txt
+              signing_block = '''    val keystoreProperties = Properties()
+              val keystorePropertiesFile = rootProject.file("key.properties")
+              if (keystorePropertiesFile.exists()) {
+                  keystoreProperties.load(FileInputStream(keystorePropertiesFile))
+              }
+
+              signingConfigs {
+                  create("release") {
+                      if (keystorePropertiesFile.exists()) {
+                          keyAlias = keystoreProperties.getProperty("keyAlias")
+                          keyPassword = keystoreProperties.getProperty("keyPassword")
+                          storeFile = file(keystoreProperties.getProperty("storeFile"))
+                          storePassword = keystoreProperties.getProperty("storePassword")
+                      }
+                  }
+              }
+
+          '''
+              if 'signingConfigs {' not in txt:
+                  txt = txt.replace('    buildTypes {', signing_block + '    buildTypes {', 1)
+              txt = re.sub(
+                  r'signingConfig\s*=\s*signingConfigs\.getByName\("debug"\)',
+                  'signingConfig = if (rootProject.file("key.properties").exists()) signingConfigs.getByName("release") else signingConfigs.getByName("debug")\n            isMinifyEnabled = false\n            isShrinkResources = false',
+                  txt
+              )
+              kts.write_text(txt)
+          PYEOF
 
       - name: Get Flutter Dependencies
         run: flutter pub get
