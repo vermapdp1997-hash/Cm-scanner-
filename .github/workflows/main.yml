@@ -468,7 +468,7 @@ jobs:
 
               <uses-feature android:name="android.hardware.camera" android:required="false" />
               <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
-              <uses-feature android:name="android.hardware.screen.portrait" android:required="false" />
+              <uses-feature android:name="android.hardware.screen.portrait" android:required="false" tools:replace="android:required" />
 
               <application
                   android:label="Bharat Document Scanner PDF AI"
@@ -569,6 +569,16 @@ jobs:
 
       - name: Build Play Store AAB
         run: flutter build appbundle --release --no-tree-shake-icons
+
+      - name: Verify Portrait Feature in Built APK and Merged Manifest
+        run: |
+          echo "=== Merged Manifest Check ==="
+          find build/app/intermediates -name "AndroidManifest.xml" -exec grep -H "screen.portrait" {} + || true
+          echo "=== AAPT2 Badging Check ==="
+          AAPT2=$(find "$ANDROID_HOME/build-tools" -name "aapt2" 2>/dev/null | sort -V | tail -n 1)
+          if [ -n "$AAPT2" ]; then
+            "$AAPT2" dump badging build/app/outputs/flutter-apk/app-release.apk | grep -i -E "uses-feature|screen.portrait" || true
+          fi
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
