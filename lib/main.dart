@@ -732,7 +732,6 @@ class ProDocImageProcessor {
     return sourcePath;
   }
 }
-
 // Fast automatic document edge/quad detector running inside Isolate (~8-15ms)
 List<List<double>> _detectDocCornersIsolate(Uint8List src, int w, int h) {
   const fallback = [
@@ -1241,7 +1240,6 @@ Float32List _buildSmoothToneLut(double blackAnchor, double paperSnap, double ink
   }
   return lut;
 }
-
 Uint8List _processRgbaCore({
   required Uint8List src,
   required int w,
@@ -4198,7 +4196,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
             ),
     );
   }
-
   Widget _buildAppDrawer(bool isDark) {
     return Drawer(
       child: ListView(
@@ -4333,19 +4330,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
               delegate: SliverChildBuilderDelegate((ctx, i) => _buildDocListTile(_filteredDocs[i]), childCount: _filteredDocs.length),
             ),
           ),
-        const SliverPadding(
-          padding: EdgeInsets.fromLTRB(14, 10, 14, 0),
-          sliver: SliverToBoxAdapter(
-            child: NonGovDisclaimerCard(
-              compact: true,
-              sources: [
-                {'label': 'Passport Guidelines', 'url': 'https://www.passportindia.gov.in'},
-                {'label': 'PAN / Income Tax', 'url': 'https://www.incometax.gov.in'},
-                {'label': 'GST Official Portal', 'url': 'https://www.gst.gov.in'},
-              ],
-            ),
-          ),
-        ),
         const SliverToBoxAdapter(child: SizedBox(height: 95)),
       ],
     );
@@ -4537,15 +4521,6 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        const NonGovDisclaimerCard(
-          compact: true,
-          sources: [
-            {'label': 'Passport Photo Guidelines', 'url': 'https://www.passportindia.gov.in'},
-            {'label': 'Income Tax / PAN Portal', 'url': 'https://www.incometax.gov.in'},
-            {'label': 'GST Official Portal', 'url': 'https://www.gst.gov.in'},
-          ],
-        ),
-        const SizedBox(height: 8),
         _buildSectionTitle('Smart AI Scan Modes'),
         GridView.count(
           shrinkWrap: true,
@@ -6928,14 +6903,6 @@ class _PassportPhotoStudioScreenState extends State<PassportPhotoStudioScreen> {
             SegmentedButton<int>(segments: const [ButtonSegment(value: 4, label: Text('4')), ButtonSegment(value: 8, label: Text('8')), ButtonSegment(value: 16, label: Text('16')), ButtonSegment(value: 32, label: Text('32'))], selected: {_copies}, onSelectionChanged: (s) => setState(() => _copies = s.first)),
             const SizedBox(height: 24),
             SizedBox(width: double.infinity, height: 48, child: ElevatedButton.icon(style: ElevatedButton.styleFrom(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white), icon: const Icon(Icons.picture_as_pdf), label: const Text('Export Printable A4 Sheet PDF'), onPressed: _photoPath == null ? null : _exportPassportSheet)),
-            const SizedBox(height: 14),
-            const NonGovDisclaimerCard(
-              compact: true,
-              sources: [
-                {'label': 'Passport & OCI Photo Guidelines', 'url': 'https://www.passportindia.gov.in'},
-                {'label': 'PAN Card Photo Guidelines', 'url': 'https://www.incometax.gov.in'},
-              ],
-            ),
           ],
         ),
       ),
@@ -7234,13 +7201,6 @@ class _InvoiceMakerProScreenState extends State<InvoiceMakerProScreen> {
             }),
             const SizedBox(height: 20),
             ElevatedButton.icon(style: ElevatedButton.styleFrom(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white, minimumSize: const Size.fromHeight(48)), icon: const Icon(Icons.picture_as_pdf), label: const Text('Export Official Tax Invoice PDF'), onPressed: _items.isEmpty ? null : _exportInvoicePdf),
-            const SizedBox(height: 14),
-            const NonGovDisclaimerCard(
-              compact: true,
-              sources: [
-                {'label': 'GST Rates & Official Portal', 'url': 'https://www.gst.gov.in'},
-              ],
-            ),
           ],
         ),
       ),
