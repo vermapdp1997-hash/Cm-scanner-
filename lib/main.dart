@@ -21,6 +21,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:intl/intl.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 // SHARED NATIVE ANDROID METHOD CHANNEL (MediaStore + Fast Hardware JPEG/Rotate/Compress)
 const MethodChannel kBharatMediaChannel = MethodChannel('bharat_scanner/media_store');
@@ -77,7 +78,7 @@ class AppLang {
   static String tr(String key) {
     final bool hi = isHindiLanguage.value;
     const Map<String, List<String>> dict = {
-      'app_title': ['Bharat Document Scanner AI', 'भारत डॉक्यूमेंट स्कैनर AI'],
+      'app_title': ['Bharat Document Scanner PDF AI', 'भारत डॉक्यूमेंट स्कैनर PDF AI'],
       'docs': ['Documents', 'दस्तावेज़'],
       'tools': ['Studio Tools', 'स्टूडियो टूल्स'],
       'search': ['Search documents...', 'दस्तावेज़ खोजें...'],
@@ -116,9 +117,104 @@ class AppLang {
       'change_theme': ['Change Theme Color', 'थीम का रंग बदलें'],
       'language': ['Language / भाषा (हिंदी)', 'भाषा / Language (हिंदी)'],
       'ad_privacy': ['Ad Privacy Settings', 'विज्ञापन गोपनीयता सेटिंग्स'],
-      'privacy_policy': ['Privacy & Data Policy', 'गोपनीयता नीति (Privacy Policy)'],
+      'privacy_policy': ['Privacy, Disclaimer & Sources', 'गोपनीयता, अस्वीकरण और स्रोत'],
+      'disclaimer_title': ['Disclaimer (Non-Official App)', 'अस्वीकरण (गैर-सरकारी ऐप)'],
+      'disclaimer_body': [
+        'Bharat Document Scanner PDF AI is an independent private utility app. It is NOT affiliated with, endorsed by, or representing any government entity.',
+        'Bharat Document Scanner PDF AI एक स्वतंत्र प्राइवेट यूटिलिटी ऐप है। यह किसी भी सरकारी संस्था से जुड़ी नहीं है और न ही उसका प्रतिनिधित्व करती है।'
+      ],
+      'official_sources': ['Official Reference Sources:', 'आधिकारिक संदर्भ स्रोत:'],
     };
     return dict[key] != null ? (hi ? dict[key]![1] : dict[key]![0]) : key;
+  }
+}
+
+class NonGovDisclaimerCard extends StatelessWidget {
+  final List<Map<String, String>> sources;
+  final bool compact;
+  const NonGovDisclaimerCard({super.key, this.sources = const [], this.compact = false});
+
+  Future<void> _openUrl(BuildContext context, String url) async {
+    try {
+      final uri = Uri.parse(url);
+      final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!ok && context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not open $url')),
+        );
+      }
+    } catch (e) {
+      debugPrint('Open URL err: $e');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bool isDark = Theme.of(context).brightness == Brightness.dark;
+    return Container(
+      width: double.infinity,
+      margin: EdgeInsets.symmetric(vertical: compact ? 6 : 10),
+      padding: EdgeInsets.all(compact ? 10 : 12),
+      decoration: BoxDecoration(
+        color: isDark ? Colors.amber.withAlpha(24) : Colors.amber.shade50,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.amber.shade700.withAlpha(140)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.info_outline_rounded, size: 16, color: Colors.orange.shade800),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  AppLang.tr('disclaimer_title'),
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            AppLang.tr('disclaimer_body'),
+            style: const TextStyle(fontSize: 11, height: 1.35),
+          ),
+          if (sources.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text(
+              AppLang.tr('official_sources'),
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11),
+            ),
+            const SizedBox(height: 4),
+            ...sources.map(
+              (s) => InkWell(
+                onTap: () => _openUrl(context, s['url'] ?? ''),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 2.5),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.open_in_new_rounded, size: 12, color: Colors.blue),
+                      const SizedBox(width: 5),
+                      Expanded(
+                        child: Text(
+                          '${s['label']}: ${s['url']}',
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: Colors.blue,
+                            decoration: TextDecoration.underline,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
   }
 }
 
@@ -778,7 +874,6 @@ List<List<double>> _detectDocCornersIsolate(Uint8List src, int w, int h) {
   // Robust trimmed least-squares line fitter: y = m*x + c (for top/bot) or x = m*y + c (for left/right)
   List<double> fitLine(List<List<double>> pts, bool swapXY) {
     List<List<double>> work = pts.map((p) => swapXY ? [p[1], p[0]] : [p[0], p[1]]).toList();
-    // Trim extreme 15% from both ends to ignore rounded corners / shadows
     if (work.length > 12) {
       final int trim = (work.length * 0.14).floor();
       work = work.sublist(trim, work.length - trim);
@@ -807,8 +902,6 @@ List<List<double>> _detectDocCornersIsolate(Uint8List src, int w, int h) {
     return [0.0, 0.0];
   }
 
-  // top: y = mt*x + ct, bot: y = mb*x + cb
-  // left: x = ml*y + cl, right: x = mr*y + cr
   final topL = fitLine(topPts, false);
   final botL = fitLine(botPts, false);
   final leftL = fitLine(leftPts, true);
@@ -831,7 +924,6 @@ List<List<double>> _detectDocCornersIsolate(Uint8List src, int w, int h) {
   if (tl == null || tr == null || br == null || bl == null) return fallback;
 
   final corners = [tl, tr, br, bl];
-  // Validate convex quad & minimum 20% area
   double area2 = 0.0;
   double? sign;
   for (int i = 0; i < 4; i++) {
@@ -1196,7 +1288,6 @@ Uint8List _processRgbaCore({
 
   final Uint8List lumCache = Uint8List(total);
 
-  // SMOOTH ANTI-ALIASED HOLLOW-PROOF SAUVOLA B&W (B&W Pro) — optimized RAM with Int32List intSum
   if (filter == 'super_bw' && bgMap != null) {
     final Uint8List normLum = Uint8List(total);
     final int iw = w + 1;
@@ -1451,7 +1542,6 @@ Uint8List _processRgbaCore({
     }
   }
 
-  // ASYMMETRIC HALO-FREE DOCUMENT SHARPENING + FLAT-PAPER GRAIN DENOISE
   final double baseSharp = filter == 'dark_ink'
       ? (0.62 + 0.34 * clampedIntensity)
       : (filter == 'magic_pro' || filter == 'ocv_crisp' || filter == 'super_bw')
@@ -2407,7 +2497,7 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
                         width: double.infinity,
                         padding: const EdgeInsets.symmetric(vertical: 8),
                         decoration: BoxDecoration(color: themeBase, borderRadius: BorderRadius.circular(12)),
-                        child: const Center(child: Text('AI DESKEW & PRO CLARITY', style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w900, letterSpacing: 1.5))),
+                        child: const Center(child: Text('CREATE DOCUMENT', style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w900, letterSpacing: 1.5))),
                       ),
                     ],
                   ),
@@ -2415,10 +2505,14 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
               ),
             ),
             const Positioned(
-              left: 0,
-              right: 0,
-              bottom: 22,
-              child: Text('Created by Yogesh Verma', textAlign: TextAlign.center, style: TextStyle(color: Colors.white60, fontSize: 11, fontWeight: FontWeight.w500, letterSpacing: 1.1)),
+              left: 16,
+              right: 16,
+              bottom: 18,
+              child: Text(
+                'Created by Yogesh Verma • Independent Utility App (Not a Govt App)',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.white60, fontSize: 10.5, fontWeight: FontWeight.w500, letterSpacing: 0.5),
+              ),
             ),
           ],
         ),
@@ -3963,11 +4057,26 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: Text(AppLang.tr('privacy_policy'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
         content: const SingleChildScrollView(
-          child: Text(
-            '1. On-Device Processing: All camera scans, document cropping, filters, and OCR text recognition run locally on your device. Your documents are never uploaded to external servers.\n\n'
-            '2. Local Storage & Exports: Saved documents stay in your device storage. Exporting JPG/PDF writes only to your chosen Pictures/BharatScanner or Download/BharatScanner folders.\n\n'
-            '3. Advertising: This app uses Google AdMob to display banner and post-export ads. You can manage your ad consent preferences anytime from "Ad Privacy Settings" when applicable.',
-            style: TextStyle(fontSize: 12.5, height: 1.45),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              NonGovDisclaimerCard(
+                compact: true,
+                sources: [
+                  {'label': 'Passport Photo Guidelines', 'url': 'https://www.passportindia.gov.in'},
+                  {'label': 'Income Tax / PAN Portal', 'url': 'https://www.incometax.gov.in'},
+                  {'label': 'GST Official Portal', 'url': 'https://www.gst.gov.in'},
+                ],
+              ),
+              SizedBox(height: 8),
+              Text(
+                '1. On-Device Processing: All camera scans, document cropping, filters, and OCR text recognition run locally on your device. Your documents are never uploaded to external servers.\n\n'
+                '2. Local Storage & Exports: Saved documents stay in your device storage. Exporting JPG/PDF writes only to your chosen Pictures/BharatScanner or Download/BharatScanner folders.\n\n'
+                '3. Advertising: This app uses Google AdMob to display banner and post-export ads. You can manage your ad consent preferences anytime from "Ad Privacy Settings" when applicable.',
+                style: TextStyle(fontSize: 12, height: 1.45),
+              ),
+            ],
           ),
         ),
         actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
@@ -3983,7 +4092,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
       appBar: AppBar(
         title: _isDocSelectionMode
             ? Text('${_selectedDocIdsOrder.length} Selected (In Order)', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15))
-            : (_isSearching ? TextField(controller: _searchController, autofocus: true, decoration: InputDecoration(hintText: AppLang.tr('search'), border: InputBorder.none)) : Text(AppLang.tr('app_title'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15))),
+            : (_isSearching ? TextField(controller: _searchController, autofocus: true, decoration: InputDecoration(hintText: AppLang.tr('search'), border: InputBorder.none)) : Text(AppLang.tr('app_title'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5))),
         actions: _isDocSelectionMode
             ? [
                 LabeledIconButton(
@@ -4097,7 +4206,17 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
         children: [
           DrawerHeader(
             decoration: BoxDecoration(color: appPrimaryColor.value),
-            child: const Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.document_scanner_rounded, size: 36, color: Colors.white), SizedBox(height: 8), Text('BHARAT SCANNER PDF AI', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)), Text('Ultra Clarity Book & Studio Edition', style: TextStyle(color: Colors.white70, fontSize: 11))]),
+            child: const Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.document_scanner_rounded, size: 36, color: Colors.white),
+                SizedBox(height: 8),
+                Text('BHARAT DOCUMENT SCANNER PDF AI', style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold)),
+                SizedBox(height: 2),
+                Text('Independent Utility App (Non-Government)', style: TextStyle(color: Colors.white70, fontSize: 11)),
+              ],
+            ),
           ),
           ListTile(leading: Icon(isDark ? Icons.light_mode : Icons.dark_mode), title: Text(isDark ? AppLang.tr('light_mode') : AppLang.tr('dark_mode')), onTap: () async { appThemeMode.value = isDark ? ThemeMode.light : ThemeMode.dark; await (await SharedPreferences.getInstance()).setBool('is_dark_mode', !isDark); }),
           ListTile(leading: const Icon(Icons.palette_rounded), title: Text(AppLang.tr('change_theme')), onTap: () { Navigator.pop(context); _openThemeColorPicker(); }),
@@ -4198,7 +4317,7 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
           ),
         ),
         if (_filteredDocs.isEmpty)
-          SliverToBoxAdapter(child: Padding(padding: const EdgeInsets.only(top: 80, left: 20, right: 20), child: Center(child: Text(AppLang.tr('no_docs'), textAlign: TextAlign.center))))
+          SliverToBoxAdapter(child: Padding(padding: const EdgeInsets.only(top: 36, bottom: 20, left: 20, right: 20), child: Center(child: Text(AppLang.tr('no_docs'), textAlign: TextAlign.center))))
         else if (_isGridView)
           SliverPadding(
             padding: const EdgeInsets.symmetric(horizontal: 14),
@@ -4214,6 +4333,19 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
               delegate: SliverChildBuilderDelegate((ctx, i) => _buildDocListTile(_filteredDocs[i]), childCount: _filteredDocs.length),
             ),
           ),
+        const SliverPadding(
+          padding: EdgeInsets.fromLTRB(14, 10, 14, 0),
+          sliver: SliverToBoxAdapter(
+            child: NonGovDisclaimerCard(
+              compact: true,
+              sources: [
+                {'label': 'Passport Guidelines', 'url': 'https://www.passportindia.gov.in'},
+                {'label': 'PAN / Income Tax', 'url': 'https://www.incometax.gov.in'},
+                {'label': 'GST Official Portal', 'url': 'https://www.gst.gov.in'},
+              ],
+            ),
+          ),
+        ),
         const SliverToBoxAdapter(child: SizedBox(height: 95)),
       ],
     );
@@ -4405,6 +4537,15 @@ class _MainDashboardScreenState extends State<MainDashboardScreen> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        const NonGovDisclaimerCard(
+          compact: true,
+          sources: [
+            {'label': 'Passport Photo Guidelines', 'url': 'https://www.passportindia.gov.in'},
+            {'label': 'Income Tax / PAN Portal', 'url': 'https://www.incometax.gov.in'},
+            {'label': 'GST Official Portal', 'url': 'https://www.gst.gov.in'},
+          ],
+        ),
+        const SizedBox(height: 8),
         _buildSectionTitle('Smart AI Scan Modes'),
         GridView.count(
           shrinkWrap: true,
@@ -6787,6 +6928,14 @@ class _PassportPhotoStudioScreenState extends State<PassportPhotoStudioScreen> {
             SegmentedButton<int>(segments: const [ButtonSegment(value: 4, label: Text('4')), ButtonSegment(value: 8, label: Text('8')), ButtonSegment(value: 16, label: Text('16')), ButtonSegment(value: 32, label: Text('32'))], selected: {_copies}, onSelectionChanged: (s) => setState(() => _copies = s.first)),
             const SizedBox(height: 24),
             SizedBox(width: double.infinity, height: 48, child: ElevatedButton.icon(style: ElevatedButton.styleFrom(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white), icon: const Icon(Icons.picture_as_pdf), label: const Text('Export Printable A4 Sheet PDF'), onPressed: _photoPath == null ? null : _exportPassportSheet)),
+            const SizedBox(height: 14),
+            const NonGovDisclaimerCard(
+              compact: true,
+              sources: [
+                {'label': 'Passport & OCI Photo Guidelines', 'url': 'https://www.passportindia.gov.in'},
+                {'label': 'PAN Card Photo Guidelines', 'url': 'https://www.incometax.gov.in'},
+              ],
+            ),
           ],
         ),
       ),
@@ -6934,7 +7083,6 @@ class _SignPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
 }
-
 // 8. GST TAX INVOICE MAKER
 class InvoiceMakerProScreen extends StatefulWidget {
   const InvoiceMakerProScreen({super.key});
@@ -7086,6 +7234,13 @@ class _InvoiceMakerProScreenState extends State<InvoiceMakerProScreen> {
             }),
             const SizedBox(height: 20),
             ElevatedButton.icon(style: ElevatedButton.styleFrom(backgroundColor: appPrimaryColor.value, foregroundColor: Colors.white, minimumSize: const Size.fromHeight(48)), icon: const Icon(Icons.picture_as_pdf), label: const Text('Export Official Tax Invoice PDF'), onPressed: _items.isEmpty ? null : _exportInvoicePdf),
+            const SizedBox(height: 14),
+            const NonGovDisclaimerCard(
+              compact: true,
+              sources: [
+                {'label': 'GST Rates & Official Portal', 'url': 'https://www.gst.gov.in'},
+              ],
+            ),
           ],
         ),
       ),
@@ -7439,7 +7594,6 @@ class _PdfStudioScreenState extends State<PdfStudioScreen> {
     );
   }
 }
-
 // 14. WATERMARK STUDIO
 class WatermarkToolScreen extends StatefulWidget {
   final List<Map<String, dynamic>> savedDocs;
