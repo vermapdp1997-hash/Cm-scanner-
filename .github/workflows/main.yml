@@ -24,6 +24,13 @@ jobs:
           channel: 'stable'
           cache: true
 
+      - name: Verify Custom App Icon Exists
+        run: |
+          if [ ! -f "assets/app_icon.png" ]; then
+            echo "ERROR: assets/app_icon.png not found! Please upload your app icon to assets/app_icon.png"
+            exit 1
+          fi
+
       - name: Configure Android and Inject Native MediaStore
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
@@ -455,7 +462,7 @@ jobs:
           EOF
           } > "$MAIN_KT"
 
-          # 3. AndroidManifest.xml (असली AdMob App ID + AD_ID + Play Store Scoped Storage + Optional Portrait Hardware)
+          # 3. AndroidManifest.xml (असली AdMob App ID + AD_ID + Play Store Scoped Storage + HTTPS Queries)
           cat << 'EOF' > android/app/src/main/AndroidManifest.xml
           <manifest xmlns:android="http://schemas.android.com/apk/res/android"
               xmlns:tools="http://schemas.android.com/tools">
@@ -504,6 +511,10 @@ jobs:
                   <intent>
                       <action android:name="android.intent.action.PROCESS_TEXT" />
                       <data android:mimeType="text/plain" />
+                  </intent>
+                  <intent>
+                      <action android:name="android.intent.action.VIEW" />
+                      <data android:scheme="https" />
                   </intent>
               </queries>
           </manifest>
@@ -564,20 +575,28 @@ jobs:
       - name: Get Flutter Dependencies
         run: flutter pub get
 
+      - name: Generate Custom App Launcher Icon
+        run: |
+          dart run flutter_launcher_icons
+          rm -rf android/app/src/main/res/mipmap-anydpi-v26
+          rm -rf android/app/src/main/res/drawable/ic_launcher_foreground.xml android/app/src/main/res/drawable-v24/ic_launcher_foreground.xml
+
       - name: Build Release APK
         run: flutter build apk --release --no-tree-shake-icons
 
       - name: Build Play Store AAB
         run: flutter build appbundle --release --no-tree-shake-icons
 
-      - name: Verify Portrait Feature in Built APK and Merged Manifest
+      - name: Verify Portrait Feature and App Icon in Built APK
         run: |
+          echo "=== Launcher Icon Files Check ==="
+          find android/app/src/main/res -name "ic_launcher*"
           echo "=== Merged Manifest Check ==="
           find build/app/intermediates -name "AndroidManifest.xml" -exec grep -H "screen.portrait" {} + || true
           echo "=== AAPT2 Badging Check ==="
           AAPT2=$(find "$ANDROID_HOME/build-tools" -name "aapt2" 2>/dev/null | sort -V | tail -n 1)
           if [ -n "$AAPT2" ]; then
-            "$AAPT2" dump badging build/app/outputs/flutter-apk/app-release.apk | grep -i -E "uses-feature|screen.portrait" || true
+            "$AAPT2" dump badging build/app/outputs/flutter-apk/app-release.apk | grep -i -E "uses-feature|screen.portrait|application-label|application-icon" || true
           fi
 
       - name: Upload APK
